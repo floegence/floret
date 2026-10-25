@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -238,15 +239,10 @@ func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread
 	for first := 0; first < len(records); first += 128 {
 		last := min(first+128, len(records))
 		if err := update(func(tx spi.WriteTx) error {
-			for _, record := range records[first:last] {
-				if err := work.Err(); err != nil {
-					return err
-				}
-				if err := tx.Put(activityFieldsNamespace, record.Key, record.Value); err != nil {
-					return err
-				}
+			if err := work.Err(); err != nil {
+				return err
 			}
-			return nil
+			return storagebridge.WriteRecords(tx, activityFieldsNamespace, records[first:last])
 		}); err != nil {
 			return err
 		}

@@ -12,7 +12,7 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
-func TestBackgroundUpgradePreparesDisplayBodiesOnce(t *testing.T) {
+func TestExplicitDisplayPreparationRunsOnce(t *testing.T) {
 	backend, repo := projectionSourcesFixture(t, 8)
 	if _, err := repo.Append(t.Context(), Entry{ID: "display-message", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "visible after upgrade"}}, AppendOptions{}); err != nil {
 		t.Fatal(err)
@@ -36,6 +36,9 @@ func TestBackgroundUpgradePreparesDisplayBodiesOnce(t *testing.T) {
 	canonical := cloneMigrationRecords(backend.records)[backendDomainV32Namespace]
 	repo = reopenCurrentStartupRepo(t, backend, false)
 	drainCurrentStartup(t, repo)
+	if err := repo.PrepareDisplayThread(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
 	before := cloneMigrationRecords(backend.records)
 	if err := repo.prepareActivityFields(t.Context(), "thread", "display-tool"); err != nil {
 		t.Fatal(err)

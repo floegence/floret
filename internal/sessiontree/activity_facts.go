@@ -20,7 +20,25 @@ func (repo *BackendRepo) ActivityFacts(ctx context.Context, input ActivityStruct
 		return ActivityFacts{}, spi.ErrInvalidArgument
 	}
 	for _, id := range input.EntryIDs {
-		if err := repo.prepareActivityFields(ctx, input.ThreadID, id); err != nil && !(errors.Is(err, ErrEntryNotFound) && input.Defaults[id] != "") {
+		// Merge facts already belong to the admitted summary. A safety query
+		// must not prepare hidden detail locators merely to read these facts.
+		ready := false
+		err := repo.canonicalThreadView(ctx, input.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+			entry, err := activeLocatedEntry(ctx, tx, meta, id)
+			if err != nil {
+				return err
+			}
+			_, err = readActivityMergeMetadata(tx, entry.bodyFields["activity_json"])
+			ready = err == nil
+			if errors.Is(err, spi.ErrNotFound) {
+				return nil
+			}
+			return err
+		}, func(*MemoryRepo) error { ready = true; return nil })
+		if err == nil && !ready {
+			err = repo.prepareActivityFields(ctx, input.ThreadID, id)
+		}
+		if err != nil && !(errors.Is(err, ErrEntryNotFound) && input.Defaults[id] != "") {
 			return ActivityFacts{}, err
 		}
 	}

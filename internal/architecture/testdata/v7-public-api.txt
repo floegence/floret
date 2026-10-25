@@ -1604,6 +1604,28 @@ const ThreadItemRangeUnknownActivity github.com/floegence/floret/v7/runtime.Thre
 const ThreadItemRemoved github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "remove"
 const ThreadItemReplaced github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "replace"
 const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
+type ThreadItemTextChunk struct
+field ThreadItemTextChunk.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemTextChunk.ItemID string tag="json:\"item_id\""
+field ThreadItemTextChunk.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadItemTextChunk.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadItemTextChunk.EntryID string tag="json:\"entry_id,omitempty\""
+field ThreadItemTextChunk.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
+field ThreadItemTextChunk.Bytes int tag="json:\"bytes\""
+field ThreadItemTextChunk.ThroughBytes int tag="json:\"through_bytes\""
+field ThreadItemTextChunk.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadItemTextChunk.Text string tag="json:\"text\""
+type ThreadItemTextInput struct
+field ThreadItemTextInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemTextInput.ItemID string tag="json:\"item_id\""
+field ThreadItemTextInput.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadItemTextInput.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadItemTextInput.EntryID string tag="json:\"entry_id,omitempty\""
+field ThreadItemTextInput.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
+field ThreadItemTextInput.ThroughBytes int tag="json:\"through_bytes,omitempty\""
+field ThreadItemTextInput.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadItemTextInput.LimitBytes int tag="json:\"limit_bytes,omitempty\""
+type ThreadItemTextReader interface interface{ReadItemText(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadItemTextInput) (github.com/floegence/floret/v7/runtime.ThreadItemTextChunk, error)}
 const ThreadItemThinking github.com/floegence/floret/v7/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v7/runtime.ThreadItemKind = "tool"
 const ThreadItemUser github.com/floegence/floret/v7/runtime.ThreadItemKind = "user"
@@ -1868,6 +1890,7 @@ const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDire
 const ThreadWindowBefore github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "before"
 type ThreadWindowDirection string
 type ThreadWindowInput struct
+field ThreadWindowInput.PreviewBytes int tag="json:\"preview_bytes,omitempty\""
 field ThreadWindowInput.IncludeSummary bool tag="json:\"include_summary,omitempty\""
 field ThreadWindowInput.AnchorOffset int tag="json:\"anchor_offset,omitempty\""
 field ThreadWindowInput.RequestID string tag="json:\"request_id,omitempty\""

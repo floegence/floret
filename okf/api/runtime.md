@@ -32,15 +32,13 @@ usable during background preparation. Monolithic v2–v5 sources gate canonical 
 source scan reserves historical identities, then publish threads independently. Host shutdown joins the active
 storage transaction before closing the backend.
 
-Browsing preparation shares the canonical migration owner and runs automatically
-once when source metadata is absent. It includes retained branches and resumes
-bounded field batches without changing journal bytes. `Readiness.DisplayReady`
-is an additive browsing status; `DisplayError` leaves `Readiness.Ready` and its
-canonical error behavior unchanged. `PrepareDisplayThread` prioritizes explicit
-browsing preparation without activating execution, honors caller cancellation,
-and joins Host shutdown. Global startup completion is not a certificate for
-optional presentation sources; hosts use the per-thread status. Prepared restart
-checks metadata anchors, not historical bodies.
+Browsing preparation shares the canonical migration gate and runs on requested
+windows or explicit PrepareDisplayThread calls. Startup does not eagerly build
+hidden activity detail indexes. Large new activities retain bounded summaries;
+first detail access prepares the existing full locator format once, in bounded
+transactions. DisplayReady still certifies complete browsing preparation;
+canonical Ready is independent. Explicit preparation includes retained branches,
+honors cancellation and joins shutdown. Prepared restarts reuse metadata.
 
 ## Thread goals
 

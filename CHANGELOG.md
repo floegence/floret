@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add optional item presentation range reads and per-item window preview budgets.
+  Preserve exact text, source identity, authorization and encoded response bounds.
+- Defer large activity detail indexes to explicit field reads; ordinary startup
+  no longer prepares unopened display histories. Keep the existing canonical
+  schema and explicit full display preparation contract.
+- Batch activity locator writes and avoid SQLite updates for identical values.
+
+
 - Retain canonical Goal disposition in activity summaries while deferring Goal
   text and review evidence. Preserve complete view and restart semantics.
 

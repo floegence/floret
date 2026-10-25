@@ -536,3 +536,47 @@ func (tx summaryWindowReadTx) Get(ns string, key []byte) ([]byte, error) {
 	}
 	return tx.ReadTx.Get(ns, key)
 }
+
+func TestLargeActivityAdmissionAndStartupLeaveHiddenFieldsDeferred(t *testing.T) {
+	for _, count := range []int{20, 180} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 1)
+			rows := make([]tools.StructuredActivityRow, count)
+			for i := range rows {
+				rows[i] = tools.StructuredActivityRow{Title: fmt.Sprint(i), Content: strings.Repeat("exact source\n", 4000), Format: tools.StructuredActivityRowFormatCode}
+			}
+			_, err := repo.Append(t.Context(), Entry{ID: "large", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "read", ToolCallID: "large", Activity: &tools.ActivityPresentation{Label: "Read", Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Rows: rows}}}}, AppendOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := len(backend.records[activityFieldsNamespace])
+			if records > 32 {
+				t.Fatalf("admission indexed hidden fields: %d records", records)
+			}
+			before := cloneMigrationRecords(backend.records)[activityFieldsNamespace]
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			drainCurrentStartup(t, repo)
+			if !reflect.DeepEqual(before, backend.records[activityFieldsNamespace]) {
+				t.Fatal("startup prepared unopened activity details")
+			}
+			summary, err := repo.ReadItemActivitySummary(t.Context(), "thread", "tool:turn:large")
+			if err != nil || summary.Label != "Read" {
+				t.Fatalf("summary=%+v err=%v", summary, err)
+			}
+			if !reflect.DeepEqual(before, backend.records[activityFieldsNamespace]) {
+				t.Fatal("summary prepared hidden fields")
+			}
+			chunk, err := repo.ReadActivityField(t.Context(), ActivityFieldInput{ThreadID: "thread", EntryID: "large", Path: fmt.Sprintf("/payload/rows/%d/content", count-1), Limit: 16384})
+			if err != nil || !strings.HasPrefix(rows[count-1].Content, chunk.Text) || chunk.Text == "" {
+				t.Fatalf("deferred field=%+v err=%v", chunk, err)
+			}
+			after := cloneMigrationRecords(backend.records)[activityFieldsNamespace]
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			drainCurrentStartup(t, repo)
+			if !reflect.DeepEqual(after, backend.records[activityFieldsNamespace]) {
+				t.Fatal("prepared restart rewrote locators")
+			}
+			t.Logf("rows=%d admission_records=%d prepared_records=%d", count, records, len(after))
+		})
+	}
+}

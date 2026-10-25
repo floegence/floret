@@ -593,6 +593,9 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
+	textPagesMu sync.Mutex
+	textPages   []threadTextPage
+
 	preparationOnce        sync.Once
 	preparationSlots       chan struct{}
 	windowPreparationSlots chan struct{}

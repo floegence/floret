@@ -1095,6 +1095,15 @@ scope is freshly authorized and its `PreviewBytes` is zero. Use this boundary to
 open full text independently of the page's preview allowance: a small item can
 be partial in a crowded page and complete when read alone. This operation never
 changes window interest, truncates source content or grants subsequent access.
+Optional runtime.ThreadItemTextReader.ReadItemText continues exact presentation
+text by item/source identity and UTF-8 offset for both canonical and live sources.
+Each freshly authorized call returns at most 16 KiB decoded and 64 KiB encoded,
+without assembling complete text. It preserves normalized control presentation.
+Recent frozen manifest pages are retained in a bounded in-memory cache; no new
+durable index is created. Source replacement requires refreshing the locator.
+ThreadWindowInput.PreviewBytes optionally bounds each item before hydration
+(128–65,536 bytes; zero preserves the existing default). Hosts can choose a
+viewport-sized initial window and fetch visible remaining text through ranges.
 The actor retains only an exact byte extent and bounded summary, rather than a
 second accumulated string. Optional `runtime.ThreadLiveBodyReader` reads that
 display source by `ThreadID`, `RunID`, `SourceID` and frozen `ThroughBytes`.
@@ -1231,18 +1240,18 @@ batches; the complete validated thread publishes atomically. Foreground
 preparation takes priority over background history. Already published threads
 and new conversations remain usable if another historical thread fails.
 
-Historical browsing sources are prepared automatically by the same Host worker.
-This one-time upgrade work may read the complete retained journal, including
-branches, but stores only rebuildable source locators and field metadata.
-Subsequent startup checks bounded readiness anchors without rewriting history.
-`ThreadReadiness.DisplayReady` separately reports browsing preparation;
-`Ready` keeps its canonical runtime meaning. An optional browsing failure is
-reported in `DisplayError`, not as a new canonical readiness error. Global
-worker completion does not certify every optional presentation. Hosts may call
-`Host.PrepareDisplayThread` to prioritize a selected thread without activating
-execution. Cancelling that explicit operation stops its display work; automatic
-preparation can resume later. Shutdown cancels and joins the operation. Missing
-readiness is upgrade work, never evidence of a sub-second prepared open.
+Historical browsing preparation runs on demand through the existing Host-owned
+preparation gate. Ordinary startup does not build hidden activity detail trees.
+Large new activities (over 64 KiB encoded) publish bounded summary metadata in
+their canonical transaction; explicit field access prepares the complete source
+locators once, with restartable bounded batches. Existing full locators remain
+valid and are reused. No canonical bytes or physical schema are changed.
+ThreadReadiness.DisplayReady separately reports complete browsing preparation;
+Ready keeps its canonical runtime meaning. Hosts may explicitly call
+Host.PrepareDisplayThread to prepare all retained branches for a selected thread.
+Cancellation stops that operation and shutdown joins it. Window reads prepare
+only their dependencies. Missing optional readiness is never evidence of a
+sub-second prepared open.
 
 Monolithic v2–v5 snapshots first scan immutable source bytes in resumable,
 bounded batches and reserve historical identities, including deleted identities

@@ -79,7 +79,7 @@ func (tx *sqliteTx) WriteFloretRecords(namespace string, records []spi.Record) e
 		}
 		arguments = append(arguments, namespace, bytes.Clone(record.Key), bytes.Clone(record.Value))
 	}
-	query := "INSERT INTO floret_backend_records(namespace, key, value) VALUES " + strings.TrimSuffix(strings.Repeat("(?,?,?),", len(records)), ",") + " ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value"
+	query := "INSERT INTO floret_backend_records(namespace, key, value) VALUES " + strings.TrimSuffix(strings.Repeat("(?,?,?),", len(records)), ",") + " ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value WHERE floret_backend_records.value IS NOT excluded.value"
 	_, err := tx.tx.ExecContext(tx.ctx, query, arguments...)
 	return classifySQLiteError(tx.ctx, err)
 }

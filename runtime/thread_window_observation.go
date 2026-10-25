@@ -23,6 +23,10 @@ const (
 // subscription. Append preserves existing history anchors. A missing anchor
 // fails explicitly; callers can request the available tail with no AnchorID.
 type ThreadWindowInput struct {
+	// PreviewBytes bounds each item text prefix before source hydration. Zero
+	// retains the published 64 KiB maximum; values must be 128..65536. The
+	// aggregate window budget still applies. Omitted text keeps its body locator.
+	PreviewBytes int `json:"preview_bytes,omitempty"`
 	// IncludeSummary adds a summary captured with this explicit baseline.
 	// Automatic replacements and live deltas do not repeat it.
 	IncludeSummary bool `json:"include_summary,omitempty"`
@@ -282,10 +286,10 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 			continue
 		}
 		if change.Item != nil {
-			item := actor.freezeWindowItem(*change.Item, threadDisplayTextBytes, interest.activityFields)
+			item := actor.freezeWindowItem(*change.Item, windowTextLimit(interest.sourceInput), interest.activityFields)
 			var err error
 			if !interest.activityFields {
-				item, err = actor.windowItemMode(context.Background(), item, threadDisplayTextBytes, false)
+				item, err = actor.windowItemMode(context.Background(), item, windowTextLimit(interest.sourceInput), false)
 			}
 			if err != nil {
 				subscription.finishLocked(ErrThreadUpdateInvalidated)
@@ -299,7 +303,7 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 				// without reading, cloning or encoding the same prefix again.
 				body.Bytes = change.Append.OffsetBytes + len(change.Append.Text)
 				change.Kind, change.Body, change.Append = ThreadItemBodyUpdated, &body, nil
-			} else if index := actor.itemIndexByID(change.ItemID); index >= 0 && max(len(actor.state.view.Items[index].Text), actor.state.view.Items[index].textBytes) > threadDisplayTextBytes {
+			} else if index := actor.itemIndexByID(change.ItemID); index >= 0 && max(len(actor.state.view.Items[index].Text), actor.state.view.Items[index].textBytes) > windowTextLimit(interest.sourceInput) {
 				current := actor.state.view.Items[index]
 				// A preceding coalesced batch can flush while the actor already
 				// contains the next append. Freeze this batch's accepted extent.
@@ -309,10 +313,10 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 				} else {
 					current.Text = current.Text[:through]
 				}
-				item := actor.freezeWindowItem(current, threadDisplayTextBytes, interest.activityFields)
+				item := actor.freezeWindowItem(current, windowTextLimit(interest.sourceInput), interest.activityFields)
 				var err error
 				if !interest.activityFields {
-					item, err = actor.windowItemMode(context.Background(), item, threadDisplayTextBytes, false)
+					item, err = actor.windowItemMode(context.Background(), item, windowTextLimit(interest.sourceInput), false)
 				}
 				if err != nil {
 					subscription.finishLocked(ErrThreadUpdateInvalidated)
@@ -381,7 +385,7 @@ func (actor *threadRuntimeState) windowSnapshotContext(ctx context.Context, inpu
 	if err != nil {
 		return ThreadWindowSnapshot{}, err
 	}
-	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(selected))-3)
+	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(selected))-3, windowTextLimit(input))
 	items, err := actor.cloneWindowItemsMode(ctx, selected, previewLimit, input.ActivityFields)
 	if err != nil {
 		return ThreadWindowSnapshot{}, err
@@ -465,7 +469,7 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 		input.AnchorID, input.Direction = "", ThreadWindowBefore
 	}
 	if interest.selection != nil {
-		input = ThreadWindowInput{ThreadID: update.ThreadID, ActivityFields: interest.activityFields, ItemIDs: []string{}}
+		input = ThreadWindowInput{ThreadID: update.ThreadID, PreviewBytes: interest.sourceInput.PreviewBytes, ActivityFields: interest.activityFields, ItemIDs: []string{}}
 		for _, id := range interest.selection {
 			if actor.itemIndexByID(id) >= 0 {
 				input.ItemIDs = append(input.ItemIDs, id)
@@ -492,7 +496,7 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 		snapshot, err = actor.publicationWindowSnapshot(input)
 	}
 	if errors.Is(err, errThreadWindowAnchorUnavailable) {
-		snapshot, err = actor.publicationWindowSnapshot(ThreadWindowInput{ThreadID: update.ThreadID, Limit: interest.limit, ActivityFields: interest.activityFields})
+		snapshot, err = actor.publicationWindowSnapshot(ThreadWindowInput{ThreadID: update.ThreadID, PreviewBytes: interest.sourceInput.PreviewBytes, Limit: interest.limit, ActivityFields: interest.activityFields})
 		snapshot.AnchorUnavailable = true
 	}
 	if err != nil {

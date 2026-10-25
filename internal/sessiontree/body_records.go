@@ -459,7 +459,11 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backend
 			}
 		}
 		if field == "activity_json" {
-			if err := writeActivityFieldIndex(ctx, tx, ref, value); err != nil {
+			writeIndex := writeActivityFieldIndex
+			if format.version >= backendDomainV32Version && len(value) > 64<<10 {
+				writeIndex = writeActivitySummaryIndex
+			}
+			if err := writeIndex(ctx, tx, ref, value); err != nil {
 				return err
 			}
 		}

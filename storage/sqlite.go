@@ -400,7 +400,7 @@ func (tx *sqliteTx) Put(namespace string, key, value []byte) error {
 	if tx.putStatement == nil {
 		statement, err := tx.tx.PrepareContext(tx.ctx, `
 		INSERT INTO floret_backend_records(namespace, key, value) VALUES (?, ?, ?)
-		ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value
+		ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value WHERE floret_backend_records.value IS NOT excluded.value
 	`)
 		if err != nil {
 			return classifySQLiteError(tx.ctx, err)

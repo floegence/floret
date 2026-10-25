@@ -48,7 +48,7 @@ func (work *windowPublication) read(ctx context.Context, update ThreadUpdate) (T
 		input := work.source.input
 		view, page := work.source.frozen.view, work.source.frozen.page
 
-		limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(view.Items))-(utf8.UTFMax-1))
+		limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(view.Items))-(utf8.UTFMax-1), windowTextLimit(input))
 		items, err := work.actor.cloneWindowItemsMode(ctx, view.Items, limit, input.ActivityFields)
 		if err != nil {
 			return ThreadUpdate{}, err
@@ -117,7 +117,7 @@ func (work *windowPublication) read(ctx context.Context, update ThreadUpdate) (T
 func (subscription *ThreadUpdateSubscription) enqueueWindowLocked(actor *threadRuntimeState, update ThreadUpdate, sources ...*sourceWindowPublication) bool {
 	interest := subscription.windows[update.ThreadID.String()]
 	var work *windowPublication
-	limit := threadDisplayTextBytes
+	limit := windowTextLimit(interest.sourceInput)
 	if update.Window != nil && update.Window.Value != nil {
 		limit = min(limit, threadDisplayPreviewBytes/max(1, len(update.Window.Value.Items))-(utf8.UTFMax-1))
 	}
@@ -204,7 +204,7 @@ func (actor *threadRuntimeState) publicationWindowSnapshot(input ThreadWindowInp
 	if err != nil {
 		return ThreadWindowSnapshot{}, err
 	}
-	limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1))
+	limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1), windowTextLimit(input))
 	snapshot := ThreadWindowSnapshot{resolvedAnchor: actor.resolvedWindowAnchor(input), ThreadID: actor.state.view.ThreadID, ViewVersion: actor.state.view.ViewVersion, ItemSelection: input.ItemIDs != nil, HasBefore: before, HasAfter: after, Items: make([]ThreadItem, len(items))}
 	if actor.canonical != nil {
 		snapshot.LeafID = actor.canonical.leafID

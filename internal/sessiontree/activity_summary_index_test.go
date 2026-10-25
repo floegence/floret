@@ -59,3 +59,32 @@ func TestActivitySummaryIndexRejectsInvalidHiddenValues(t *testing.T) {
 		}
 	}
 }
+
+func TestActivityLocatorWriteBudget(t *testing.T) {
+	for _, count := range []int{1, 20, 180} {
+		rows := make([]map[string]any, count)
+		for i := range rows {
+			rows[i] = map[string]any{"title": fmt.Sprint(i), "format": "code", "content": strings.Repeat("const value = '中文🌸';\n", 2000)}
+		}
+		raw, err := json.Marshal(map[string]any{"label": "Read", "renderer": "structured", "payload": map[string]any{"rows": rows}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes, err := indexActivityJSON(t.Context(), string(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := activityFieldRecords(canonicalBodyRef{SHA256: stableHash(string(raw)), Bytes: len(raw)}, nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bytes := 0
+		for _, record := range records {
+			bytes += len(record.Key) + len(record.Value)
+		}
+		t.Logf("rows=%d canonical_bytes=%d locator_records=%d locator_bytes=%d ratio=%.4f", count, len(raw), len(records), bytes, float64(bytes)/float64(len(raw)))
+		if bytes > len(raw)/2 {
+			t.Fatal("large-body locator bytes exceed half of canonical source")
+		}
+	}
+}

@@ -1858,3 +1858,7 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-24: Document additive canonical-position receipt seeks on the existing
   parent-event service. Preserve ordinary event-relative navigation and test
   empty intervals, branches, restart, and bounded metadata access.
+
+- 2026-10-25: Add bounded item presentation ranges and configurable window
+  previews. Defer large activity detail locators until explicit access, remove
+  optional display work from startup, and suppress identical SQLite updates.

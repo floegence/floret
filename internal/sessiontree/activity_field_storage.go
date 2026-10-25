@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/activityfields"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -48,11 +49,11 @@ func writeActivityFieldIndex(ctx context.Context, tx spi.WriteTx, ref canonicalB
 	if err != nil {
 		return err
 	}
-	for _, record := range records {
+	for first := 0; first < len(records); first += storagebridge.MaxRecordBatch {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := tx.Put(activityFieldsNamespace, record.Key, record.Value); err != nil {
+		if err := storagebridge.WriteRecords(tx, activityFieldsNamespace, records[first:min(len(records), first+storagebridge.MaxRecordBatch)]); err != nil {
 			return err
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -135,4 +136,61 @@ func (repo *BackendRepo) prepareActivitySummariesOwned(ctx context.Context, read
 // Immediate shapes contain counts, never hidden members or string bodies.
 func activitySummaryPath(path string) bool {
 	return path != "" && (strings.Count(path, "/") == 1 || strings.HasPrefix(path, "/payload/") && strings.Count(path, "/") == 2)
+}
+
+// Large activity admission writes only bounded browsing metadata. Full detail
+// locators are prepared by the existing source owner on explicit field access.
+// The published summary/full readiness markers keep one canonical source and
+// preserve the exact format understood by released readers.
+func writeActivitySummaryIndex(ctx context.Context, tx spi.WriteTx, ref canonicalBodyRef, source string) error {
+	if ref.SHA256 != stableHash(source) || ref.Bytes != len(source) {
+		return ErrAuthorityCorrupt
+	}
+	if _, err := readActivityFieldNode(tx, ref, ""); err == nil {
+		_, err = readActivityMergeMetadata(tx, ref)
+		if err != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return nil
+	} else if !errors.Is(err, spi.ErrNotFound) {
+		return err
+	}
+	if err := readActivitySummaryReady(tx, ref); err == nil {
+		return nil
+	} else if !errors.Is(err, spi.ErrNotFound) || errors.Is(err, ErrAuthorityCorrupt) {
+		return err
+	}
+	nodes, err := indexActivitySummaryJSON(ctx, source)
+	if err != nil {
+		return err
+	}
+	selected := map[string]activityFieldNode{}
+	for path, node := range nodes {
+		if activitySummaryPath(path) {
+			if node.ShapeOnly && node.Kind == "object" {
+				node.Children = nil
+			}
+			selected[path] = node
+		}
+	}
+	records, err := activityFieldRecords(ref, selected)
+	if err != nil {
+		return err
+	}
+	for first := 0; first < len(records); first += storagebridge.MaxRecordBatch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := storagebridge.WriteRecords(tx, activityFieldsNamespace, records[first:min(len(records), first+storagebridge.MaxRecordBatch)]); err != nil {
+			return err
+		}
+	}
+	if err := writeActivityMergeMetadata(tx, ref, source, nodes); err != nil {
+		return err
+	}
+	ready, err := json.Marshal(ref)
+	if err != nil {
+		return err
+	}
+	return tx.Put(activityFieldsNamespace, activitySummaryReadyKey(ref.SHA256), ready)
 }

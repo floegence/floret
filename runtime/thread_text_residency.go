@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -49,14 +50,20 @@ func canonicalTextSummary(prefix, appended string, hasTail bool) (string, bool) 
 // readItemText reconstructs only the requested prefix, or the exact frozen
 // extent for an explicit full adapter. It never reads a complete source entry.
 func (service *threadRuntimeService) readItemText(ctx context.Context, threadID string, item ThreadItem, limit int) (string, error) {
+	return service.readItemTextRange(ctx, threadID, item, 0, limit)
+}
+
+// Offset skipping reads locators only; already delivered source bytes are never
+// downloaded or assembled again. The same owner handles full and range reads.
+func (service *threadRuntimeService) readItemTextRange(ctx context.Context, threadID string, item ThreadItem, offset, limit int) (string, error) {
 	if !item.textOmitted {
 		if limit >= 0 {
-			text, _ := boundedThreadText(item.Text, limit)
+			text, _ := boundedThreadText(item.Text[offset:], limit)
 			return text, nil
 		}
-		return item.Text, nil
+		return item.Text[offset:], nil
 	}
-	want := item.textBytes
+	want := item.textBytes - offset
 	if limit >= 0 {
 		want = min(want, limit)
 	}
@@ -66,7 +73,7 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 	if item.liveBody != nil {
 		var result strings.Builder
 		for result.Len() < want {
-			part, err := item.liveBody.Read(ctx, result.Len(), max(4, min(16<<10, want-result.Len())), item.textBytes)
+			part, err := item.liveBody.Read(ctx, offset+result.Len(), max(4, min(16<<10, want-result.Len())), item.textBytes)
 			if err != nil {
 				return "", err
 			}
@@ -87,6 +94,7 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 	}
 	var result strings.Builder
 	finished := false
+	skip := offset
 	field := "content"
 	if item.Kind == ThreadItemThinking {
 		field = "reasoning"
@@ -96,6 +104,12 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 		if field == string(ThreadBodyControlOutput) {
 			start = item.controlTextStart
 		}
+		if skip >= bytes-start {
+			skip -= bytes - start
+			return nil
+		}
+		start += skip
+		skip = 0
 		for offset := start; offset < bytes && result.Len() < want; {
 			chunk, err := reader.ReadCanonicalBody(ctx, threadID, entryID, field, offset, max(4, min(16<<10, want-result.Len())))
 			if err != nil {
@@ -124,10 +138,22 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 			return "", ErrUnsupportedStoreCapability
 		}
 		options := sessiontree.SourceBodyPageOptions{ThreadID: threadID, LeafID: item.textLeafID, SourceID: item.ID, Field: field, Limit: 150}
+		position := 0
+		cached, hit := service.cachedTextPage(threadID, item, field, offset)
+		if hit {
+			position, skip = cached.offset, offset-cached.offset
+		}
 		for {
-			page, err := manifest.SourceBodyPage(ctx, options)
-			if err != nil {
-				return "", runtimeHostError(err)
+			var page sessiontree.SourceBodyPage
+			if hit {
+				page, hit = cached.page, false
+			} else {
+				var err error
+				page, err = manifest.SourceBodyPage(ctx, options)
+				if err != nil {
+					return "", runtimeHostError(err)
+				}
+				service.retainTextPage(threadID, item, field, position, page)
 			}
 			for _, part := range page.Bodies {
 				if err := read(part.EntryID, part.Field, part.Bytes); err != nil {
@@ -140,10 +166,16 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 			if result.Len() >= want || finished || !page.HasMore {
 				break
 			}
+			for _, part := range page.Bodies {
+				position += part.Bytes
+				if part.Field == string(ThreadBodyControlOutput) {
+					position -= item.controlTextStart
+				}
+			}
 			options.LeafID, options.AfterEntryID = page.LeafID, page.NextEntryID
 		}
 	}
-	if limit < 0 && result.Len() != item.textBytes {
+	if limit < 0 && result.Len() != item.textBytes-offset {
 		return "", fmt.Errorf("%w: canonical text extent is unavailable", ErrAuthorityCorrupt)
 	}
 	return result.String(), nil
@@ -339,4 +371,43 @@ func (actor *threadRuntimeState) windowActivity(ctx context.Context, item Thread
 	item.ActivityBodies = bodies
 	item.activityEntryIDs = nil
 	return item, nil
+}
+
+// Keep only recently read locator pages in memory. This is neither a durable
+// index nor cached authorization. Every public range resolves the active item
+// again; the frozen leaf prevents a page surviving a changed canonical path.
+type threadTextPage struct {
+	thread, item, leaf, field string
+	offset                    int
+	page                      sessiontree.SourceBodyPage
+}
+
+func (service *threadRuntimeService) cachedTextPage(thread string, item ThreadItem, field string, offset int) (threadTextPage, bool) {
+	service.textPagesMu.Lock()
+	defer service.textPagesMu.Unlock()
+	for i := len(service.textPages) - 1; i >= 0; i-- {
+		page := service.textPages[i]
+		if page.thread == thread && page.item == item.ID && page.leaf == item.textLeafID && page.field == field && offset >= page.offset {
+			service.textPages = append(slices.Delete(service.textPages, i, i+1), page)
+			return page, true
+		}
+	}
+	return threadTextPage{}, false
+}
+func (service *threadRuntimeService) retainTextPage(thread string, item ThreadItem, field string, offset int, page sessiontree.SourceBodyPage) {
+	if item.textLeafID == "" {
+		return
+	}
+	service.textPagesMu.Lock()
+	defer service.textPagesMu.Unlock()
+	for i := len(service.textPages) - 1; i >= 0; i-- {
+		if service.textPages[i].thread == thread && service.textPages[i].item == item.ID && service.textPages[i].field == field {
+			service.textPages = slices.Delete(service.textPages, i, i+1)
+		}
+	}
+	if len(service.textPages) >= 32 {
+		service.textPages = slices.Delete(service.textPages, 0, 1)
+	}
+	page.Bodies = slices.Clone(page.Bodies)
+	service.textPages = append(service.textPages, threadTextPage{thread, item.ID, item.textLeafID, field, offset, page})
 }

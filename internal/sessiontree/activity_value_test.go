@@ -28,6 +28,9 @@ func TestAtomicActivityValueReadDoesNotScaleWithSiblingBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 			repo = reopenCurrentStartupRepo(t, backend, false)
+			if err := repo.PrepareDisplayThread(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
 			measured := &activityBudgetBackend{Backend: backend}
 			repo.backend = measured
 			input := ItemActivityValueInput{ThreadID: "thread", ItemID: "tool:turn:work", Path: fmt.Sprintf("/payload/rows/%d", count-1), MaximumBytes: 1024, MaximumNodes: 32}

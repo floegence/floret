@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -81,6 +82,23 @@ func TestThreadItemBodyIndependentOfWindowPreviewAndRestart(t *testing.T) {
 		}
 		if body.SourceID != "answer" || body.RunID != "" || body.Field != ThreadBodyContent || body.Bytes != len(text) || body.PreviewBytes != 0 {
 			t.Fatalf("locator: %+v", body)
+		}
+		var ranged strings.Builder
+		for ranged.Len() < len(text) {
+			chunk, err := service.ReadItemText(t.Context(), scope, ThreadItemTextInput{ThreadID: id, ItemID: "answer", SourceID: body.SourceID, Field: body.Field, ThroughBytes: body.Bytes, OffsetBytes: ranged.Len(), LimitBytes: 1024})
+			if err != nil || chunk.OffsetBytes != ranged.Len() || len(chunk.Text) > 1024 || chunk.Bytes != len(text) {
+				t.Fatalf("range: %+v %v", chunk, err)
+			}
+			ranged.WriteString(chunk.Text)
+		}
+		if ranged.String() != text {
+			t.Fatal("ranged presentation differs")
+		}
+		if _, err := service.ReadItemText(t.Context(), scope, ThreadItemTextInput{ThreadID: id, ItemID: "answer", SourceID: "wrong", Field: body.Field}); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+			t.Fatalf("wrong source accepted: %v", err)
+		}
+		if _, err := service.ReadItemText(t.Context(), threadquery.Scope{Authority: "revoked"}, ThreadItemTextInput{ThreadID: id, ItemID: "answer", SourceID: body.SourceID, Field: body.Field}); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+			t.Fatalf("revoked text: %v", err)
 		}
 		manifest, err := service.BodyManifest(t.Context(), scope, ThreadBodyManifestInput{ThreadID: id, SourceID: body.SourceID, Field: body.Field})
 		if err != nil || len(manifest.Parts) != 1 {
@@ -163,5 +181,61 @@ func TestThreadItemBodyResolvesSmallLiveSource(t *testing.T) {
 	if err != nil || part.Text != gateway.unit {
 		t.Fatalf("live text: %+v %v", part, err)
 	}
+	chunk, err := service.ReadItemText(t.Context(), scope, ThreadItemTextInput{ThreadID: created.ThreadID, ItemID: source, RunID: body.RunID, SourceID: body.SourceID, Field: body.Field, ThroughBytes: body.Bytes})
+	if err != nil || chunk.Text != gateway.unit {
+		t.Fatalf("live item text: %+v %v", chunk, err)
+	}
 	close(gateway.release)
+}
+
+func TestThreadItemTextWireBudgetAndInvalidOffsets(t *testing.T) {
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	public, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return nil, errors.New("execution not expected") }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := public.(*threadRuntimeService)
+	id := identity.ThreadID("escaped")
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	text := "🌸" + strings.Repeat("<>&\x00", 12000)
+	_, err = host.store.repo.Append(t.Context(), sessiontree.Entry{ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: text}}, sessiontree.AppendOptions{ID: "input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{id}}
+	input := ThreadItemTextInput{ThreadID: id, ItemID: "input", EntryID: "input", Field: ThreadBodyContent, ThroughBytes: len(text)}
+	var got strings.Builder
+	for got.Len() < len(text) {
+		input.OffsetBytes = got.Len()
+		chunk, err := service.ReadItemText(t.Context(), scope, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(chunk)
+		if err != nil || len(raw) > 64<<10 || len(chunk.Text) > 16<<10 || chunk.Text == "" {
+			t.Fatalf("invalid chunk: bytes=%d err=%v", len(raw), err)
+		}
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != text {
+		t.Fatal("text differs")
+	}
+	for _, offset := range []int{-1, 1, len(text) + 1} {
+		input.OffsetBytes = offset
+		if _, err := service.ReadItemText(t.Context(), scope, input); err == nil {
+			t.Fatalf("invalid offset accepted: %d", offset)
+		}
+	}
+	input.OffsetBytes = 0
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := service.ReadItemText(canceled, scope, input); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled read: %v", err)
+	}
 }

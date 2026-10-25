@@ -52,8 +52,8 @@ func indexActivityJSON(ctx context.Context, source string) (map[string]activityF
 }
 
 // Historical summary preparation validates the complete source but retains no
-// hidden detail nodes or text-part hashes. New canonical writes still create
-// the complete locator index in their append transaction.
+// hidden detail nodes or text-part hashes. Large current canonical writes use
+// the same summary shape; explicit detail reads prepare full source locators.
 func indexActivitySummaryJSON(ctx context.Context, source string) (map[string]activityFieldNode, error) {
 	return indexActivityJSONMode(ctx, source, true)
 }

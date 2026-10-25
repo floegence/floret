@@ -30,10 +30,14 @@ func (service *threadRuntimeService) ItemBody(ctx context.Context, scope threadq
 	if err != nil {
 		return ThreadItemBody{}, err
 	}
+	return itemBodyLocator(item)
+}
+
+func itemBodyLocator(item ThreadItem) (ThreadItemBody, error) {
 	var body ThreadItemBody
 
 	switch item.Kind {
-	case ThreadItemAssistant, ThreadItemThinking, ThreadItemUser:
+	case ThreadItemAssistant, ThreadItemThinking, ThreadItemUser, ThreadItemSteering:
 	default:
 		return ThreadItemBody{}, threadquery.ErrRecordUnavailable
 	}
@@ -48,7 +52,7 @@ func (service *threadRuntimeService) ItemBody(ctx context.Context, scope threadq
 		body.Bytes = item.controlTextBytes
 	}
 	if item.CanonicalOrdinal != 0 {
-		if item.Kind == ThreadItemUser {
+		if item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering {
 			body.EntryID = item.ID
 		} else {
 			body.SourceID = item.ID

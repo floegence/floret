@@ -50,6 +50,9 @@ func TestActivityStructureArrayMetadataIsBounded(t *testing.T) {
 				t.Fatal(err)
 			}
 			repo = reopenCurrentStartupRepo(t, backend, false)
+			if err := repo.PrepareDisplayThread(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
 			measured := &activityBudgetBackend{Backend: backend}
 			repo.backend = measured
 			for _, offset := range []int{0, count / 2, count - 1} {
@@ -84,6 +87,9 @@ func TestActivityFieldSuffixMetadataIsBounded(t *testing.T) {
 				t.Fatal(err)
 			}
 			repo = reopenCurrentStartupRepo(t, backend, false)
+			if err := repo.PrepareDisplayThread(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
 			measured := &activityBudgetBackend{Backend: backend}
 			repo.backend = measured
 			part, err := repo.ReadActivityField(t.Context(), ActivityFieldInput{ThreadID: "thread", EntryID: "large-field", Path: fmt.Sprintf("/payload/rows/%d/content", count-1), Offset: size - 4, Limit: 4})

@@ -17,6 +17,19 @@ import (
 	"github.com/floegence/floret/v7/threadquery"
 )
 
+type textRangeCountingRepo struct {
+	sessiontree.Repo
+	pages int
+}
+
+func (r *textRangeCountingRepo) SourceBodyPage(ctx context.Context, options sessiontree.SourceBodyPageOptions) (sessiontree.SourceBodyPage, error) {
+	r.pages++
+	return r.Repo.(sessiontree.SourceBodyPageReader).SourceBodyPage(ctx, options)
+}
+func (r *textRangeCountingRepo) ReadCanonicalBody(ctx context.Context, thread, entry, field string, offset, limit int) (sessiontree.CanonicalBodyChunk, error) {
+	return r.Repo.(sessiontree.CanonicalBodyReader).ReadCanonicalBody(ctx, thread, entry, field, offset, limit)
+}
+
 func TestThreadCanonicalTextResidencyPreservesCompleteAndWindowResults(t *testing.T) {
 	path := t.TempDir() + "/resident.sqlite"
 	open := func() (*Host, *threadRuntimeService) {
@@ -64,7 +77,41 @@ func TestThreadCanonicalTextResidencyPreservesCompleteAndWindowResults(t *testin
 		if len(view.Items) != 3 || view.Items[0].Text != user || view.Items[1].Text != reasoning || sha256.Sum256([]byte(view.Items[2].Text)) != sha256.Sum256([]byte(expected.String())) {
 			t.Fatal("complete adapter lost canonical bytes")
 		}
+		for _, original := range view.Items {
+			body, err := service.ItemBody(t.Context(), scope, ThreadItemBodyInput{ThreadID: id, ItemID: original.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, start := range []int{0, len(original.Text) / 2, len(original.Text) - 11} {
+				for start > 0 && !utf8.RuneStart(original.Text[start]) {
+					start--
+				}
+				chunk, err := service.ReadItemText(t.Context(), scope, ThreadItemTextInput{ThreadID: id, ItemID: original.ID, EntryID: body.EntryID, SourceID: body.SourceID, Field: body.Field, ThroughBytes: body.Bytes, OffsetBytes: start, LimitBytes: 1024})
+				if err != nil || chunk.Text == "" || !strings.HasPrefix(original.Text[start:], chunk.Text) || len(chunk.Text) > 1024 {
+					t.Fatalf("segmented range %s offset=%d: %v", original.ID, start, err)
+				}
+			}
+		}
 		actor := service.runtime(id)
+		// A sequential download crosses 160 source segments without rescanning
+		// the first manifest page for each 1 KiB response.
+		originalRepo := host.store.repo
+		counted := &textRangeCountingRepo{Repo: originalRepo}
+		host.store.repo = counted
+		source := actor.state.view.Items[2]
+		var complete strings.Builder
+		for complete.Len() < source.textBytes {
+			value, err := service.readItemTextRange(t.Context(), id.String(), source, complete.Len(), 1024)
+			if err != nil || value == "" {
+				t.Fatalf("sequential source: %v", err)
+			}
+			complete.WriteString(value)
+		}
+		host.store.repo = originalRepo
+		if complete.String() != expected.String() || counted.pages > 3 {
+			t.Fatalf("sequential manifest reads=%d", counted.pages)
+		}
+
 		for _, item := range actor.state.view.Items {
 			if item.Text != "" || !item.textOmitted || item.textBytes == 0 || len(item.sourceEntryIDs) != 0 {
 				t.Fatal("actor retained canonical text")
@@ -204,6 +251,17 @@ func TestThreadControlBodyKeepsRawExtentAndLegacyPresentation(t *testing.T) {
 			}
 			if len(item.Text) > threadDisplayTextBytes {
 				t.Fatal("preview exceeded budget")
+			}
+			var ranged strings.Builder
+			for ranged.Len() < len(want) {
+				chunk, err := service.ReadItemText(t.Context(), scope, ThreadItemTextInput{ThreadID: id, ItemID: item.ID, SourceID: item.Body.SourceID, Field: item.Body.Field, ThroughBytes: item.Body.Bytes, OffsetBytes: ranged.Len()})
+				if err != nil || chunk.Text == "" || chunk.Bytes != len(want) {
+					t.Fatalf("control range=%+v %v", chunk, err)
+				}
+				ranged.WriteString(chunk.Text)
+			}
+			if ranged.String() != want {
+				t.Fatal("control range changed presentation")
 			}
 			manifest, err := service.BodyManifest(t.Context(), scope, ThreadBodyManifestInput{ThreadID: id, SourceID: item.Body.SourceID, Field: item.Body.Field})
 			if err != nil || len(manifest.Parts) != 1 || manifest.Parts[0].Field != ThreadBodyControlOutput || manifest.Parts[0].Bytes != item.Body.Bytes {

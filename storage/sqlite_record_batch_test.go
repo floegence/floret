@@ -136,3 +136,37 @@ func TestSQLiteWriteBatchPreservesTransactionAndOwnership(t *testing.T) {
 		t.Fatalf("cancelled=%v", err)
 	}
 }
+
+func TestSQLiteIdenticalPutsDoNotUpdateRows(t *testing.T) {
+	backend, err := (sqliteSource{path: t.TempDir() + "/unchanged.sqlite"}).Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if err := backend.Update(t.Context(), func(write spi.WriteTx) error {
+		tx := write.(*sqliteTx)
+		records := []spi.Record{{Key: []byte("key"), Value: []byte("same")}}
+		if err := tx.Put("records", records[0].Key, records[0].Value); err != nil {
+			return err
+		}
+		var before, after int
+		if err := tx.tx.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
+			return err
+		}
+		if err := tx.Put("records", records[0].Key, records[0].Value); err != nil {
+			return err
+		}
+		if err := storagebridge.WriteRecords(tx, "records", records); err != nil {
+			return err
+		}
+		if err := tx.tx.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil {
+			return err
+		}
+		if after != before {
+			t.Fatalf("identical puts modified %d rows", after-before)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

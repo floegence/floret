@@ -151,7 +151,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			}
 			snapshot.RequestID = input.RequestID
 			snapshot.ItemSelection = input.ItemIDs != nil
-			limit = min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1))
+			limit = min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1), windowTextLimit(input))
 			snapshot.Items = make([]ThreadItem, len(items))
 			nextCache := make(map[string]preparedWindowItem, len(items))
 			for i, item := range items {
@@ -342,7 +342,7 @@ func normalizeWindowInput(input ThreadWindowInput) ThreadWindowInput {
 }
 func sameWindowInterval(a, b ThreadWindowInput) bool {
 	a, b = normalizeWindowInput(a), normalizeWindowInput(b)
-	return slices.Equal(a.ItemIDs, b.ItemIDs) && (a.ItemIDs == nil) == (b.ItemIDs == nil) && a.ActivityFields == b.ActivityFields && a.AnchorID == b.AnchorID && a.AnchorOffset == b.AnchorOffset && a.Direction == b.Direction && a.Limit == b.Limit
+	return slices.Equal(a.ItemIDs, b.ItemIDs) && (a.ItemIDs == nil) == (b.ItemIDs == nil) && a.ActivityFields == b.ActivityFields && windowTextLimit(a) == windowTextLimit(b) && a.AnchorID == b.AnchorID && a.AnchorOffset == b.AnchorOffset && a.Direction == b.Direction && a.Limit == b.Limit
 }
 
 // A live body is append-only. A bounded prefix already read from this exact
@@ -375,7 +375,17 @@ func (prepared preparedWindowItem) reuse(current ThreadItem) (ThreadItem, bool) 
 	return value, true
 }
 
+func windowTextLimit(input ThreadWindowInput) int {
+	if input.PreviewBytes > 0 {
+		return input.PreviewBytes
+	}
+	return threadDisplayTextBytes
+}
+
 func validateWindowSelection(input ThreadWindowInput) error {
+	if input.PreviewBytes != 0 && (input.PreviewBytes < 128 || input.PreviewBytes > threadDisplayTextBytes) {
+		return errors.New("invalid thread window preview budget")
+	}
 	if input.AnchorOffset != 0 && (input.AnchorID == "" || input.ItemIDs != nil || input.Direction != ThreadWindowAround) {
 		return errors.New("relative window anchor requires an around identity")
 	}

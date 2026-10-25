@@ -758,3 +758,14 @@ selects an ancestor still on the current path; append preserves that selection,
 while removal from the active path fails with ErrJournalInvariant. Every page
 returns its actual LeafID. Interaction resolution is current at the read
 transaction and does not claim to be the historical resolution at that leaf.
+
+## Host-selected preview and presentation ranges
+
+ThreadWindowInput.PreviewBytes bounds per-item source reads before hydration;
+zero preserves the published default. The optional ThreadItemTextReader resolves
+one active item and returns exact presentation text, including normalized control
+output, with 16 KiB decoded and 64 KiB encoded limits. Every request freshly
+authorizes scope and validates the current source association. A frozen live
+extent cannot grow while being read. Canonical installation requires refreshing
+a live locator. Recent source manifest pages occupy at most 32 in-memory pages
+of 150 locators each, bound to the frozen leaf; there is no durable text cache.

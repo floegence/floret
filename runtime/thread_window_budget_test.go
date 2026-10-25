@@ -106,3 +106,31 @@ func TestThreadWindowEscapedPreviewsFitWithoutRepeatedFullEncoding(t *testing.T)
 		t.Fatal("wire budget", err)
 	}
 }
+
+func TestThreadWindowExplicitPreviewBudgetRetainsExactBodies(t *testing.T) {
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread"}}}
+	for i := range 24 {
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: fmt.Sprint(i), Text: strings.Repeat("中🌸", 10000)})
+	}
+	page, err := actor.windowSnapshot(ThreadWindowInput{Limit: 24, PreviewBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if len(item.Text) > 1024 || !utf8.ValidString(item.Text) || item.Body == nil || item.Body.Bytes != 70000 {
+			t.Fatalf("invalid preview: %+v", item.Body)
+		}
+	}
+	raw, err := json.Marshal(page)
+	if err != nil || len(raw) > 64<<10 {
+		t.Fatalf("wire bytes=%d err=%v", len(raw), err)
+	}
+	for _, limit := range []int{-1, 1, 127, 65537} {
+		if validateWindowSelection(ThreadWindowInput{PreviewBytes: limit}) == nil {
+			t.Fatalf("accepted %d", limit)
+		}
+	}
+	if sameWindowInterval(ThreadWindowInput{Limit: 24, PreviewBytes: 1024}, ThreadWindowInput{Limit: 24, PreviewBytes: 2048}) {
+		t.Fatal("different budgets reused one baseline")
+	}
+}

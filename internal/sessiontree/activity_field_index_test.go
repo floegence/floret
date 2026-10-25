@@ -127,6 +127,9 @@ func TestActivityFieldStorageDoesNotReadSiblingBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 			repo = reopenCurrentStartupRepo(t, backend, false)
+			if err := repo.PrepareDisplayThread(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
 			counted := &currentStartupBackend{Backend: backend}
 			repo.backend = counted
 			for _, row := range []int{0, count / 2, count - 1} {
