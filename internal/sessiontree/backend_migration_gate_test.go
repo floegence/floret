@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -203,6 +204,45 @@ func TestDelegatedInventoryReadUsesPreparedRepositoryForegroundGate(t *testing.T
 	_, err = wrapper.PathMetadataWindow(ctx, PathWindowOptions{ThreadID: "thread", Direction: PathWindowBefore, Limit: 1, YieldToForeground: true})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("delegated inventory bypassed foreground owner: %v", err)
+	}
+}
+
+func TestCurrentSummaryYieldsToSelectedWindowAndResumes(t *testing.T) {
+	_, _, repo := linearPageFixture(t, false)
+	options := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true}
+	fields := func(PathMetadata, bool) []string { return nil }
+	if _, err := repo.ReadWindowProjection(t.Context(), options, fields); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := &BackendRepo{}
+	wrapper.delegate.Store(repo)
+	release, err := repo.BeginForegroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = sync.OnceFunc(release)
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := wrapper.ReadWindowProjection(ctx, options, fields); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("current summary bypassed selected window: %v", err)
+	}
+	// The selected window itself must stay eligible while summaries yield.
+	selected := options
+	selected.SummaryOnly = false
+	if _, err := wrapper.ReadWindowProjection(t.Context(), selected, fields); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := wrapper.ReadWindowProjection(t.Context(), options, fields); done <- err }()
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("summary did not resume after selected window")
 	}
 }
 

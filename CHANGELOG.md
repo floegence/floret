@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve selected-window priority when current sidebar summaries use bounded
+  source reads. Summaries yield through the existing foreground read owner,
+  honor cancellation, and resume after window publication without a new queue.
+
 - Reuse source-validated parent-event recovery coverage in the existing query
   manifest. Prepared restarts check one immutable source per child instead of
   scanning every child journal. Enabled writes advance coverage atomically

@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-25: Preserve selected-window priority for current bounded sidebar
+  summaries through the existing foreground owner; see [thread updates](api/thread-updates.md).
+
 - 2026-10-25: Document transactional parent-recovery source coverage and
   child-history startup regression budgets in
   [history performance](workflows/history-performance.md).

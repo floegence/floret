@@ -362,6 +362,8 @@ Sidebar summaries join this preparation, including when it starts between two
 summary pages. Unrelated summary pages yield to foreground projection scans
 without holding a transaction. The prepared repository owns that scheduling
 boundary; a delegating migration wrapper cannot create a separate priority gate.
+Current source-only summaries retain this same priority at their read boundary;
+switching from paged history to bounded sources does not bypass a selected read.
 
 The storage projection scan marks foreground read interest in the existing
 migration scheduler. It cancels a background attempt at its next transaction

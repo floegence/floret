@@ -34,6 +34,20 @@ type WindowProjection struct {
 }
 
 func (repo *BackendRepo) ReadWindowProjection(ctx context.Context, options ItemMembershipWindowOptions, fields func(PathMetadata, bool) []string) (WindowProjection, error) {
+	if ctx == nil {
+		return WindowProjection{}, spi.ErrInvalidArgument
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.ReadWindowProjection(ctx, options, fields)
+	}
+	// Current sidebar summaries use the same bounded source reader as windows.
+	// Keep the inventory priority of the older paged reader: selected-window
+	// preparation and its body reads finish before another summary starts.
+	if options.SummaryOnly {
+		if err := repo.migrationGate.waitForForegroundReads(ctx); err != nil {
+			return WindowProjection{}, err
+		}
+	}
 	for {
 		result, err := repo.readWindowProjection(ctx, options, fields)
 		var parentSources *parentInteractionPreparationRequired
