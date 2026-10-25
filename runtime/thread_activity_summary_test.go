@@ -321,7 +321,20 @@ func TestActivityFieldGoalCanonicalRestart(t *testing.T) {
 			if _, err = public.Send(t.Context(), SendInput{ThreadID: thread, RequestKey: "send", Input: UserInput{Text: "Complete the goal"}}); err != nil {
 				t.Fatal(err)
 			}
-			waitThreadView(t, public, thread, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				summary, err := public.(ThreadSummaryReader).Summary(t.Context(), thread)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if summary.Activity == ThreadActivityIdle && summary.LastOutcome != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("Goal fixture did not settle")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 		scope := threadquery.Scope{Authority: "goal-reader", ThreadIDs: []identity.ThreadID{thread}}
 		sub, err := public.(ThreadWindowSource).SubscribeWindowUpdates(t.Context(), scope)
