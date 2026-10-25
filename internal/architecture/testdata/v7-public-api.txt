@@ -1270,6 +1270,7 @@ method StreamObservationType.Valid func() bool
 type ThreadActivity string
 const ThreadActivityActive github.com/floegence/floret/v7/runtime.ThreadActivity = "active"
 type ThreadActivityBody struct
+field ThreadActivityBody.DefaultPresentation *github.com/floegence/floret/v7/tools.ActivityPresentation tag="json:\"default_presentation,omitempty\""
 field ThreadActivityBody.EntryID string tag="json:\"entry_id\""
 field ThreadActivityBody.Bytes int tag="json:\"bytes\""
 field ThreadActivityBody.SHA256 string tag="json:\"sha256\""

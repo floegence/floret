@@ -811,7 +811,11 @@ Explicit full API and legacy observers reconstruct before freezing publication.
 Bounded windows return ordered ActivityBodies and use ThreadBodyActivityJSON
 when the combined source exceeds their preview budget. A consumer reads each
 complete field, verifies SHA256, then applies tools.MergeActivityPresentations
-in source order. Active and derived Goal activity retain existing ownership.
+in source order. Empty historical fields carry a detached `DefaultPresentation`
+in the locator, derived by the same canonical owner as complete views. Merge it
+at that position; never reconstruct defaults or request full history in a host.
+Bytes and SHA256 continue to describe the unchanged source field. Active and
+derived Goal activity retain existing ownership.
 
 List and Summary read existing actors through the same accepted-state owner
 before any canonical path. Preview/time positions track explicit item changes;

@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // ThreadBodyField identifies an exact canonical field. Tool arguments and
@@ -88,7 +89,12 @@ func (service *threadRuntimeService) ReadBody(ctx context.Context, scope threadq
 // reads. A missing inline Presentation with non-empty ActivityBodies is an
 // explicit omitted body, never an empty activity or a partial JSON document.
 type ThreadActivityBody struct {
-	EntryID string `json:"entry_id"`
-	Bytes   int    `json:"bytes"`
-	SHA256  string `json:"sha256"`
+	// DefaultPresentation is the canonical historical presentation for an empty
+	// source. Merge it at this position instead of reading an empty JSON field.
+	// It is detached, contains no raw tool input/output, and is absent for
+	// non-empty sources. Bytes and SHA256 still describe the canonical field.
+	DefaultPresentation *tools.ActivityPresentation `json:"default_presentation,omitempty"`
+	EntryID             string                      `json:"entry_id"`
+	Bytes               int                         `json:"bytes"`
+	SHA256              string                      `json:"sha256"`
 }

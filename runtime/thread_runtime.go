@@ -4487,6 +4487,9 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 		out[index].sourceEntryIDs = append([]string(nil), item.sourceEntryIDs...)
 		out[index].activityEntryIDs = append([]string(nil), item.activityEntryIDs...)
 		out[index].ActivityBodies = append([]ThreadActivityBody(nil), item.ActivityBodies...)
+		for sourceIndex := range out[index].ActivityBodies {
+			out[index].ActivityBodies[sourceIndex].DefaultPresentation = tools.CloneActivityPresentation(item.ActivityBodies[sourceIndex].DefaultPresentation)
+		}
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
 		out[index].References = append([]MessageReference(nil), item.References...)
 		out[index].Context = append([]MessageContextItem(nil), item.Context...)

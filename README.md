@@ -1670,7 +1670,10 @@ and its shared reducer. Explicit full views and legacy subscriptions reconstruct
 the exact ordered presentation through the same tools.MergeActivityPresentations
 implementation. Bounded windows inline at most the source preview budget, then
 return ActivityBodies locators and ThreadBodyActivityJSON chunks for complete
-reading. Partial JSON must never be rendered as a complete typed presentation.
+reading. An empty historical source includes its canonical `DefaultPresentation`
+in that source position; merge it in order without reading full history. The
+optional field does not change source bytes, hashes or existing complete views.
+Partial JSON must never be rendered as a complete typed presentation.
 Goal's derived presentation, active tools and provider context retain their
 existing authority. This does not complete the extreme-history qualification.
 

@@ -317,13 +317,21 @@ func (actor *threadRuntimeState) windowActivity(ctx context.Context, item Thread
 	}
 	bodies := make([]ThreadActivityBody, 0, len(item.activityEntryIDs))
 	bytes := 0
-	for _, entryID := range item.activityEntryIDs {
+	for index, entryID := range item.activityEntryIDs {
 		body, err := metadata.CanonicalBodyMetadata(ctx, actor.threadID, entryID, "activity_json")
 		if err != nil {
 			return ThreadItem{}, runtimeHostError(err)
 		}
 		bytes += body.Bytes
-		bodies = append(bodies, ThreadActivityBody{EntryID: entryID, Bytes: body.Bytes, SHA256: body.SHA256})
+		source := ThreadActivityBody{EntryID: entryID, Bytes: body.Bytes, SHA256: body.SHA256}
+		if body.Bytes == 0 {
+			status := observation.ActivityStatusRunning
+			if index == len(item.activityEntryIDs)-1 {
+				status = item.Activity.Status
+			}
+			source.DefaultPresentation = historicalActivityPresentation(item.Activity.ToolName, status)
+		}
+		bodies = append(bodies, source)
 	}
 	if bytes <= limit {
 		return actor.service.completeItemActivity(ctx, actor.threadID, item)

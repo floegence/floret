@@ -30,6 +30,25 @@ import (
 	"github.com/floegence/floret/v7/tools/websearch"
 )
 
+func TestPublishedEmptyActivitySourceDefault(t *testing.T) {
+	defaultValue := &tools.ActivityPresentation{Label: "Inspect", Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "running"}}
+	source := runtime.ThreadActivityBody{EntryID: "historical-call", DefaultPresentation: defaultValue}
+	raw, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded runtime.ThreadActivityBody
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	result := &tools.ActivityPresentation{Label: "Inspect", Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "success", RowsProvided: true}}
+	got, _ := json.Marshal(tools.MergeActivityPresentations(decoded.DefaultPresentation, result))
+	want, _ := json.Marshal(tools.MergeActivityPresentations(defaultValue, result))
+	if decoded.Bytes != 0 || decoded.EntryID != source.EntryID || string(got) != string(want) {
+		t.Fatal("empty activity source default changed")
+	}
+}
+
 func TestPublishedNativeThreadUpdateSource(t *testing.T) {
 	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
 	if err != nil {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add optional `ThreadActivityBody.DefaultPresentation` for empty historical
+  activity sources. Preserve ordered canonical merge semantics without requiring
+  hosts to load a complete thread or synthesize engine-owned defaults. Source
+  bytes, hashes, schema and complete-view contracts remain unchanged.
+
 - Preserve selected-window priority when current sidebar summaries use bounded
   source reads. Summaries yield through the existing foreground read owner,
   honor cancellation, and resume after window publication without a new queue.

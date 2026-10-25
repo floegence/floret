@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-25: Document canonical defaults in empty activity body locators and
+  their ordered merge in [runtime](api/runtime.md).
+
 - 2026-10-25: Preserve selected-window priority for current bounded sidebar
   summaries through the existing foreground owner; see [thread updates](api/thread-updates.md).
 
