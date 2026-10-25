@@ -1673,7 +1673,7 @@ func TestPublishedDisplayPreparationDoesNotActivateExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{HostProfileRef: "test", RequestKey: "display-ready"})
+	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "display-ready"})
 	if err != nil {
 		t.Fatal(err)
 	}
