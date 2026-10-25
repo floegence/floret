@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retain canonical Goal disposition in activity summaries while deferring Goal
+  text and review evidence. Preserve complete view and restart semantics.
+
 - Add optional `ThreadActivityBody.DefaultPresentation` for empty historical
   activity sources. Preserve ordered canonical merge semantics without requiring
   hosts to load a complete thread or synthesize engine-owned defaults. Source

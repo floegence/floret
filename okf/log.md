@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-25: Retain canonical Goal disposition in field-only summaries while
+  deferring text and review evidence; see [thread updates](api/thread-updates.md).
+
 - 2026-10-25: Document canonical defaults in empty activity body locators and
   their ordered merge in [runtime](api/runtime.md).
 

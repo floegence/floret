@@ -1675,7 +1675,8 @@ in that source position; merge it in order without reading full history. The
 optional field does not change source bytes, hashes or existing complete views.
 Partial JSON must never be rendered as a complete typed presentation.
 Goal's derived presentation, active tools and provider context retain their
-existing authority. This does not complete the extreme-history qualification.
+existing authority. Field-only summaries retain Goal operation, applied status,
+version and outcome while deferring Goal text and review evidence. This does not complete the extreme-history qualification.
 
 Custom storage transactions may implement storage/spi.BoundedRecordReader to
 provide RecordSize and ReadRecordRange for bounded historical snapshot reads.

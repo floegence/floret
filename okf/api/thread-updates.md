@@ -517,6 +517,9 @@ instead of presentation bodies. The default remains the published complete/
 preview behavior. The same option is retained by the subscription during item
 replacement and bounded-window replacement. ThreadItem.ActivitySummary contains
 label, description, renderer, action, error presence and effect uncertainty.
+For derived Goal activities, Values["/payload/goal"] contains operation, applied,
+version and optional outcome from the canonical reducer; text and review
+evidence remain deferred fields, including after restart.
 Its Fields contains exact root and immediate payload shapes, collection counts,
 scalar metadata and canonical source identity selected in the same transaction.
 These descriptors never contain collection members or hidden text. A string

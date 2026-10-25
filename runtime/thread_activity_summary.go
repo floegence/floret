@@ -18,6 +18,8 @@ import (
 // with ActivityStructure, including owner-generated historical defaults.
 type ThreadActivitySummary struct {
 	// Values contains small typed attributes. Unread strings remain in Fields.
+	// /payload/goal contains operation, applied, version and optional outcome;
+	// Goal text and review evidence remain deferred fields.
 	Values map[string]json.RawMessage `json:"values,omitempty"`
 	// Version is an activity-local refresh hint, never read authority.
 	Version         string                 `json:"version,omitempty"`
@@ -34,6 +36,18 @@ type ThreadActivitySummary struct {
 
 func residentActivitySummary(p *tools.ActivityPresentation) ThreadActivitySummary {
 	out := ThreadActivitySummary{Values: activityfields.SummaryValues(p), Label: p.Label, Description: p.Description, Renderer: p.Renderer}
+	// Goal presentation is derived by the canonical Goal reducer, rather than
+	// ordinary tool call/result fields. Keep its disposition visible while the
+	// potentially large text and review evidence remain deferred sources.
+	if payload, ok := p.Payload.(tools.StructuredActivityPayload); ok && payload.Goal != nil {
+		goal := payload.Goal
+		out.Values["/payload/goal"], _ = json.Marshal(struct {
+			Operation string `json:"operation"`
+			Applied   bool   `json:"applied"`
+			Version   int64  `json:"version"`
+			Outcome   string `json:"outcome,omitempty"`
+		}{goal.Operation, goal.Applied, goal.Version, goal.Outcome})
+	}
 	for _, path := range []string{"", "/payload"} {
 		page, err := activityfields.Structure(p, path, 0, 64)
 		if err != nil {

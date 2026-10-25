@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
@@ -88,6 +90,24 @@ func TestActivityFieldWindowRetainsSafetyWithoutHiddenBodies(t *testing.T) {
 				t.Fatalf("field option mutated canonical/full view: %v", err)
 			}
 		})
+	}
+}
+
+func TestActivityFieldSummaryRetainsGoalDispositionWithoutText(t *testing.T) {
+	presentation := &tools.ActivityPresentation{Label: "Goal", Renderer: tools.ActivityRendererStructured,
+		Payload: tools.StructuredActivityPayload{Goal: &tools.GoalActivity{Operation: "review", Version: 3, Outcome: "continue",
+			Text: strings.Repeat("hidden goal", 10000), Evidence: strings.Repeat("hidden evidence", 10000)}}}
+	got := residentActivitySummary(presentation)
+	var state map[string]any
+	if err := json.Unmarshal(got.Values["/payload/goal"], &state); err != nil {
+		t.Fatalf("Goal disposition missing: %v", err)
+	}
+	if !reflect.DeepEqual(state, map[string]any{"operation": "review", "applied": false, "version": float64(3), "outcome": "continue"}) {
+		t.Fatalf("Goal disposition differs: %v", state)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil || len(raw) > 2048 || strings.Contains(string(raw), "hidden") {
+		t.Fatalf("Goal summary exposes text: bytes=%d err=%v", len(raw), err)
 	}
 }
 
@@ -263,5 +283,116 @@ func TestActivitySummaryVersionChangesOnlyWithItsActivity(t *testing.T) {
 	}
 	if actor.state.view.Items[index].activitySummary != nil {
 		t.Fatal("live replacement retained an earlier canonical summary")
+	}
+}
+
+func TestActivityFieldGoalCanonicalRestart(t *testing.T) {
+	path := t.TempDir() + "/goal.sqlite"
+	goalText := strings.Repeat("Retain the full canonical goal. ", 3000)
+	evidence := strings.Repeat("Verified canonical result. ", 2000)
+	args, err := json.Marshal(map[string]any{"operation": "review", "expected_version": 1, "outcome": "completed", "evidence": evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "goal-fields", StateCompatibilityKey: "test:goal-fields"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, goalCall("review", string(args)), parentEventDone())
+	agent, err := testAgent(gateway, WithAgentGoals())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread identity.ThreadID
+	for restart := range 2 {
+		host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restart == 0 {
+			created, err := public.Create(t.Context(), CreateThreadInput{RequestKey: "goal-fields"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			thread = created.ThreadID
+			if _, err = public.(ThreadGoalController).SetGoal(t.Context(), SetGoalInput{ThreadID: thread, RequestKey: "goal", Text: goalText}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = public.Send(t.Context(), SendInput{ThreadID: thread, RequestKey: "send", Input: UserInput{Text: "Complete the goal"}}); err != nil {
+				t.Fatal(err)
+			}
+			waitThreadView(t, public, thread, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+		}
+		scope := threadquery.Scope{Authority: "goal-reader", ThreadIDs: []identity.ThreadID{thread}}
+		sub, err := public.(ThreadWindowSource).SubscribeWindowUpdates(t.Context(), scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: thread, ActivityFields: true}); err != nil {
+			t.Fatal(err)
+		}
+		update := nextUpdate(t, sub)
+		for update.Window == nil {
+			update = nextUpdate(t, sub)
+		}
+		var item ThreadItem
+		for _, candidate := range update.Window.Value.Items {
+			if candidate.Activity != nil && candidate.Activity.ToolName == "goal" {
+				item = candidate
+			}
+		}
+		sub.Close()
+		if item.ID == "" || item.ActivitySummary == nil || item.Activity.Presentation != nil {
+			t.Fatalf("missing Goal summary on restart %d", restart)
+		}
+		var state map[string]any
+		if err = json.Unmarshal(item.ActivitySummary.Values["/payload/goal"], &state); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(state, map[string]any{"operation": "review", "applied": false, "version": float64(1), "outcome": "completed"}) {
+			t.Fatalf("incorrect disposition: %v", state)
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil || len(encoded) > 8192 || strings.Contains(string(encoded), "Retain the full") || strings.Contains(string(encoded), "Verified canonical") {
+			t.Fatalf("hidden Goal text transported: bytes=%d err=%v", len(encoded), err)
+		}
+		value, err := public.(ThreadActivityValueReader).ReadActivityValue(t.Context(), scope, ThreadActivityValueInput{ThreadID: thread, ItemID: item.ID, Path: "/payload/goal", MaximumBytes: 1024, MaximumNodes: 16, Fields: []string{"operation", "applied", "version", "outcome"}, TextFields: []string{"text", "evidence"}})
+		if err != nil || len(value.TextFields) != 2 {
+			t.Fatalf("missing frozen Goal fields: %+v %v", value, err)
+		}
+		for _, field := range value.TextFields {
+			var text strings.Builder
+			input := ThreadActivityFieldInput{ThreadID: thread, ItemID: item.ID, Path: field.Path, SourceID: field.SourceID, RunID: field.RunID, EntryID: field.EntryID, SourceSHA256: field.SourceSHA256, SHA256: field.SHA256, OffsetBytes: field.SourceOffsetBytes}
+			if field.SourcePath != "" {
+				input.Path = field.SourcePath
+			}
+			for {
+				part, err := public.(ThreadActivityFieldReader).ReadActivityField(t.Context(), scope, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				text.WriteString(part.Text)
+				if part.OffsetBytes+len(part.Text) >= part.Bytes {
+					break
+				}
+				if len(part.Text) == 0 {
+					t.Fatal("field did not advance")
+				}
+				input.OffsetBytes = part.OffsetBytes + len(part.Text)
+			}
+			want := goalText
+			if strings.HasSuffix(field.Path, "/evidence") {
+				want = evidence
+			}
+			if text.String() != want {
+				t.Fatalf("Goal body changed: path=%s got=%d want=%d", field.Path, text.Len(), len(want))
+			}
+		}
+		if err = host.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(gateway.Requests()) != 2 {
+		t.Fatalf("restart executed provider: %d", len(gateway.Requests()))
 	}
 }
