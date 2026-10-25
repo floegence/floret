@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-25: Document transactional parent-recovery source coverage and
+  child-history startup regression budgets in
+  [history performance](workflows/history-performance.md).
+
 - 2026-10-25: Document automatic one-time browsing preparation, separate display
   readiness and exact lifecycle summary sources in [runtime](api/runtime.md).
 

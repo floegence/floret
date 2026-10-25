@@ -100,6 +100,11 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 			if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "child", ParentThreadID: "thread", TaskName: "child", HostProfileRef: "test"}); err != nil {
 				t.Fatal(err)
 			}
+			for i := range count {
+				if _, err := memory.Append(t.Context(), Entry{ThreadID: "child", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained child history"}}, AppendOptions{ID: fmt.Sprint("child-", i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			base := newMigrationTestBackend()
 			if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
 				return saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format)
@@ -118,9 +123,9 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 				measured := &currentStartupBackend{Backend: base}
 				repo = reopenCurrentStartupRepo(t, measured, true)
 				drainCurrentStartup(t, repo)
-				// The child has one branch-boundary record. Parent-event recovery
-				// checks child metadata, never the parent's compacted history.
-				if measured.bodies != 0 || measured.journalRows != 1 || measured.writes != 0 || measured.gets > 90 {
+				// Recovery reads the child's final covered source directly, regardless
+				// of either journal's length. Startup's one-row boundary check remains.
+				if measured.bodies != 0 || measured.journalRows != 1 || measured.writes != 0 || measured.gets > 120 {
 					t.Fatalf("restart read %d bodies, %d journal rows, %d records; wrote %d transactions", measured.bodies, measured.journalRows, measured.gets, measured.writes)
 				}
 				if len(repo.verifiedThreadLeaves) != 0 {
@@ -294,10 +299,22 @@ func TestCurrentStartupSkipsOrdinaryToolResultRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainCurrentStartup(t, repo)
+	canonical := cloneMigrationRecords(base.records)[backendDomainV32Namespace]
 	measured := &currentStartupBackend{Backend: base}
 	repo = reopenCurrentStartupRepo(t, measured, true)
 	drainCurrentStartup(t, repo)
-	if measured.turnScans != 0 || measured.bodies != 0 || measured.writes != 0 {
+	// First opt-in records the verified source prefix without changing any
+	// canonical entry. Later starts reuse it without writes or turn scans.
+	if measured.turnScans != 0 || measured.bodies != 0 || measured.writes != 1 {
 		t.Fatalf("ordinary result recovery: turns=%d bodies=%d writes=%d", measured.turnScans, measured.bodies, measured.writes)
+	}
+	if !equalMigrationRecords(map[string]map[string][]byte{backendDomainV32Namespace: canonical}, map[string]map[string][]byte{backendDomainV32Namespace: base.records[backendDomainV32Namespace]}) {
+		t.Fatal("ordinary result recovery changed canonical records")
+	}
+	measured = &currentStartupBackend{Backend: base}
+	repo = reopenCurrentStartupRepo(t, measured, true)
+	drainCurrentStartup(t, repo)
+	if measured.turnScans != 0 || measured.bodies != 0 || measured.writes != 0 || measured.journalRows > 1 {
+		t.Fatalf("prepared ordinary result recovery revisited history: %+v", measured)
 	}
 }

@@ -200,5 +200,13 @@ func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadM
 	if err := putQueryManifest(tx, meta.ID, ""); err != nil {
 		return nil, err
 	}
+	// An empty journal has no unresolved parent sources. Enabled writes extend
+	// this checked prefix atomically; disabled writes or copied fork history
+	// leave it behind for the ordinary recovery owner.
+	if meta.ParentThreadID != "" {
+		if err := writeParentRecoverySource(tx, meta.ID, 0); err != nil {
+			return nil, err
+		}
+	}
 	return state, nil
 }

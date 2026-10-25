@@ -151,17 +151,24 @@ actor metadata residency or complete production-stack latency.
     GOWORK=off go test ./internal/sessiontree -run 'TestCurrentStartup(Reuses|Repairs|Preserves|Recovers)' -count=1 -v
     GOWORK=off go test ./runtime -run TestOpenCurrentStoreCompletesWithoutHistoricalBodyReads -count=1 -v
 
-Normal current-store startup now checks durable readiness anchors. In the
-compacted root plus child regression, 16 and 512 tail messages both require
-20 record gets, one child metadata row, no body reads and no writes. Before
-the change, those fixtures required 658/9,642 gets and 88/2,072 body reads.
+Normal current-store startup checks durable readiness anchors. The strengthened
+compacted-root regression includes 16 or 512 messages in both root and child.
+Both sizes require 91 record gets, one startup boundary row, no body reads and
+no writes. Parent recovery validates its last immutable source directly instead
+of scanning child history. The earlier root-only fixture required 20 gets;
+before readiness reuse it required 658/9,642 gets and 88/2,072 body reads.
 A complete SQLite Host restart, including its background worker, reads 16
 records (about 4.2 KiB) for both 8 and 128 roughly 52 KiB messages. These are
 source-access regression budgets, not a production wall-clock or RSS claim.
 
-Missing/stale indexes and migration still require complete validation. Parent
-event recovery still scans child metadata; publishing a missing receipt checks
-the complete source closure. Explicit inspection and selected-thread preparation
+Missing/stale indexes and migration still require complete validation. The
+existing query manifest retains a journal-wide checked prefix for parent-event
+recovery, including inactive branches. Enabled canonical writes advance it with
+source facts and receipts in one transaction. Disabled writes leave it stale;
+forks never inherit source-thread coverage. Missing coverage requires the normal
+unresolved-interaction scan, and publishing a missing receipt still checks the
+complete source closure. Error, cancellation, panic and source-drift regressions
+verify rollback and idempotence. Explicit inspection and selected-thread preparation
 remain proportional to the selected history, including compaction checks. No
 whole-store constant-time or bounded active-actor claim follows from this change.
 

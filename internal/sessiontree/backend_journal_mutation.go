@@ -178,5 +178,12 @@ func (mutation *canonicalJournalMutation) publishParentEvents() error {
 			mutation.parentID = mutation.meta.ParentThreadID
 		}
 	}
+	if mutation.meta.ParentThreadID != "" && len(mutation.entries) > 0 {
+		count, err := readJournalCount(mutation.tx, mutation.meta.ID)
+		if err != nil {
+			return err
+		}
+		return advanceParentRecoverySource(mutation.tx, mutation.meta.ID, count-len(mutation.entries), count)
+	}
 	return nil
 }

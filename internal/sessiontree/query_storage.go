@@ -463,10 +463,21 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 type queryManifest struct {
 	Version int
 	Leaf    string
+	// Journal coverage checked with parent events enabled, not lifecycle state.
+	ParentRecovery *parentRecoverySource `json:"parent_recovery,omitempty"`
 }
 
 func putQueryManifest(tx spi.WriteTx, id, leaf string) error {
-	raw, err := json.Marshal(queryManifest{Version: 3, Leaf: leaf})
+	manifest := queryManifest{Version: 3, Leaf: leaf}
+	if previous, err := tx.Get(queryManifestNamespace, []byte(id)); err == nil {
+		var stored queryManifest
+		if json.Unmarshal(previous, &stored) == nil && stored.Version == 3 {
+			manifest.ParentRecovery = stored.ParentRecovery
+		}
+	} else if !errors.Is(err, spi.ErrNotFound) {
+		return err
+	}
+	raw, err := json.Marshal(manifest)
 	if err != nil {
 		return err
 	}

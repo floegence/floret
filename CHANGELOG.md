@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reuse source-validated parent-event recovery coverage in the existing query
+  manifest. Prepared restarts check one immutable source per child instead of
+  scanning every child journal. Enabled writes advance coverage atomically
+  with source facts and receipts; disabled writes and copied forks retain the
+  existing unresolved-interaction recovery path. No canonical schema changes.
+
 - Automatically prepare missing browsing sources in the Host-owned upgrade
   worker, including retained branches. Resume bounded metadata batches without
   rewriting canonical history; prepared restart checks readiness anchors only.
