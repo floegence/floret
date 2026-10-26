@@ -20,6 +20,10 @@ type ThreadActivitySummary struct {
 	// Values contains small typed attributes. Unread strings remain in Fields.
 	// /payload/goal contains operation, applied, version and optional outcome;
 	// Goal text and review evidence remain deferred fields.
+	// A single mutation may include /payload/mutations/0/display_name and
+	// /payload/mutations/0/change_type (up to 2048 bytes each), read from at most
+	// 16 KiB of its canonical array prefix. Names are display facts, not targets.
+	// Missing values do not assert absence; mutation bodies remain deferred.
 	Values map[string]json.RawMessage `json:"values,omitempty"`
 	// Version is an activity-local refresh hint, never read authority.
 	Version         string                 `json:"version,omitempty"`

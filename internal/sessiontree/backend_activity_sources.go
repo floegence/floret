@@ -489,6 +489,22 @@ func readItemActivitySummary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 		// Acquire strings separately when their exact path becomes visible.
 		field.SHA256, field.Text = "", ""
 		result.Fields = append(result.Fields, field)
+		if path == "/payload/mutations" && field.Kind == "array" && field.Count == 1 {
+			loc := fields[path]
+			if loc.inline == "" && loc.literal == nil {
+				node, err := readActivityFieldNodeMode(tx, loc.ref, loc.path, true)
+				if err != nil {
+					return result, err
+				}
+				prefix, err := readCanonicalBodyBytes(ctx, tx, loc.ref, node.Offset, min(node.EncodedBytes, activityfields.MutationSummaryBytes))
+				if err != nil {
+					return result, err
+				}
+				for key, value := range activityfields.MutationSummaryValues(prefix) {
+					result.Values[key] = value
+				}
+			}
+		}
 		if path == "/chips" || path == "/target_refs" {
 			loc := fields[path]
 			if loc.inline != "" {

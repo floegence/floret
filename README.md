@@ -1614,6 +1614,13 @@ must preserve significant indentation and choose formatting themselves.
 
 Window consumers may opt into `ThreadWindowInput.ActivityFields` to receive typed activity summaries and exact immediate field shapes/counts without hidden presentation bodies. Field shapes distinguish absent details from unread content; acquire string sources at their exact path before reading. Read visible fields through `ThreadActivityStructureReader` and `ThreadActivityFieldReader`. The default window and complete View contracts retain their existing behavior.
 
+For a single mutation, summary `Values` may include the exact canonical paths
+`/payload/mutations/0/display_name` and `/payload/mutations/0/change_type`, at
+most 2 KiB each. Canonical reads inspect at most 16 KiB of the existing array
+prefix without preparing detail indexes; multi-file summaries use the array
+count. Missing values mean unread or unavailable, never absent. Display names
+do not authorize navigation. Canonical bytes and storage formats are unchanged.
+
 Explicit windows may set `ThreadWindowInput.IncludeSummary` to receive
 `ThreadWindowSnapshot.Summary` with the accepted baseline. Activity facts and
 preview share the window's actor snapshot. Hosts use that summary for its read

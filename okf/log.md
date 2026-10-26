@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-26: Document bounded single-mutation title values in Activity
+  summaries, using existing canonical locations without detail preparation;
+  see [runtime](api/runtime.md).
+
 - 2026-10-25: Retain canonical Goal disposition in field-only summaries while
   deferring text and review evidence; see [thread updates](api/thread-updates.md).
 

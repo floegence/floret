@@ -260,6 +260,31 @@ func TestActivitySummaryShapeMatchesResidentAndCanonical(t *testing.T) {
 	}
 }
 
+func TestMutationActivitySummaryMatchesResidentAndCanonical(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "mutation-summary"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	mutations := tools.FileMutationActivityPayloads{{DisplayName: "panda-bicycle.html", ChangeType: "delete", UnifiedDiff: strings.Repeat("hidden", 1000)}}
+	presentation := &tools.ActivityPresentation{Label: "apply_patch", Renderer: tools.ActivityRendererPatch, Payload: tools.PatchActivityPayload{FilesChanged: 1, Additions: 13, Deletions: 11, Mutations: &mutations}}
+	if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{ID: "patch", ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "apply_patch", ToolCallID: "patch", Activity: presentation}}, sessiontree.AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	view, _, err := service.loadSourceWindow(t.Context(), ThreadWindowInput{ThreadID: id, Limit: 1, ActivityFields: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := view.Items[0].activitySummary
+	if summary == nil || !reflect.DeepEqual(summary.Values, residentActivitySummary(presentation).Values) {
+		t.Fatalf("canonical title mismatch: %+v", summary)
+	}
+	if string(summary.Values["/payload/mutations/0/display_name"]) != `"panda-bicycle.html"` {
+		t.Fatal("filename missing")
+	}
+}
+
 func TestActivitySummaryVersionChangesOnlyWithItsActivity(t *testing.T) {
 	_, actor, _, subscription := nativeUpdatesFixture(t)
 	subscription.Close()

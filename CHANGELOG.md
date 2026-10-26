@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retain bounded single-file mutation names and change types in Activity
+  summaries using existing canonical array locations. Collapsed patch titles
+  require no detail preparation, storage migration or new index writes.
+
 - Add optional item presentation range reads and per-item window preview budgets.
   Preserve exact text, source identity, authorization and encoded response bounds.
 - Defer large activity detail indexes to explicit field reads; ordinary startup

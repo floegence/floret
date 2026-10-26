@@ -815,6 +815,13 @@ at that position; never reconstruct defaults or request full history in a host.
 Bytes and SHA256 continue to describe the unchanged source field. Active and
 derived Goal activity retain existing ownership.
 
+Single-mutation Activity summaries carry bounded display name/change type values
+under their canonical paths. Existing array locators bound reads to a 16 KiB
+prefix, independent of diff length; multi-file summaries use the array count.
+No detail preparation or additional durable index is needed. Omission does not
+assert absence, and names grant no navigation authority. See the
+[bounded-read regression](../../internal/sessiontree/activity_mutation_summary_test.go).
+
 List and Summary read existing actors through the same accepted-state owner
 before any canonical path. Preview/time positions track explicit item changes;
 only reorder/removal boundaries rebuild them. Summary reads visit pending input
