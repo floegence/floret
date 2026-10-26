@@ -65,53 +65,8 @@ func visitCanonicalPathMetadataAfter(ctx context.Context, tx spi.ReadTx, threadI
 	const windowSize = 128
 	for first := afterDepth + 1; first <= leaf.Depth; first += windowSize {
 		last := min(first+windowSize-1, leaf.Depth)
-		node, err := entryAncestor(ctx, tx, threadID, leaf, last)
-		if err != nil {
+		if err := visitCanonicalMetadataInterval(ctx, tx, threadID, leaf, first, last, visit); err != nil {
 			return err
-		}
-		window := make([]Entry, int(last-first+1))
-		if node.Depth == int64(node.Ordinal)+1 {
-			index := len(window) - 1
-			if _, err := visitLinearCanonicalPage(ctx, tx, ThreadMeta{ID: threadID}, node, len(window), func(entry Entry) error {
-				window[index] = entry
-				index--
-				return nil
-			}); err != nil {
-				return err
-			}
-			for _, entry := range window {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if err := visit(entry); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		for i := len(window) - 1; i >= 0; i-- {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			window[i], err = readLocatedEntry(tx, backendDomainV32Format, threadID, node)
-			if err != nil {
-				return err
-			}
-			if i != 0 {
-				parent, err := readEntryLocator(tx, threadID, node.Parent)
-				if err != nil || parent.Depth+1 != node.Depth || parent.Ordinal >= node.Ordinal {
-					return errors.Join(ErrAuthorityCorrupt, err)
-				}
-				node = parent
-			}
-		}
-		for _, entry := range window {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := visit(entry); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -295,4 +250,58 @@ func validateCanonicalParentEvent(ctx context.Context, tx spi.ReadTx, meta Threa
 func validateCanonicalParentAdmissions(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) error {
 	projection := parentEventProjectionState{positions: map[string]int{}}
 	return visitCanonicalPathMetadata(ctx, tx, meta.ID, meta.LeafID, projection.observe)
+}
+
+// An interval uses one frozen leaf and validates all source links. Callers may
+// release their backend snapshot between intervals because sources are immutable.
+func visitCanonicalMetadataInterval(ctx context.Context, tx spi.ReadTx, threadID string, leaf entryLocator, first, last int64, visit func(Entry) error) error {
+	node, err := entryAncestor(ctx, tx, threadID, leaf, last)
+	if err != nil {
+		return err
+	}
+	window := make([]Entry, int(last-first+1))
+	if node.Depth == int64(node.Ordinal)+1 {
+		index := len(window) - 1
+		if _, err := visitLinearCanonicalPage(ctx, tx, ThreadMeta{ID: threadID}, node, len(window), func(entry Entry) error {
+			window[index] = entry
+			index--
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, entry := range window {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for i := len(window) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		window[i], err = readLocatedEntry(tx, backendDomainV32Format, threadID, node)
+		if err != nil {
+			return err
+		}
+		if i != 0 {
+			parent, err := readEntryLocator(tx, threadID, node.Parent)
+			if err != nil || parent.Depth+1 != node.Depth || parent.Ordinal >= node.Ordinal {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			node = parent
+		}
+	}
+	for _, entry := range window {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := visit(entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }

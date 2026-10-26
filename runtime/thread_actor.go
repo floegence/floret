@@ -143,6 +143,7 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.cancel = input.cancel
 	runtime.state.cancelOwner = "run:" + input.runID.String()
 	runtime.state.executionDone = input.executionDone
+	runtime.state.hydrationStarted = true
 	runtime.state.view.Activity = ThreadActivityActive
 	runtime.state.view.TurnKind = input.turnKind
 	runtime.state.view.TurnID = input.turnID

@@ -788,6 +788,12 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			}
 			continue
 		}
+		if actor.sourceWindow != nil {
+			// Legacy subscribers require complete snapshots. The shared
+			// preparation owner publishes after promotion, never a sparse view.
+			go service.prepareActiveThreadWindow(update.ThreadID, actor)
+			continue
+		}
 		if !fullViewReady {
 			fullView, fullViewErr = service.completeViewResult(context.Background(), cloneThreadRuntimeView(actor.state.view), nil)
 			fullViewReady = true

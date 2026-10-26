@@ -132,3 +132,59 @@ func (service *threadRuntimeService) sourceWindowInterests(id identity.ThreadID)
 	}
 	return result
 }
+
+// advanceAdmission reads the admitted tail and current facts while preserving
+// the accepted display interval. Ordinary append never replaces a subscriber's
+// window; complete execution preparation promotes this same actor later.
+func (service *threadRuntimeService) advanceAdmission(ctx context.Context, actor *threadRuntimeState) error {
+	if actor.sourceWindow == nil {
+		return service.advanceCanonical(ctx, actor)
+	}
+	input := ThreadWindowInput{ThreadID: identity.ThreadID(actor.threadID), Limit: 1, ActivityFields: true}
+	canonical, page, err := service.loadSourceWindow(ctx, input)
+	if err != nil {
+		return err
+	}
+	page.input = input
+	service.installSourceTail(actor, canonical, page)
+	return nil
+}
+
+// installSourceTail preserves mounted history while advancing current facts.
+// Admission and cancellation before execution share this bounded transition.
+func (service *threadRuntimeService) installSourceTail(actor *threadRuntimeState, canonical canonicalThreadView, page threadSourceProjection) {
+	items := append([]ThreadItem(nil), actor.state.view.Items...)
+	for _, item := range canonical.Items {
+		found := false
+		for i := range items {
+			if items[i].ID == item.ID {
+				items[i], found = item, true
+				break
+			}
+		}
+		if !found {
+			items = append(items, item)
+		}
+	}
+	turns := append([]ThreadTurn(nil), actor.state.view.Turns...)
+	for _, turn := range canonical.Turns {
+		found := false
+		for i := range turns {
+			if turns[i].TurnID == turn.TurnID {
+				turns[i], found = turn, true
+				break
+			}
+		}
+		if !found {
+			turns = append(turns, turn)
+		}
+	}
+	canonical.Items, canonical.Turns = items, turns
+	canonical.ViewVersion = actor.state.view.ViewVersion + 1
+	canonical.RunProgress = actor.state.view.RunProgress
+	actor.state.view = canonical.ThreadView
+	actor.sourceWindow = &page
+	actor.interactionIndex = nil
+	actor.invalidateItemIndex()
+	actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
+}

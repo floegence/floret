@@ -65,7 +65,8 @@ func TestCanonicalQueryContinuationDoesNotRetainOversizedLifecycle(t *testing.T)
 // Trigger only after a cold reconstruction releases an immutable entry read.
 type coldQueryReadBackend struct {
 	spi.Backend
-	onRead func()
+	onRead           func()
+	historySnapshots int
 }
 
 type coldQueryReadTx struct {
@@ -95,6 +96,9 @@ func (backend *coldQueryReadBackend) View(ctx context.Context, read func(spi.Rea
 		history = observed.history
 		return err
 	})
+	if history {
+		backend.historySnapshots++
+	}
 	if history && backend.onRead != nil {
 		onRead := backend.onRead
 		backend.onRead = nil
@@ -234,4 +238,29 @@ type countQueryProjectionTx struct {
 func (tx *countQueryProjectionTx) Get(namespace string, key []byte) ([]byte, error) {
 	tx.reads++
 	return tx.ReadTx.Get(namespace, key)
+}
+
+func TestCanonicalColdContinuationUsesBoundedReadSnapshots(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "history"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 512 {
+		if _, err := memory.Append(t.Context(), Entry{ThreadID: "history", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained"}}, AppendOptions{ID: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	repo.queryThreads = nil
+	observed := &coldQueryReadBackend{Backend: base}
+	repo.backend = observed
+	if _, err := repo.loadQueryContinuation(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	if observed.historySnapshots != 4 {
+		t.Fatalf("512-entry reconstruction used %d snapshots, want four bounded pages", observed.historySnapshots)
+	}
 }

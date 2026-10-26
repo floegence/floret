@@ -147,6 +147,19 @@ An omitted `ViewVersion` means no actor baseline was observed. A later read fail
 must not turn success into a repeated command. Existing complete-view APIs remain
 available for consumers explicitly requesting the complete result.
 
+Cold SendAck admits through current canonical facts and a one-item tail. The
+existing actor retains browsing interests and appends the request-key user row
+without replacing accepted history. Complete execution preparation runs before
+AgentFactory/provider dispatch; replay and queued acknowledgment do not join it.
+Cancellation during preparation settles through a bounded canonical tail. Legacy
+Subscribe waits for complete actor promotion before publishing a full snapshot.
+No alternate actor, durable receipt, schema, or index is introduced. Cold query
+continuation reconstruction still reads historical metadata, but uses at most
+128 source entries per verified read snapshot and checks the pinned authority
+again before mutation, allowing other reads between pages. This is not constant
+time admission. See [admission regressions](../../runtime/thread_admission_window_test.go)
+and [cold query tests](../../internal/sessiontree/backend_query_residency_test.go).
+
 Native observation queues enforce both 64 batches and 1MiB of encoded payload.
 Overflow, cancellation, invalidation and Close release pending payloads. A consumer
 reestablishes a baseline after overflow; canonical execution does not wait for it.

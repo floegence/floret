@@ -12,8 +12,8 @@ import (
 const queryContinuationCacheLimit = 32
 const queryContinuationMaxBytes = 128 << 10
 
-// A continuation is disposable in-process state. Cold reconstruction reads one
-// canonical record at a time outside the repository lock and write transaction.
+// A continuation is disposable in-process state. Cold reconstruction reads
+// bounded canonical intervals outside the repository lock and write transaction.
 // The mutation checks the pinned metadata and manifest before using the result.
 type canonicalQueryContinuation struct {
 	threadID string
@@ -60,8 +60,40 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 		return continuation, nil
 	}
 	if continuation.state == nil {
-		reader := migrationSourceReader{ctx: ctx, backend: repo.backend}
-		continuation.state, err = projectCanonicalQuery(ctx, reader, meta)
+		// Bound each storage snapshot so other threads and browsing can proceed
+		// between pages. Canonical sources are immutable; each page verifies the
+		// pinned metadata and manifest before feeding the same query projector.
+		state := newQueryThread()
+		projector := &queryProjector{metadataOnly: true}
+		var leaf entryLocator
+		err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
+			if err := continuation.verify(tx); err != nil {
+				return err
+			}
+			if meta.LeafID == "" {
+				return nil
+			}
+			var err error
+			leaf, err = readEntryLocator(tx, threadID, meta.LeafID)
+			return err
+		})
+		for first := int64(1); err == nil && first <= leaf.Depth; first += 128 {
+			last := min(first+127, leaf.Depth)
+			err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
+				if err := continuation.verify(tx); err != nil {
+					return err
+				}
+				return visitCanonicalMetadataInterval(ctx, tx, threadID, leaf, first, last, func(entry Entry) error {
+					entry, err := canonicalQueryProjectionEntry(ctx, tx, entry, false)
+					if err != nil {
+						return err
+					}
+					return projector.observe(state, threadID, entry)
+				})
+			})
+		}
+		projector.finish(state, threadID, meta)
+		continuation.state = state
 		if err != nil {
 			if changed := repo.backend.View(ctx, continuation.verify); changed != nil {
 				return nil, changed

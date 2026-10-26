@@ -1985,6 +1985,16 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 		}
 		// Reads and reducer validation must finish before replacing the accepted
 		// window. A failed promotion remains retryable without invalidating it.
+		if actor.sourceWindow != nil {
+			service.mu.Lock()
+			for subscription := range service.subscribers {
+				if !subscription.wakeOnly {
+					version++
+					break
+				}
+			}
+			service.mu.Unlock()
+		}
 		canonical.ViewVersion = max(1, version)
 		canonical.ThreadID = threadID
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical.ThreadView) {
@@ -2342,10 +2352,6 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 		return ThreadView{}, err
 	}
 	actor := service.runtime(threadID)
-	canonical, err := service.viewResult(ctx, threadID, mode)
-	if err != nil {
-		return ThreadView{}, err
-	}
 	if entry, found, readErr := service.host.store.repo.FindTurnRequest(ctx, threadID.String(), requestKey); readErr != nil {
 		return ThreadView{}, readErr
 	} else if found {
@@ -2358,7 +2364,7 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 			return ThreadView{}, &RequestConflictError{Operation: "context_compaction", RequestID: requestKey, Err: ErrRequestConflict}
 		}
 		if kind != "" {
-			return canonical, nil
+			return service.completedCommandResult(ctx, threadID, mode)
 		}
 	}
 	if entry, found, readErr := service.lookupSendEntry(ctx, threadID, requestKey); readErr != nil {
@@ -2367,7 +2373,17 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 		if entry.RequestKey != requestKey || entry.RequestFingerprint != fingerprint {
 			return ThreadView{}, &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
 		}
-		return canonical, nil
+		return service.completedCommandResult(ctx, threadID, mode)
+	}
+	// Admission needs current canonical facts, not every historical item. The
+	// same actor retains its bounded source window until execution preparation.
+	if mode == threadAckResult {
+		err = service.prepareThreadRead(ctx, threadID, actor, true, ThreadWindowInput{ThreadID: threadID, Limit: 1, ActivityFields: true})
+	} else {
+		_, err = service.viewResult(ctx, threadID, mode)
+	}
+	if err != nil {
+		return ThreadView{}, err
 	}
 	var replay ThreadView
 	var found bool
@@ -2475,7 +2491,6 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 		}
 		kind = accepted.TurnKind
 		request.TurnKind = kind
-		_ = canonical
 		previousExecution, acceptErr = actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
 			cancel: cancel, executionDone: executionDone, clearOutcome: true, turnKind: kind,
@@ -2487,7 +2502,7 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
 			actor.markItem("user:"+requestKey, ThreadItemAdded)
 		}
-		if err := service.advanceCanonical(context.Background(), actor); err != nil {
+		if err := service.advanceAdmission(context.Background(), actor); err != nil {
 			actor.state.contextErr = err
 		}
 		result = threadResult(actor.state.view, mode)
@@ -2544,7 +2559,10 @@ func (service *threadRuntimeService) prepareExecution(ctx context.Context, actor
 	}
 	go func() {
 		prepared := preparedThreadExecution{}
-		prepared.agent, prepared.err = service.factory.Agent(ctx, request)
+		prepared.err = service.prepareThreadView(ctx, request.ThreadID, actor)
+		if prepared.err == nil {
+			prepared.agent, prepared.err = service.factory.Agent(ctx, request)
+		}
 		if prepared.err == nil && prepared.agent == nil {
 			prepared.err = errors.New("Agent factory returned nil")
 		}

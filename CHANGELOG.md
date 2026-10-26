@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Admit cold SendAck through bounded current facts and defer complete history
+  preparation to execution. Preserve request replay, queued inputs, cancellation,
+  window continuity and complete legacy subscriptions. Reconstruct cold query
+  continuations in bounded verified snapshots without new indexes or migrations.
+
 - Retain bounded single-file mutation names and change types in Activity
   summaries using existing canonical array locations. Collapsed patch titles
   require no detail preparation, storage migration or new index writes.

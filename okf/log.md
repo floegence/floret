@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-26: Separate bounded SendAck admission from complete execution
+  preparation, preserve Stop and legacy full-view publication, and document
+  bounded cold query snapshots in [thread updates](api/thread-updates.md).
+
 - 2026-10-26: Document bounded single-mutation title values in Activity
   summaries, using existing canonical locations without detail preparation;
   see [runtime](api/runtime.md).

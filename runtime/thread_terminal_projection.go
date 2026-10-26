@@ -15,6 +15,7 @@ type terminalCanonicalRead struct {
 	projection   *threadCanonicalProjection
 	tail         canonicalThreadTail
 	version      uint64
+	source       *threadSourceProjection
 	full         *canonicalThreadView
 	model        *ThreadModelContext
 	modelChanged bool
@@ -24,6 +25,7 @@ type terminalCanonicalRead struct {
 func (service *threadRuntimeService) readTerminalCanonical(ctx context.Context, actor *threadRuntimeState) (terminalCanonicalRead, error) {
 	read := terminalCanonicalRead{}
 	if err := actor.apply(ctx, func() error {
+		read.source = actor.sourceWindow
 		read.projection = actor.canonical
 		read.version = actor.state.view.ViewVersion
 		if read.projection != nil {
@@ -35,6 +37,12 @@ func (service *threadRuntimeService) readTerminalCanonical(ctx context.Context, 
 		}
 		return nil
 	}); err != nil {
+		return read, err
+	}
+	if read.source != nil {
+		full, page, err := service.loadSourceWindow(ctx, ThreadWindowInput{ThreadID: identity.ThreadID(actor.threadID), Limit: 1, ActivityFields: true})
+		page.input = ThreadWindowInput{ThreadID: identity.ThreadID(actor.threadID), Limit: 1, ActivityFields: true}
+		read.full, read.source = &full, &page
 		return read, err
 	}
 	_, bodyReader := service.host.store.repo.(sessiontree.CanonicalBodyReader)
@@ -82,6 +90,11 @@ func (read terminalCanonicalRead) current(actor *threadRuntimeState) bool {
 func (service *threadRuntimeService) installTerminalCanonical(ctx context.Context, actor *threadRuntimeState, read terminalCanonicalRead) (canonicalThreadView, error) {
 	if read.full != nil {
 		canonical := *read.full
+		if read.source != nil {
+			service.installSourceTail(actor, canonical, *read.source)
+			return canonical, nil
+		}
+		actor.sourceWindow = nil
 		actor.canonical = canonical.projection
 		actor.state.view.Turns = canonical.Turns
 		actor.replaceItems(canonical.Items)
