@@ -153,6 +153,9 @@ without replacing accepted history. Complete execution preparation runs before
 AgentFactory/provider dispatch; replay and queued acknowledgment do not join it.
 Cancellation during preparation settles through a bounded canonical tail. Legacy
 Subscribe waits for complete actor promotion before publishing a full snapshot.
+Shutdown settles admitted execution cancellation before aborting shared history
+preparation, so preparation failure cannot race the canonical terminal claim.
+It then joins both execution and preparation before closing the actor.
 No alternate actor, durable receipt, schema, or index is introduced. Cold query
 continuation reconstruction still reads historical metadata, but uses at most
 128 source entries per verified read snapshot and checks the pinned authority

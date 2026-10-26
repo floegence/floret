@@ -183,3 +183,25 @@ func TestColdSendAckLegacySubscriptionKeepsCompleteHistory(t *testing.T) {
 		}
 	}
 }
+
+func TestShutdownDuringAdmittedHistoryPreparation(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	id := identity.ThreadID("shutdown-admission")
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &blockedAdmissionHistory{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{})}
+	host.store.repo = repo
+	if _, err := public.(ThreadCommandService).SendAck(t.Context(), SendInput{ThreadID: id, RequestKey: "send", Input: UserInput{Text: "shutdown preparation"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-repo.entered
+	if _, err := public.(ThreadCommandService).SendAck(t.Context(), SendInput{ThreadID: id, RequestKey: "queued", Input: UserInput{Text: "retained queue"}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := host.Shutdown(deadline); err != nil {
+		t.Fatal(err)
+	}
+}

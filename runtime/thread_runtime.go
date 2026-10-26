@@ -1838,12 +1838,13 @@ func (service *threadRuntimeService) close() error {
 		runtime.mu.Lock()
 		runtime.stopUpdateTimer()
 		var preparationDone, windowPreparationDone <-chan struct{}
+		var cancelPreparation, cancelWindowPreparation context.CancelFunc
 		if runtime.preparation != nil {
-			runtime.preparation.cancel()
+			cancelPreparation = runtime.preparation.cancel
 			preparationDone = runtime.preparation.done
 		}
 		if runtime.windowPreparation != nil {
-			runtime.windowPreparation.cancel()
+			cancelWindowPreparation = runtime.windowPreparation.cancel
 			windowPreparationDone = runtime.windowPreparation.done
 		}
 		drains = append(drains, threadRuntimeDrain{
@@ -1878,6 +1879,15 @@ func (service *threadRuntimeService) close() error {
 				cancellationRequest{EntryID: "cancel:" + key, RequestKey: key, RequestFingerprint: fingerprint}, "runtime_shutdown", "runtime shutdown")
 			closeErr = errors.Join(closeErr, err)
 			cancel(context.Canceled)
+		}
+		// Settle admitted execution before aborting its shared history read.
+		// Otherwise preparation cancellation can race shutdown and commit a
+		// failed terminal while shutdown is still claiming the active run.
+		if cancelPreparation != nil {
+			cancelPreparation()
+		}
+		if cancelWindowPreparation != nil {
+			cancelWindowPreparation()
 		}
 	}
 	closeErr = errors.Join(closeErr, waitThreadRuntimeDrains(context.Background(), drains))

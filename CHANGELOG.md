@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Settle admitted execution cancellation before aborting shared history
+  preparation during shutdown, preventing competing terminal commits while
+  preserving queued inputs and joining preparation work.
+
 - Admit cold SendAck through bounded current facts and defer complete history
   preparation to execution. Preserve request replay, queued inputs, cancellation,
   window continuity and complete legacy subscriptions. Reconstruct cold query

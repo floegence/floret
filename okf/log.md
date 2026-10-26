@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-26: Settle admitted cancellation before stopping shared history
+  preparation during shutdown; qualify concurrent queue admission and repeated
+  shutdown under the race detector in [thread updates](api/thread-updates.md).
+
 - 2026-10-26: Separate bounded SendAck admission from complete execution
   preparation, preserve Stop and legacy full-view publication, and document
   bounded cold query snapshots in [thread updates](api/thread-updates.md).
