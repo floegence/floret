@@ -21,7 +21,7 @@ func TestMutationSummaryReadsBoundedCanonicalPrefixWithoutDetailPreparation(t *t
 				for range count {
 					mutations = append(mutations, tools.FileMutationActivityPayload{DisplayName: "panda-bicycle.html", ChangeType: "delete", UnifiedDiff: strings.Repeat("🌸", size), DiffUnavailableReason: strings.Repeat("🌸", size)})
 				}
-				activity := &tools.ActivityPresentation{Label: "apply_patch", Renderer: tools.ActivityRendererPatch, Payload: tools.PatchActivityPayload{FilesChanged: count, Additions: 13, Deletions: 11, Mutations: &mutations}}
+				activity := &tools.ActivityPresentation{Label: "apply_patch", Renderer: tools.ActivityRendererPatch, Payload: tools.PatchActivityPayload{Summary: strings.Repeat("x", size), FilesChanged: count, Additions: 13, Deletions: 11, Mutations: &mutations}}
 				entry, err := repo.Append(t.Context(), Entry{ID: "patch-summary", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "apply_patch", ToolCallID: "patch", Activity: activity}}, AppendOptions{})
 				if err != nil {
 					t.Fatal(err)
@@ -35,6 +35,9 @@ func TestMutationSummaryReadsBoundedCanonicalPrefixWithoutDetailPreparation(t *t
 					t.Fatal(err)
 				}
 				// Reopening uses the previously published immediate-shape summary index.
+				if size == 8000 && ref.Bytes <= 64<<10 {
+					t.Fatal("large single-file fixture must exercise deferred detail indexing")
+				}
 				repo = reopenCurrentStartupRepo(t, backend, false)
 				measured := &activityBudgetBackend{Backend: backend, bodyReads: map[string]int{}}
 				repo.backend = measured
