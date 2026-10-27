@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retain confirmed intermediate response membership across interaction continuations
+  within one turn. Preserve run-local supersession, unknown partial output and
+  bounded cold/warm window reads without rewriting historical conversations.
+
 - Bind Goal tool composition, dispatch, paired-result handling and reflection to
   one Harness execution installation. Fix explicit Goal continuation without
   agent-wide opt-in. Declare canonical Goal writes accurately, reject host tool

@@ -754,7 +754,10 @@ timestamps; inherited event recipient identities remain unchanged.
 
 `ThreadTurn.IntermediateItemIDs` (JSON `intermediate_item_ids`) contains ordered,
 unique segmented assistant items superseded by a later local tool call, hosted
-activity or semantic continuation in the same Turn/Run. Accepted final references
+activity or semantic continuation in the same source Turn/Run. Confirmed membership
+survives later runs of the same turn; the turn RunID identifies its latest execution.
+Selected windows return only selected item memberships without reading additional
+history. Accepted final references
 are disjoint. Length continuation alone does not supersede text. Trailing partial
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose

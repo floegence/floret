@@ -22,19 +22,19 @@ type threadTurnProjection struct {
 	indices   map[string]int
 }
 type threadTurnFacts struct {
-	turn       ThreadTurn
-	lifecycle  sessionlifecycle.Projection
-	terminal   *sessiontree.Entry
-	runs       map[string]*threadTurnRunFacts
-	waits      threadWaitProjection
-	finalErr   error
-	finalItems map[string]bool
+	turn              ThreadTurn
+	lifecycle         sessionlifecycle.Projection
+	terminal          *sessiontree.Entry
+	runs              map[string]*threadTurnRunFacts
+	waits             threadWaitProjection
+	finalErr          error
+	finalItems        map[string]bool
+	intermediate      []string
+	intermediateItems map[string]bool
+	intermediateErr   error
 }
 type threadTurnRunFacts struct {
-	pending      []string
-	intermediate []string
-	seen         map[string]bool
-	err          error
+	pending []string
 }
 type threadWaitInterval struct{ start, end time.Time }
 type threadWaitProjection struct {
@@ -74,13 +74,13 @@ func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemFor
 	if facts.turn.segmented {
 		run := facts.runs[entry.RunID]
 		if run == nil {
-			run = &threadTurnRunFacts{seen: map[string]bool{}}
+			run = &threadTurnRunFacts{}
 			facts.runs[entry.RunID] = run
 		}
 		if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" && (strings.TrimSpace(entry.Message.Content) != "" || entry.ProjectedText["content"].NonSpace) {
 			item, found := itemForEntry(entry.ID)
 			if !found || item.TurnID != facts.turn.TurnID || item.RunID.String() != entry.RunID || item.Kind != ThreadItemAssistant {
-				run.err = fmt.Errorf("%w: intermediate response is outside its canonical turn", ErrAuthorityCorrupt)
+				facts.intermediateErr = fmt.Errorf("%w: intermediate response is outside its canonical turn", ErrAuthorityCorrupt)
 			} else {
 				run.pending = append(run.pending, item.ID)
 			}
@@ -88,9 +88,12 @@ func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemFor
 		boundary := entry.Type == sessiontree.EntryToolCall && entry.Message.Kind != "control_signal" && entry.Message.Kind != session.MessageKindToolValidationError || entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind || entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint && entry.Metadata["reason"] == "context_continue"
 		if boundary {
 			for _, id := range run.pending {
-				if !run.seen[id] {
-					run.intermediate = append(run.intermediate, id)
-					run.seen[id] = true
+				if !facts.intermediateItems[id] {
+					if facts.intermediateItems == nil {
+						facts.intermediateItems = map[string]bool{}
+					}
+					facts.intermediate = append(facts.intermediate, id)
+					facts.intermediateItems[id] = true
 				}
 			}
 			run.pending = nil
@@ -167,10 +170,9 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 			turn.FinalBoundaryComplete = true
 		}
 	}
-	turn.IntermediateItemIDs = nil
-	if run := facts.runs[turn.RunID.String()]; turn.segmented && run != nil {
-		turn.IntermediateItemIDs = run.intermediate
-	}
+	// Supersession is established within each source run, but survives later
+	// executions of the same turn. Unconfirmed tails remain run-local pending.
+	turn.IntermediateItemIDs = facts.intermediate
 	return nil
 }
 
@@ -185,12 +187,12 @@ func (projection *threadTurnProjection) turnValue(id string) (ThreadTurn, bool, 
 		return ThreadTurn{}, true, facts.finalErr
 	}
 	turn := facts.turn
-	if run := facts.runs[turn.RunID.String()]; turn.segmented && run != nil {
-		if run.err != nil {
-			return ThreadTurn{}, true, run.err
+	if turn.segmented {
+		if facts.intermediateErr != nil {
+			return ThreadTurn{}, true, facts.intermediateErr
 		}
 		for _, id := range turn.FinalItemIDs {
-			if run.seen[id] {
+			if facts.intermediateItems[id] {
 				return ThreadTurn{}, true, fmt.Errorf("%w: intermediate and final response overlap", ErrAuthorityCorrupt)
 			}
 		}

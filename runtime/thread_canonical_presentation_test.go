@@ -13,6 +13,46 @@ import (
 	"github.com/floegence/floret/v7/observation"
 )
 
+func TestCanonicalIntermediateResponsesSurviveContinuationRuns(t *testing.T) {
+	projection := newThreadCanonicalProjection()
+	entries := []sessiontree.Entry{
+		{ID: "start", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, RunID: "run-a", Metadata: map[string]string{sessiontree.ResponseSegmentsMetadataKey: "1"}},
+		{ID: "intro", Type: sessiontree.EntryAssistantMessage, RunID: "run-a", Message: session.Message{Role: session.Assistant, Content: "Opening progress", ContentSourceID: "intro"}},
+		{ID: "tool-a", Type: sessiontree.EntryToolCall, RunID: "run-a", Message: session.Message{ToolCallID: "a", ToolName: "inspect"}},
+		{ID: "partial-a", Type: sessiontree.EntryAssistantMessage, RunID: "run-a", Message: session.Message{Role: session.Assistant, Content: "Unconfirmed old output", ContentSourceID: "partial-a"}},
+		{ID: "resume", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, RunID: "run-b"},
+		{ID: "progress", Type: sessiontree.EntryAssistantMessage, RunID: "run-b", Message: session.Message{Role: session.Assistant, Content: "Resumed progress", ContentSourceID: "progress"}},
+		{ID: "tool-b", Type: sessiontree.EntryToolCall, RunID: "run-b", Message: session.Message{ToolCallID: "b", ToolName: "inspect"}},
+		{ID: "partial-b", Type: sessiontree.EntryAssistantMessage, RunID: "run-b", Message: session.Message{Role: session.Assistant, Content: "Trailing output", ContentSourceID: "partial-b"}},
+		{ID: "end", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnAborted, RunID: "run-b"},
+	}
+	for i := range entries {
+		entries[i].ThreadID, entries[i].TurnID = "thread", "turn"
+		entries[i].CreatedAt = time.Unix(int64(i+1), 0)
+		if i > 0 {
+			entries[i].ParentID = entries[i-1].ID
+		}
+	}
+	if err := projection.append(entries); err != nil {
+		t.Fatal(err)
+	}
+	turn, _, err := projection.turns.turnSnapshot("turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(turn.IntermediateItemIDs, []string{"intro", "progress"}) {
+		t.Fatalf("cross-run membership: %+v", turn)
+	}
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread", Activity: ThreadActivityIdle}}}
+	if err := actor.installCanonicalChanges(projection); err != nil {
+		t.Fatal(err)
+	}
+	selected := actor.windowTurns(map[string]bool{"intro": true, "partial-a": true, "partial-b": true})
+	if len(selected) != 1 || !reflect.DeepEqual(selected[0].IntermediateItemIDs, []string{"intro"}) {
+		t.Fatalf("bounded old-run membership: %+v", selected)
+	}
+}
+
 func BenchmarkCanonicalSharedContentProjection(b *testing.B) {
 	for _, count := range []int{1096, 10960} {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {

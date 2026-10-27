@@ -183,9 +183,8 @@ func (actor *threadRuntimeState) windowTurns(selected map[string]bool) []ThreadT
 		}
 		turn := facts.turn
 		turn.IntermediateItemIDs, turn.FinalItemIDs = nil, []string{}
-		run := facts.runs[turn.RunID.String()]
 		for _, itemID := range ids {
-			if run != nil && run.seen[itemID] {
+			if facts.intermediateItems[itemID] {
 				turn.IntermediateItemIDs = append(turn.IntermediateItemIDs, itemID)
 			}
 			if facts.finalItems[itemID] {

@@ -23,7 +23,8 @@ type ThreadTurn struct {
 	WorkDurationMS int64           `json:"work_duration_ms"`
 	// IntermediateItemIDs identifies segmented assistant text superseded by
 	// canonical tool activity or a semantic continuation. Trailing partial text
-	// and unsegmented legacy text remain unclassified.
+	// and unsegmented legacy text remain unclassified. Membership survives later
+	// runs of the same turn; RunID identifies its latest execution only.
 	IntermediateItemIDs   []string `json:"intermediate_item_ids,omitempty"`
 	FinalItemIDs          []string `json:"final_item_ids"`
 	FinalBoundaryComplete bool     `json:"final_boundary_complete"`
