@@ -14,6 +14,20 @@ management operation starts execution or interrupts an in-flight request.
 The canonical journal is the sole durable authority; products only authorize,
 map and present it. Goals have no dependency on todos.
 
+The Harness installs Goal once per execution, using the same decision for tool
+composition, dispatch, paired-result handling, context admission, reflection and
+the terminal guard. Explicit Goal continuation installs this behavior even when
+the Agent does not enable Goals for ordinary Turns. Pure compaction does not.
+The tool declares a write to canonical thread state, with no external resources.
+Its handler is added to an independent sealed registry at each tool-surface
+boundary; a conflicting host handler or explicit definition fails rather than
+replacing the canonical tool. A host tool name or annotation grants no internal
+authority. Dispatch and result handling are bound to the installed Thread, Turn
+and Run, while ordinary tools retain host effect authorization and finalization.
+Goal mutations and reviews retain their journal writer; paired results retain
+the Engine's canonical message commit path. There is no additional durable owner,
+public ownership flag or schema migration.
+
 # Contract
 
 SetGoal and DeleteGoal carry a stable request key and expected Goal version.
@@ -130,9 +144,12 @@ observation redaction still applies. Existing structured renderers remain valid.
 
 - Public opt-in and controls: ../../runtime/agent.go, ../../runtime/thread_goals.go
 - Canonical mutations, review boundaries and terminal guard: ../../internal/sessiontree/goals.go
-- Same-context tool and reflection: ../../internal/agentharness/goals.go
+- Tool entry and execution installation: ../../internal/agentharness/goal_tool.go
+- Same-context admission and reflection: ../../internal/agentharness/goals.go
 - Exact compacted facts: ../../internal/session/compaction/compaction.go
 - Behavioral and migration coverage: ../../runtime/thread_goals_test.go,
+  ../../runtime/thread_goal_ownership_test.go,
+  ../../internal/agentharness/goal_tool_test.go,
   ../../runtime/thread_goal_submit_test.go,
   ../../internal/sessiontree/goals_test.go,
   ../../internal/sessiontree/backend_domain_v23_migration_test.go

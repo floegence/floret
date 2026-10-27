@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-27: Bind the Goal tool and lifecycle through one Harness execution
+  installation, declare canonical state writes, and preserve host tool authority;
+  see [thread Goals](decisions/thread-goals.md).
+
 - 2026-10-26: Settle admitted cancellation before stopping shared history
   preparation during shutdown; qualify concurrent queue admission and repeated
   shutdown under the race detector in [thread updates](api/thread-updates.md).

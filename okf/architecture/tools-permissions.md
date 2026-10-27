@@ -42,6 +42,11 @@ Read-only safe tools may default to allow. Riskier tools must explicitly ask,
 allow, or deny. Open-world and destructive tools require careful permission
 declarations.
 
+The Harness-owned [Goal tool](../decisions/thread-goals.md) writes canonical
+thread state without external resources. Its per-execution installation binds
+the handler, dispatch and paired-result route together. Host tools cannot acquire
+that ownership by name or annotation; their effect authorization remains required.
+
 # Public Web Fetch
 
 `tools/webfetch` owns one product-neutral `web_fetch` implementation. It uses a

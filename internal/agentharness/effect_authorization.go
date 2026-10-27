@@ -162,9 +162,6 @@ func (t *Thread) removeEffectFinalizer(key string) {
 }
 
 func (t *Thread) finalizeEffectResult(ctx context.Context, req engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
-	if t != nil && t.harness.options.GoalsEnabled && req.Message.ToolName == "goal" {
-		return engine.EffectResultFinalizationResult{}, nil
-	}
 	if t == nil || req.ThreadID != t.id || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.ToolCallID) == "" {
 		return engine.EffectResultFinalizationResult{}, ErrAuthorizationContract
 	}
@@ -195,17 +192,6 @@ func cloneEffectFinalizationRequest(in engine.EffectResultFinalizationRequest) e
 	in.Message = session.CloneMessage(in.Message)
 	in.FullOutput = cloneEffectFullOutput(in.FullOutput)
 	return in
-}
-
-func (t *Thread) effectDispatcher() tools.EffectDispatcher {
-	return func(ctx context.Context, request tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {
-		// Goal only mutates canonical runtime control facts. Its tool is installed
-		// exclusively by the opted-in harness and cannot address external resources.
-		if t.harness.options.GoalsEnabled && request.Name == "goal" && request.ReadOnly && len(request.Effects) == 1 && request.Effects[0] == tools.EffectRead && len(request.Resources) == 0 && request.Permission.Mode == tools.PermissionAllow {
-			return invoke(ctx)
-		}
-		return t.dispatchAuthorizedEffect(ctx, request, invoke)
-	}
 }
 
 func effectMessageFailed(message session.Message) bool {

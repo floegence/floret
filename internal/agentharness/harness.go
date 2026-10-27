@@ -833,7 +833,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	// ThreadRuntime owns approval interactions. Effect dispatch retains
 	// only the narrow prepared/dispatching/result safety boundary.
 	engineOptions.EffectBatchPreflight = nil
-	engineOptions.EffectDispatcher = t.effectDispatcher()
+	engineOptions.EffectDispatcher = t.dispatchAuthorizedEffect
 	engineOptions.EffectResultFinalizer = t.finalizeEffectResult
 	engineOptions.ProviderRequestGate = nil
 	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
@@ -871,12 +871,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		engineOptions.Steering = &control
 	}
 	stopHook := t.harness.options.StopHook
-	if (t.harness.options.GoalsEnabled || opts.TurnKind == sessiontree.TurnKindGoalContinuation) && opts.TurnKind != sessiontree.TurnKindContextCompaction {
+	goalsInstalled := (t.harness.options.GoalsEnabled || opts.TurnKind == sessiontree.TurnKindGoalContinuation) && opts.TurnKind != sessiontree.TurnKindContextCompaction
+	if goalsInstalled {
 		projection.requireActiveGoal = opts.TurnKind == sessiontree.TurnKindGoalContinuation
 		projection.goalWorkStarted = goalWorkStarted(historyPath, preparationTurnIDForRun(turnID, retrySource))
-		engineOptions.AdmitGoalContext = projection.admitGoalContext
-		engineOptions.ToolSurfaceProvider = projection.goalSurface(engineOptions.ToolSurfaceProvider, t.harness.options.Tools)
-		stopHook = projection.goalStopHook(stopHook)
+		stopHook = projection.installGoals(&engineOptions, stopHook)
 	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
@@ -972,7 +971,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		t.harness.emitEntryCommitted(entry, runID)
 	}
 	terminalMetadata := markerMetadata(runID, result)
-	if (t.harness.options.GoalsEnabled || opts.TurnKind == sessiontree.TurnKindGoalContinuation) && opts.TurnKind != sessiontree.TurnKindContextCompaction && result.Status == engine.Completed {
+	if goalsInstalled && result.Status == engine.Completed {
 		terminalMetadata["goal_guard"] = "1"
 		journal, goalErr := t.Journal(persistCtx)
 		if goalErr != nil {

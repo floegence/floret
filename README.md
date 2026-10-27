@@ -157,6 +157,12 @@ enter the next new model request. Management never starts execution. Reflection
 reuses the existing context, provider continuation and bounded stop hook; Goal
 completion requires a current evidence-bearing review and successful Turn end.
 Goals are independent of todos. The 22 -> 23 schema edge preserves history.
+The Harness installs the Goal tool, dispatch, result handling and reflection
+together for each enabled execution, including explicit Goal continuation without
+agent-wide opt-in. Goal declares a write to canonical thread state; it has no
+external resources and does not enter host effect authorization. Host tools retain
+their normal authorization, and a conflicting host Goal tool is rejected when the
+canonical tool is installed.
 For an explicit user command that also pursues the objective, use the optional
 `runtime.ThreadGoalSubmitter.SubmitGoal`. Persist product execution authorization under
 `runtime.GoalSubmissionRequestKey` before submission so ordinary execution and restart

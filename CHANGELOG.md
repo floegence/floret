@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bind Goal tool composition, dispatch, paired-result handling and reflection to
+  one Harness execution installation. Fix explicit Goal continuation without
+  agent-wide opt-in. Declare canonical Goal writes accurately, reject host tool
+  collisions, and retain ordinary tool authorization and historical journal shapes.
+
 - Preserve complete tool diagnostics when adding an uncertain-effect warning.
   Apply payload limits before the engine warning, retaining it under head and
   tail policies and keeping artifact hashes and restart/retry facts consistent.

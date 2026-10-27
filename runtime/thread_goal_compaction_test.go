@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -304,8 +305,13 @@ func TestGoalCompactionQuestionResumeAndReviewLimit(t *testing.T) {
 }
 
 func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
-	for _, boundary := range []string{"noop", "installed", "confirmed_tool", "factory_failure", "unknown_effect"} {
-		t.Run(boundary, func(t *testing.T) {
+	for _, boundaryCase := range []string{"noop", "installed", "confirmed_tool", "factory_failure", "unknown_effect", "noop_without_opt_in", "confirmed_tool_without_opt_in"} {
+		t.Run(boundaryCase, func(t *testing.T) {
+			boundary := strings.TrimSuffix(boundaryCase, "_without_opt_in")
+			var goalOptions []AgentOption
+			if boundary == boundaryCase {
+				goalOptions = append(goalOptions, WithAgentGoals())
+			}
 			source := filepath.Join(t.TempDir(), "source.sqlite")
 			copyPath := filepath.Join(t.TempDir(), "copy.sqlite")
 			ready := make(chan struct{})
@@ -337,7 +343,7 @@ func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
 			}
 			defer host.Shutdown(context.Background())
 			service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) {
-				return compactionTestAgent(t, g, WithAgentGoals(), surface), nil
+				return compactionTestAgent(t, g, append(goalOptions, surface)...), nil
 			}))
 			if err != nil {
 				t.Fatal(err)
@@ -402,7 +408,7 @@ func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
 				if boundary == "factory_failure" {
 					return nil, errors.New("recovery factory unavailable")
 				}
-				return compactionTestAgent(t, restoredGateway, WithAgentGoals()), nil
+				return compactionTestAgent(t, restoredGateway, goalOptions...), nil
 			}))
 			if err != nil {
 				t.Fatal(err)
