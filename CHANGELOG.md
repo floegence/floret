@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve complete tool diagnostics when adding an uncertain-effect warning.
+  Apply payload limits before the engine warning, retaining it under head and
+  tail policies and keeping artifact hashes and restart/retry facts consistent.
+
 - Settle admitted execution cancellation before aborting shared history
   preparation during shutdown, preventing competing terminal commits while
   preserving queued inputs and joining preparation work.

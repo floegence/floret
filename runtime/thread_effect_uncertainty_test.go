@@ -27,7 +27,8 @@ func TestReturnedEffectUncertaintyContinuesAndRetryPreservesResult(t *testing.T)
 	click := tools.Define[map[string]any](tools.Definition{Name: "click", InputSchema: tools.StrictObject(map[string]any{}, []string{}), Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil,
 		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
 			calls.Add(1)
-			return tools.Result{IsError: true, EffectOutcome: tools.EffectOutcomeUncertain, Text: "One input posted; receipt timed out."}, nil
+			text := "One input posted; receipt timed out."
+			return tools.Result{IsError: true, EffectOutcome: tools.EffectOutcomeUncertain, Text: text, OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: len(text) + 1, VisibleMaxLines: 1, Strategy: tools.OutputHead, PreserveFull: true}}, nil
 		})
 	inspect := tools.Define[map[string]any](tools.Definition{Name: "inspect", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil,
 		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
@@ -75,7 +76,7 @@ func TestReturnedEffectUncertaintyContinuesAndRetryPreservesResult(t *testing.T)
 		for _, msg := range requests[index].Messages {
 			if msg.ToolResult != nil && msg.ToolResult.CallID == "click-1" {
 				count++
-				if !strings.Contains(msg.ToolResult.Text, "External effect unconfirmed.") {
+				if !strings.Contains(msg.ToolResult.Text, "External effect unconfirmed.") || !strings.Contains(msg.ToolResult.Text, "One input posted; receipt timed out.") {
 					t.Fatalf("uncertainty missing: %s", msg.ToolResult.Text)
 				}
 			}

@@ -24,6 +24,12 @@ Each local tool has:
 * resource extraction for approval and observation;
 * an output policy for visible and preserved output.
 
+For returned uncertain effects, the engine adds its safety warning after applying
+the tool payload's output limits. The warning never consumes payload bytes or
+lines and remains visible under either head or tail projection. Complete-output
+hashes and archived artifacts include the warning and the original payload;
+restart and retry reuse that committed result without re-executing the effect.
+
 Schema rejection remains a non-executable provider correction result. A host
 may separately derive safe metadata from a parseable invalid JSON object through
 `Definition.InvalidActivity`; that callback has no resource, permission,

@@ -1473,12 +1473,8 @@ steps:
 				return applyMessages([]session.Message{msg})
 			}
 			result = preparePendingToolResult(result)
-			if result.EffectOutcome == tools.EffectOutcomeUncertain && !strings.HasPrefix(result.Text, "External effect unconfirmed.") {
-				result.Text = "External effect unconfirmed. Inspect current state before deciding whether another action is necessary; do not blindly repeat this operation.\n" + result.Text
-			}
 			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
 			result.Activity = event.NormalizeActivityPresentation(result.Activity)
-			toolResults[i] = result
 			resultStatus := toolResultStatus(result)
 			finalizeEffect := func(message session.Message, fullOutput *artifact.FullOutput) (EffectResultFinalizationResult, error) {
 				if !result.RequiresEffectFinalization() || opts.EffectResultFinalizer == nil {
@@ -1493,8 +1489,9 @@ steps:
 			resultLatency := time.Since(toolStarted).Milliseconds()
 			if result.Pending == nil {
 				policy := tools.MergeOutputPolicy(activeToolRegistry.OutputPolicyFor(result.Name), result.OutputPolicy)
-				projection = tools.BuildOutputProjection(result, policy)
+				result, projection = projectToolResultOutput(result, policy)
 			}
+			toolResults[i] = result
 			text := projection.VisibleText
 			errText := ""
 			if result.IsError {
@@ -1667,6 +1664,32 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 		e.emit(opts, event.Event{Type: event.ContextCompactDebug, Step: step, Err: err.Error(), Metadata: map[string]any{"stage": "prepared_cleanup", "status": ContextCompactDebugStatusFailed, "operation_id": compacted.OperationID, "next_action": ContextCompactDebugNextActionReturnCompactedContext}})
 	}
 	return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: active, Compaction: compacted}
+}
+
+func projectToolResultOutput(result tools.Result, policy tools.OutputPolicy) (tools.Result, tools.OutputProjection) {
+	projection := tools.BuildOutputProjection(result, policy)
+	if result.EffectOutcome != tools.EffectOutcomeUncertain || strings.HasPrefix(result.Text, "External effect unconfirmed.") {
+		return result, projection
+	}
+	const warning = "External effect unconfirmed. Inspect current state before deciding whether another action is necessary; do not blindly repeat this operation.\n"
+	result.Text = warning + result.Text
+	// The engine-owned warning must neither consume the tool's payload budget
+	// nor disappear under a tail policy. Metadata and artifacts describe the
+	// complete warned result; only the payload is subject to output limits.
+	fullPolicy := tools.NormalizeOutputPolicy(policy)
+	fullPolicy.VisibleMaxBytes = len(result.Text) + 1
+	fullPolicy.VisibleMaxLines = 0
+	full := tools.BuildOutputProjection(result, fullPolicy)
+	full.VisibleText = warning + projection.VisibleText
+	full.VisibleBytes = len(full.VisibleText)
+	full.VisibleLines = strings.Count(full.VisibleText, "\n") + 1
+	full.Truncated = projection.Truncated
+	if projection.FullOutputPlan != nil && full.FullOutputPlan == nil {
+		plan := *projection.FullOutputPlan
+		plan.Text = result.Text
+		full.FullOutputPlan = &plan
+	}
+	return result, full
 }
 
 func exactToolOutputProjection(text string) tools.OutputProjection {
