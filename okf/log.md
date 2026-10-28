@@ -1878,3 +1878,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-25: Add bounded item presentation ranges and configurable window
   previews. Defer large activity detail locators until explicit access, remove
   optional display work from startup, and suppress identical SQLite updates.
+
+- 2026-10-28: Document temporary DeepSeek file references, independent byte-capacity evidence, bounded preparation renewal, and schema 33 manifest fencing.

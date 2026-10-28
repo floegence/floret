@@ -54,6 +54,10 @@ func (e *ProviderHTTPError) Error() string {
 	return fmt.Sprintf("%s: %s: %s", base, code, message)
 }
 
+// RequestBodyRejected reports a server-side request-body limit. The server
+// generally does not supply an exact byte limit; callers must not invent one.
+func (e *ProviderHTTPError) RequestBodyRejected() bool { return e != nil && e.StatusCode == 413 }
+
 // Gateway is the single model-execution path used by every Agent.
 type Gateway interface {
 	Identity() Identity

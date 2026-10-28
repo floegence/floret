@@ -30,3 +30,6 @@ func CheckRequestBytes(payload []byte, limit int64) error {
 	}
 	return nil
 }
+
+// RequestByteLimit exposes exact byte counts independently of overflow recovery.
+func (e *RequestByteLimitError) RequestByteLimit() (int64, int64) { return e.ActualBytes, e.LimitBytes }

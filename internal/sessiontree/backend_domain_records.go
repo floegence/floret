@@ -82,11 +82,22 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 	if err != nil {
 		return nil, err
 	}
-	return storagecodec.EncodeEnvelope(format.envelope, record)
+	envelope := format.envelope
+	if format.version == backendDomainV32Version && kind == backendDomainRecordManifest {
+		if manifest, ok := value.(backendDomainManifest); ok && manifest.Version == backendDomainV33Version {
+			envelope = "sessiontree-v33-manifest"
+		}
+	}
+	return storagecodec.EncodeEnvelope(envelope, record)
 }
 
 func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (backendDomainRecord, error) {
 	payload, err := storagecodec.DecodeEnvelope(encoded, format.envelope)
+	manifestV33 := false
+	if err != nil && format.version == backendDomainV32Version {
+		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v33-manifest")
+		manifestV33 = err == nil
+	}
 	if err != nil {
 		return backendDomainRecord{}, err
 	}
@@ -94,8 +105,14 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 	if err := storagecodec.DecodeJSON(payload, &record); err != nil {
 		return backendDomainRecord{}, err
 	}
-	if record.Version != format.version || strings.TrimSpace(record.Kind) == "" || len(record.Value) == 0 {
+	if record.Version != format.version || strings.TrimSpace(record.Kind) == "" || len(record.Value) == 0 || manifestV33 && record.Kind != backendDomainRecordManifest {
 		return backendDomainRecord{}, fmt.Errorf("unsupported session-tree %s record", format.label)
+	}
+	if format.version == backendDomainV32Version && record.Kind == backendDomainRecordManifest {
+		var manifest backendDomainManifest
+		if err := storagecodec.DecodeJSON(record.Value, &manifest); err != nil || (manifest.Version == backendDomainV33Version) != manifestV33 {
+			return backendDomainRecord{}, ErrAuthorityCorrupt
+		}
 	}
 	return record, nil
 }
@@ -194,7 +211,7 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate or malformed session-tree %s manifest", format.label))
 			}
 			value := backendDomainManifest{}
-			if err := decodeBackendDomainValue(format, record, &value); err != nil || value.Version != format.version {
+			if err := decodeBackendDomainValue(format, record, &value); err != nil || !validDomainManifestVersion(format, value.Version) {
 				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s manifest", format.label)))
 			}
 			manifest = &value

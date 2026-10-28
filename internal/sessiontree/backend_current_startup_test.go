@@ -107,7 +107,14 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 			}
 			base := newMigrationTestBackend()
 			if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
-				return saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format)
+				if err := saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format); err != nil {
+					return err
+				}
+				manifest, err := readV32Manifest(tx)
+				if err != nil {
+					return err
+				}
+				return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +157,14 @@ func TestCurrentStartupRepairsMissingQueryMetadata(t *testing.T) {
 	}
 	base := newMigrationTestBackend()
 	if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
-		return saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format)
+		if err := saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format); err != nil {
+			return err
+		}
+		manifest, err := readV32Manifest(tx)
+		if err != nil {
+			return err
+		}
+		return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +210,14 @@ func TestCurrentStartupPreservesOnDemandCorruptionChecks(t *testing.T) {
 			}
 			base := newMigrationTestBackend()
 			if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
-				return saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format)
+				if err := saveCompleteBackendDomainContext(t.Context(), tx, memory, backendDomainV32Format); err != nil {
+					return err
+				}
+				manifest, err := readV32Manifest(tx)
+				if err != nil {
+					return err
+				}
+				return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
 			}); err != nil {
 				t.Fatal(err)
 			}

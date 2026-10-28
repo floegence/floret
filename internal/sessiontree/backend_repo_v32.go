@@ -28,7 +28,7 @@ func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
 		return backendDomainManifest{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	var manifest backendDomainManifest
-	if err := decodeBackendDomainValue(backendDomainV32Format, record, &manifest); err != nil || manifest.Version != backendDomainV32Version || manifest.Sequence < 0 || manifest.MigrationRoots < 0 || manifest.MigrationPhase != "verify" && manifest.MigrationRoots != 0 {
+	if err := decodeBackendDomainValue(backendDomainV32Format, record, &manifest); err != nil || !validDomainManifestVersion(backendDomainV32Format, manifest.Version) || manifest.Sequence < 0 || manifest.MigrationRoots < 0 || manifest.MigrationPhase != "verify" && manifest.MigrationRoots != 0 {
 		return manifest, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	switch manifest.SourceVersion {
@@ -70,7 +70,7 @@ func NewFreshCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Ba
 	if !fresh {
 		return nil, errors.Join(ErrAuthorityCorrupt, errors.New("fresh initialization encountered existing domain state"))
 	}
-	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV32Version}); err != nil {
+	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV33Version}); err != nil {
 		return nil, err
 	}
 	return NewBackendRepoForFormat(backend, now, parentEvents, backendDomainV32Format)

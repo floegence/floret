@@ -21,10 +21,31 @@ type CompactionRequestSnapshot struct {
 	CalibrationRequestID     string                 `json:"calibration_request_id,omitempty"`
 }
 
-// CompactionDecision retains the trigger candidate and validated replacement in
-// the canonical lifecycle. Missing candidates are unavailable, including
-// historical records and manual preflight without a prepared request.
+// CompactionCapacity records a capacity failure independently of token pressure.
+// Unknown server byte counts remain zero. It never contains request content.
+type CompactionCapacity struct {
+	Kind        string `json:"kind"`
+	Stage       string `json:"stage"`
+	Source      string `json:"source"`
+	ActualBytes int64  `json:"actual_bytes,omitempty"`
+	LimitBytes  int64  `json:"limit_bytes,omitempty"`
+}
+
+func (c *CompactionCapacity) Validate() error {
+	if c == nil {
+		return nil
+	}
+	valid := c.Kind == "request_bytes" && ((c.Stage == "prepare" && c.Source == "host_policy" && c.LimitBytes > 0 && c.ActualBytes > c.LimitBytes) || (c.Stage == "response" && c.Source == "provider" && c.ActualBytes == 0 && c.LimitBytes == 0))
+	if !valid {
+		return fmt.Errorf("invalid compaction capacity evidence")
+	}
+	return nil
+}
+
+// CompactionDecision retains the trigger candidate, independent capacity cause,
+// and validated replacement. Missing candidates are unavailable.
 type CompactionDecision struct {
+	Capacity *CompactionCapacity        `json:"capacity,omitempty"`
 	Pressure config.ContextPressure     `json:"pressure"`
 	Before   *CompactionRequestSnapshot `json:"before,omitempty"`
 	After    *CompactionRequestSnapshot `json:"after,omitempty"`
@@ -36,6 +57,10 @@ func (d *CompactionDecision) Clone() *CompactionDecision {
 		return nil
 	}
 	out := *d
+	if d.Capacity != nil {
+		capacity := *d.Capacity
+		out.Capacity = &capacity
+	}
 	clone := func(in *CompactionRequestSnapshot) *CompactionRequestSnapshot {
 		if in == nil {
 			return nil
@@ -58,7 +83,10 @@ func (d *CompactionDecision) Validate() error {
 	if d == nil {
 		return nil
 	}
-	if d.Before == nil && d.After == nil {
+	if err := d.Capacity.Validate(); err != nil {
+		return err
+	}
+	if d.Before == nil && d.After == nil && d.Capacity == nil {
 		return fmt.Errorf("compaction decision requires a candidate")
 	}
 	if err := validateCompactionPressure(d.Pressure); err != nil {

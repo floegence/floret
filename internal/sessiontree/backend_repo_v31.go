@@ -33,6 +33,15 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		format := backendDomainV31Format
 		if source == backendDomainSourceV32 {
 			format = backendDomainV32Format
+			manifest, err := readV32Manifest(tx)
+			if err != nil {
+				return nil, err
+			}
+			if manifest.Version == backendDomainV32Version {
+				if err := migrateBackendDomainV32ToV33(ctx, tx, manifest); err != nil {
+					return nil, err
+				}
+			}
 		}
 		repo := &BackendRepo{backend: backend, now: now, format: format, startupProgress: progress}
 		repo.reportStartupPhase(StartupPhaseVerifying)

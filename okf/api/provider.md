@@ -448,3 +448,30 @@ of the published module; host credentials, subscriptions and model choices remai
 host-owned. See [catalog maintenance](../../scripts/model-catalog/README.md),
 [public gateway regression](../../provider/moonshot_test.go) and
 [the official guide](https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart).
+
+## Temporary image references and independent byte capacity
+
+The identified Redeven consumer opts into the additive `DeepSeekImageFiles`
+owner through `DeepSeekOptions.ImageFiles`. Endpoint and credential identity
+scope a bounded, expiring memory cache. A new preparation resolves authorized
+original bytes even on a cache hit; opaque history retains source descriptors
+and hashes, never temporary file IDs. Explicit retention prevents permanent
+uploads. Every image occurrence remains in order and contributes visual tokens.
+The default nil owner preserves existing inline behavior and accepted inputs.
+
+Exact file media limits are validated before upload. Quota, invalid media and
+upload cancellation are not token overflow. Explicit `file_not_found` and
+`file_expired` response codes invalidate only rejected file IDs and expose
+`RequestPreparationError`; Engine permits one new preparation before failing.
+Frozen transport replay remains byte-identical and never resolves attachments.
+
+`CompactionCapacity` is the public product-neutral decision evidence: host byte
+limits carry exact counts and a preparation stage; HTTP 413 carries a response
+stage and no fabricated counts. Existing overflow error classifications remain
+available. Schema 33 fences old writers with a new manifest envelope without
+rewriting existing v32 records. Current-store inspection and bounded runtime startup share the metadata-only
+32 to 33 edge; released historical inspection helpers retain their source format.
+
+Evidence: [file transport tests](../../provider/deepseek_files_test.go),
+[engine capacity regression](../../internal/engine/capacity_regression_test.go),
+[metadata migration](../../internal/sessiontree/backend_repo_v33_test.go).

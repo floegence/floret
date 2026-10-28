@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add opt-in temporary DeepSeek image Files transport with explicit expiry,
+  bounded credential-scoped reuse, media validation and authorization on every
+  preparation. Preserve visual token budgeting and immutable transport retries.
+- Distinguish request bytes and HTTP 413 from token-window compaction pressure;
+  expose optional typed capacity evidence and one bounded re-preparation for
+  explicitly rejected temporary image references. Advance domain schema 32 to
+  33 through an atomic manifest fence without rewriting historical records.
+
+
 - Upgrade golang.org/x/net to v0.62.0 to fix reachable HTML parser and renderer
   vulnerabilities GO-2026-6860 and GO-2026-6866. Update its required x/sys and
   x/text dependencies without changing Floret APIs or conversation formats.

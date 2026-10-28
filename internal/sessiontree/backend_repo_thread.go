@@ -82,7 +82,7 @@ func (repo *BackendRepo) threadMemoryForTransaction(ctx context.Context, tx spi.
 		return nil, err
 	}
 	var manifest backendDomainManifest
-	if err := decodeBackendDomainValue(repo.domainFormat(), manifestRecord, &manifest); err != nil || manifest.Version != repo.domainFormat().version {
+	if err := decodeBackendDomainValue(repo.domainFormat(), manifestRecord, &manifest); err != nil || !validDomainManifestVersion(repo.domainFormat(), manifest.Version) {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	memory.seq = manifest.Sequence
@@ -517,7 +517,7 @@ func loadBackendDomainThreadFormat(ctx context.Context, tx spi.ReadTx, backend s
 		return nil, err
 	}
 	var manifest backendDomainManifest
-	if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || manifest.Version != format.version {
+	if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || !validDomainManifestVersion(format, manifest.Version) {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	memory.seq = manifest.Sequence
@@ -781,7 +781,7 @@ func loadBackendDomainThreadInventoryFormat(ctx context.Context, tx spi.ReadTx, 
 		return nil, err
 	}
 	var manifest backendDomainManifest
-	if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || manifest.Version != format.version {
+	if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || !validDomainManifestVersion(format, manifest.Version) {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	memory := newMemoryRepo(now)
@@ -901,7 +901,7 @@ func (repo *BackendRepo) updateNewThread(ctx context.Context, inputThreadID, par
 			return err
 		}
 		var manifest backendDomainManifest
-		if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || manifest.Version != format.version {
+		if err := decodeBackendDomainValue(format, manifestRecord, &manifest); err != nil || !validDomainManifestVersion(format, manifest.Version) {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		if _, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, inputThreadID), backendDomainRecordThread, inputThreadID, "", 0); err != nil {

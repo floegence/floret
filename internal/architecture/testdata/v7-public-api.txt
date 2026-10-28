@@ -277,8 +277,15 @@ field ContentAttributionPart.Key string tag="json:\"key,omitempty\""
 type DeepSeekCapabilities struct
 field DeepSeekCapabilities.IndependentSearch bool
 field DeepSeekCapabilities.HostedWebSearchWireShape string
+type DeepSeekImageFiles struct
+type DeepSeekImageFilesOptions struct
+field DeepSeekImageFilesOptions.BaseURL string
+field DeepSeekImageFilesOptions.APIKey string
+field DeepSeekImageFilesOptions.HTTPClient *net/http.Client
+field DeepSeekImageFilesOptions.Expiration time.Duration
 func DeepSeekModelCapabilities func(model string) (github.com/floegence/floret/v7/provider.DeepSeekCapabilities, bool)
 type DeepSeekOptions struct
+field DeepSeekOptions.ImageFiles *github.com/floegence/floret/v7/provider.DeepSeekImageFiles
 field DeepSeekOptions.MaxRequestBytes int64
 field DeepSeekOptions.Model string
 field DeepSeekOptions.BaseURL string
@@ -366,6 +373,11 @@ field MeasurementPrefix.Format string tag="json:\"format\""
 field MeasurementPrefix.Fingerprint string tag="json:\"fingerprint\""
 field MeasurementPrefix.ItemCount int tag="json:\"item_count\""
 field MeasurementPrefix.Boundary string tag="json:\"boundary\""
+type MediaLimitError struct
+field MediaLimitError.Kind string
+field MediaLimitError.Actual int64
+field MediaLimitError.Limit int64
+method *MediaLimitError.Error func() string
 type Message struct
 field Message.Attribution *github.com/floegence/floret/v7/provider.MessageAttribution tag="json:\"attribution,omitempty\""
 field Message.Role github.com/floegence/floret/v7/provider.MessageRole tag="json:\"role\""
@@ -381,6 +393,7 @@ field MessageAttribution.Parts []github.com/floegence/floret/v7/provider.Content
 type MessageRole string
 func NewAnthropic func(options github.com/floegence/floret/v7/provider.AnthropicOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewDeepSeek func(options github.com/floegence/floret/v7/provider.DeepSeekOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
+func NewDeepSeekImageFiles func(options github.com/floegence/floret/v7/provider.DeepSeekImageFilesOptions) (*github.com/floegence/floret/v7/provider.DeepSeekImageFiles, error)
 func NewOpenAICompatible func(options github.com/floegence/floret/v7/provider.OpenAICompatibleOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func OllamaReasoningEffort func(capability github.com/floegence/floret/v7/config.ReasoningCapability, selection github.com/floegence/floret/v7/config.ReasoningSelection) (string, error)
 type OpenAICompatibleOptions struct
@@ -419,6 +432,7 @@ field ProviderHTTPError.StatusCode int
 field ProviderHTTPError.Code string
 field ProviderHTTPError.Message string
 method *ProviderHTTPError.Error func() string
+method *ProviderHTTPError.RequestBodyRejected func() bool
 method *ProviderHTTPError.ProviderRetryAdvice func() github.com/floegence/floret/v7/provider.RetryAdvice
 const ReasoningHistoryAll github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy = "all"
 const ReasoningHistoryCurrentUser github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy = "current_user"
@@ -466,6 +480,7 @@ field RequestByteLimitError.ActualBytes int64
 field RequestByteLimitError.LimitBytes int64
 method *RequestByteLimitError.Error func() string
 method *RequestByteLimitError.Unwrap func() error
+method *RequestByteLimitError.RequestByteLimit func() (int64, int64)
 type RequestFormat string
 const RequestFormatAnthropic github.com/floegence/floret/v7/provider.RequestFormat = "anthropic_messages"
 const RequestFormatJSON github.com/floegence/floret/v7/provider.RequestFormat = "input_json"
@@ -478,6 +493,11 @@ field RequestMeasurement.OpaqueInput bool tag="json:\"opaque_input,omitempty\""
 field RequestMeasurement.Input github.com/floegence/floret/v7/provider.MeasurementPrefix tag="json:\"input\""
 field RequestMeasurement.ResponseID string tag="json:\"response_id,omitempty\""
 field RequestMeasurement.ResponseEnd github.com/floegence/floret/v7/provider.MeasurementPrefix tag="json:\"response_end,omitzero\""
+type RequestPreparationError struct
+field RequestPreparationError.Cause error
+method *RequestPreparationError.Error func() string
+method *RequestPreparationError.Unwrap func() error
+method *RequestPreparationError.RequestReprepareRequired func() bool
 type RequestPreparer interface interface{Prepare(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type RequestReusePolicy struct
 field RequestReusePolicy.PromptCacheEnabled bool tag="json:\"prompt_cache_enabled\""
@@ -2900,6 +2920,13 @@ const ActivityTimelineSchemaVersion untyped int = 1
 func BuildActivityTimeline func(meta github.com/floegence/floret/v7/observation.ActivityRunMeta, events []github.com/floegence/floret/v7/observation.Event, nowUnixMS int64) github.com/floegence/floret/v7/observation.ActivityTimeline
 func CloneActivityPresentation func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
 func CloneActivityTimeline func(in *github.com/floegence/floret/v7/observation.ActivityTimeline) *github.com/floegence/floret/v7/observation.ActivityTimeline
+type CompactionCapacity struct
+field CompactionCapacity.Kind string tag="json:\"kind\""
+field CompactionCapacity.Stage string tag="json:\"stage\""
+field CompactionCapacity.Source string tag="json:\"source\""
+field CompactionCapacity.ActualBytes int64 tag="json:\"actual_bytes,omitempty\""
+field CompactionCapacity.LimitBytes int64 tag="json:\"limit_bytes,omitempty\""
+method *CompactionCapacity.Validate func() error
 type CompactionDebugEvent struct
 field CompactionDebugEvent.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field CompactionDebugEvent.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
@@ -2957,6 +2984,7 @@ const CompactionDebugStatusOK github.com/floegence/floret/v7/observation.Compact
 const CompactionDebugStatusRetrying github.com/floegence/floret/v7/observation.CompactionDebugStatus = "retrying"
 const CompactionDebugStatusRunning github.com/floegence/floret/v7/observation.CompactionDebugStatus = "running"
 type CompactionDecision struct
+field CompactionDecision.Capacity *github.com/floegence/floret/v7/observation.CompactionCapacity tag="json:\"capacity,omitempty\""
 field CompactionDecision.Pressure github.com/floegence/floret/v7/config.ContextPressure tag="json:\"pressure\""
 field CompactionDecision.Before *github.com/floegence/floret/v7/observation.CompactionRequestSnapshot tag="json:\"before,omitempty\""
 field CompactionDecision.After *github.com/floegence/floret/v7/observation.CompactionRequestSnapshot tag="json:\"after,omitempty\""

@@ -87,7 +87,7 @@ func TestBackendRepoV32UsesPerRootRecordsAndThreadScopedOwner(t *testing.T) {
 	}
 
 	var repo *BackendRepo
-	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
 		var current bool
 		var err error
 		repo, current, err = NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)

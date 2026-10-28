@@ -184,6 +184,7 @@ func (c counter) parts(value any) error {
 			if err != nil {
 				return err
 			}
+			delete(part, "file_id")
 			part["image_url"] = mediaBudget(n)
 		case "image":
 			if c.opaque {

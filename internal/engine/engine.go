@@ -2890,8 +2890,8 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
 		if errors.Is(err, provider.ErrContextOverflow) {
-			pressure := tracker.Overflow(opts.ContextPolicy)
-			next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, nil, metrics, failures)
+			pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy)
+			next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerOverflow, reason, pressure, nil, metrics, failures, capacity)
 			if compactErr != nil {
 				return provider.Request{}, history, false, overflowRecoveryError(err, compactErr)
 			}
@@ -3026,11 +3026,24 @@ func overflowRecoveryError(providerErr, compactionErr error) error {
 
 func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, step int, req provider.Request, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, StepOutput, int64, bool, error) {
 	req, stepOutput, latency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, req, metrics)
+	var preparation interface{ RequestReprepareRequired() bool }
+	if err != nil && errors.As(err, &preparation) && preparation.RequestReprepareRequired() {
+		// This is a new logical preparation, never a mutation of frozen replay.
+		// The provider rejected references before admitting a response or tools.
+		e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "image_reference_refresh", Metadata: providerAttemptMetadata(req)})
+		next, prepareErr := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, req.Attempt+1, false)
+		if prepareErr != nil {
+			return req, history, StepOutput{}, latency, false, errors.Join(err, prepareErr)
+		}
+		var extra int64
+		req, stepOutput, extra, overflow, err = e.sendProviderRequestWithRetry(ctx, opts, step, next, metrics)
+		latency += extra
+	}
 	if err == nil || !overflow {
 		return req, history, stepOutput, latency, false, err
 	}
-	pressure := tracker.Overflow(opts.ContextPolicy)
-	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, compactionRequestSnapshot(req, tracker), metrics, failures)
+	pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy)
+	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, reason, pressure, compactionRequestSnapshot(req, tracker), metrics, failures, capacity)
 	if compactErr != nil {
 		return req, history, StepOutput{}, latency, false, overflowRecoveryError(err, compactErr)
 	}
@@ -3131,9 +3144,9 @@ func compactionErrorNextAction(ctx context.Context, trigger compaction.Trigger, 
 	return ContextCompactDebugNextActionFailTurn
 }
 
-func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, candidate *observation.CompactionRequestSnapshot, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
+func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, candidate *observation.CompactionRequestSnapshot, metrics *RunMetrics, failures *int, capacity ...*observation.CompactionCapacity) ([]session.Message, provider.Request, error) {
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
-	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, candidate, ContextCompactDebugNextActionProviderRequest)
+	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, candidate, ContextCompactDebugNextActionProviderRequest, capacity...)
 	if err != nil {
 		return history, provider.Request{}, err
 	}
@@ -3227,13 +3240,17 @@ func validateConfiguredTools(local []tools.ToolDefinition, hosted []provider.Hos
 	return withFailureOrigin(err, FailureOriginContract)
 }
 
-func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, candidate *observation.CompactionRequestSnapshot, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, candidate *observation.CompactionRequestSnapshot, nextAction string, capacity ...*observation.CompactionCapacity) ([]session.Message, provider.Request, compaction.Result, error) {
 	if err := validateContextBudget(opts.ContextPolicy); err != nil {
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	lifecycle := compactionLifecycleRequest(operationID, trigger, manual)
 	lifecycle.decision = (&observation.CompactionDecision{Before: candidate, Pressure: configbridge.PublicContextPressure(beforePressure)}).Clone()
+	if len(capacity) > 0 && capacity[0] != nil {
+		v := *capacity[0]
+		lifecycle.decision.Capacity = &v
+	}
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
 		TraceID:  opts.TraceID,

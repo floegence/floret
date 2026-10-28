@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -294,7 +295,7 @@ func compactionRequestSnapshot(req provider.Request, tracker *ContextPressureTra
 }
 
 func withCompactionIdentityMetadata(meta map[string]any, manual ManualCompactionRequest) map[string]any {
-	if d := manual.decision; d != nil && (d.Before != nil || d.After != nil) {
+	if d := manual.decision; d != nil && (d.Before != nil || d.After != nil || d.Capacity != nil) {
 		meta["decision"] = d.Clone()
 	}
 	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
@@ -304,4 +305,23 @@ func withCompactionIdentityMetadata(meta map[string]any, manual ManualCompaction
 		meta["source"] = source
 	}
 	return meta
+}
+
+func compactionOverflowCause(err error, tracker *ContextPressureTracker, policy contextpolicy.Policy) (contextpolicy.ContextPressure, compaction.Reason, *observation.CompactionCapacity) {
+	var bytes interface{ RequestByteLimit() (int64, int64) }
+	if errors.As(err, &bytes) {
+		actual, limit := bytes.RequestByteLimit()
+		pressure := contextpolicy.PressureFromManual(contextpolicy.Usage{}, policy)
+		pressure.Signal = "request_bytes"
+		pressure.Source = "request_capacity"
+		pressure.Confidence = contextpolicy.EstimateConservative
+		return pressure, compaction.Reason("request_bytes"), &observation.CompactionCapacity{Kind: "request_bytes", Stage: "prepare", Source: "host_policy", ActualBytes: actual, LimitBytes: limit}
+	}
+	var rejected interface{ RequestBodyRejected() bool }
+	if errors.As(err, &rejected) && rejected.RequestBodyRejected() {
+		pressure := contextpolicy.PressureFromManual(contextpolicy.Usage{}, policy)
+		pressure.Signal, pressure.Source, pressure.Confidence = "request_bytes", "request_capacity", contextpolicy.EstimateConservative
+		return pressure, compaction.Reason("request_bytes"), &observation.CompactionCapacity{Kind: "request_bytes", Stage: "response", Source: "provider"}
+	}
+	return tracker.Overflow(policy), compaction.ReasonProviderOverflow, nil
 }

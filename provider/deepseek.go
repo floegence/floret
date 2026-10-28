@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +28,9 @@ import (
 // this gateway; ResponseFormat accepts empty, text, or json_object.
 // Opaque response state belongs to Floret and must be passed back unchanged.
 type DeepSeekOptions struct {
+	// ImageFiles opts into temporary file references; nil preserves inline transport.
+	// The owner must match this gateway endpoint and credentials.
+	ImageFiles *DeepSeekImageFiles
 	// MaxRequestBytes bounds the final JSON body; zero disables the host limit.
 	MaxRequestBytes       int64
 	Model                 string
@@ -47,6 +49,7 @@ type DeepSeekOptions struct {
 }
 
 type deepSeekGateway struct {
+	imageFiles                       *DeepSeekImageFiles
 	maxRequestBytes                  int64
 	identity                         Identity
 	capabilities                     Capabilities
@@ -99,7 +102,10 @@ func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 	if options.ResolveAttachment != nil {
 		capabilities.AttachmentPayload = AttachmentExpanded
 	}
-	return &deepSeekGateway{maxRequestBytes: options.MaxRequestBytes, resolveAttachment: options.ResolveAttachment, supportsImages: slices.Contains(model.Input, "image"), identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
+	if options.ImageFiles != nil && (options.ImageFiles.endpoint != baseURL || options.ImageFiles.apiKey != apiKey) {
+		return nil, errors.New("DeepSeek image file owner differs from gateway endpoint or credentials")
+	}
+	return &deepSeekGateway{imageFiles: options.ImageFiles, maxRequestBytes: options.MaxRequestBytes, resolveAttachment: options.ResolveAttachment, supportsImages: slices.Contains(model.Input, "image"), identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
 }
 func (g *deepSeekGateway) Identity() Identity { return g.identity }
 func (g *deepSeekGateway) Capabilities() Capabilities {
@@ -157,7 +163,7 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 		r.ends = append(r.ends, len(r.input))
 	}
 }
-func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]string) (deepSeekRendered, []json.RawMessage, error) {
+func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]deepSeekResolvedImage) (deepSeekRendered, []json.RawMessage, error) {
 	// Canonical conversation may split one provider answer around hosted activity.
 	// Adjacent assistant fragments and calls still represent one provider response.
 	merged := make([]Message, 0, len(messages))
@@ -204,7 +210,7 @@ func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message
 					return out, nil, errors.New("resolved DeepSeek image size differs from attachment")
 				}
 				ref := deepSeekImageReference{Attachment: attachment, SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
-				images[deepSeekHash(ref)] = "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)
+				images[deepSeekHash(ref)] = deepSeekResolvedImage{mime: attachment.MIMEType, data: data}
 				parts = append(parts, deepSeekImageContent{Type: "image_reference", Image: &ref})
 			}
 			content = parts
@@ -262,7 +268,7 @@ func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message
 					return out, nil, errors.New("DeepSeek tool result image is empty")
 				}
 				ref := deepSeekImageReference{Attachment: attachment, SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
-				images[deepSeekHash(ref)] = "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)
+				images[deepSeekHash(ref)] = deepSeekResolvedImage{mime: attachment.MIMEType, data: data}
 				parts = append(parts, deepSeekImageContent{Type: "image_reference", Image: &ref})
 			}
 			out.add(deepSeekInput{Type: "function_call_output", CallID: c.CallID, Output: parts}, true)
@@ -285,7 +291,7 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 	if err := configbridge.ReasoningCapability(g.capabilities.ReasoningCapability).ValidateSelection(configbridge.ReasoningSelection(req.Reasoning)); err != nil {
 		return nil, history, err
 	}
-	images := map[string]string{}
+	images := map[string]deepSeekResolvedImage{}
 	rendered, system, err := g.renderMessages(ctx, req.Messages, images)
 	if err != nil {
 		return nil, history, err
@@ -321,7 +327,7 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 		}
 		history.Input = append(slices.Clone(previous.Input), rendered.input[end:]...)
 	}
-	input, err := expandDeepSeekImages(append(slices.Clone(system), history.Input...), images)
+	input, err := g.expandImages(ctx, append(slices.Clone(system), history.Input...), images)
 	if err != nil {
 		return nil, history, err
 	}
@@ -424,6 +430,12 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 			StatusCode: response.StatusCode,
 			Code:       sanitizeProviderErrorText(envelope.Error.Code),
 			Message:    sanitizeProviderErrorText(envelope.Error.Message),
+		}
+		if g.imageFiles != nil && (response.StatusCode == 400 || response.StatusCode == 404 || response.StatusCode == 410) && (envelope.Error.Code == "file_not_found" || envelope.Error.Code == "file_expired") {
+			if err := g.imageFiles.invalidateBody(ctx, body); err != nil {
+				return nil, err
+			}
+			return nil, &RequestPreparationError{Cause: failure}
 		}
 		if overflow {
 			// Preserve the established recovery classification while exposing

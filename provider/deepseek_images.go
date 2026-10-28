@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 )
@@ -17,10 +19,22 @@ type deepSeekImageContent struct {
 	Type     string                  `json:"type"`
 	Text     string                  `json:"text,omitempty"`
 	Image    *deepSeekImageReference `json:"image,omitempty"`
+	FileID   string                  `json:"file_id,omitempty"`
 	ImageURL string                  `json:"image_url,omitempty"`
 }
 
-func expandDeepSeekImages(input []json.RawMessage, images map[string]string) ([]json.RawMessage, error) {
+type deepSeekResolvedImage struct {
+	mime string
+	data []byte
+}
+
+func (g *deepSeekGateway) expandImages(ctx context.Context, input []json.RawMessage, images map[string]deepSeekResolvedImage) ([]json.RawMessage, error) {
+	if g.imageFiles != nil {
+		if err := validateDeepSeekFileImages(input, images); err != nil {
+			return nil, err
+		}
+	}
+	resolved := map[string]deepSeekImageContent{}
 	for i, raw := range input {
 		var item struct {
 			Type    string          `json:"type"`
@@ -57,11 +71,26 @@ func expandDeepSeekImages(input []json.RawMessage, images map[string]string) ([]
 				if part.Image == nil {
 					return nil, errors.New("DeepSeek image reference is incomplete")
 				}
-				uri, ok := images[deepSeekHash(part.Image)]
+				key := deepSeekHash(part.Image)
+				image, ok := images[key]
 				if !ok {
 					return nil, errors.New("DeepSeek image reference has no authorized request content")
 				}
-				parts[j] = deepSeekImageContent{Type: "input_image", ImageURL: uri}
+				wire, exists := resolved[key]
+				if !exists {
+					wire.Type = "input_image"
+					if g.imageFiles != nil {
+						id, err := g.imageFiles.resolve(ctx, image.mime, image.data)
+						if err != nil {
+							return nil, err
+						}
+						wire.FileID = id
+					} else {
+						wire.ImageURL = "data:" + image.mime + ";base64," + base64.StdEncoding.EncodeToString(image.data)
+					}
+					resolved[key] = wire
+				}
+				parts[j] = wire
 			default:
 				return nil, errors.New("unsupported DeepSeek user content in response state")
 			}

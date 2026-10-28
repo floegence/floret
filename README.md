@@ -1716,3 +1716,20 @@ Built-in Memory and SQLite backends implement this optional capability. The
 migrator reads at most 64 KiB per range request, checks cancellation and exact
 lengths, and preserves Get compatibility for custom backends without it. A
 capability error is returned; it never triggers an unbounded fallback read.
+
+### Temporary DeepSeek image transport and capacity evidence
+
+Hosts can opt into temporary file references with `provider.NewDeepSeekImageFiles`
+and `DeepSeekOptions.ImageFiles`. Keep one bounded in-memory owner per endpoint
+and credential lifetime, choose explicit retention (one hour to thirty days),
+and resolve authorized original attachments on every new preparation. File IDs
+never enter canonical history. Frozen retries replay identical payloads; explicit
+`file_not_found` / `file_expired` rejections permit one new Engine preparation.
+Image references still contribute the normal visual token budget.
+
+`observation.CompactionDecision.Capacity` distinguishes host request-byte limits
+from server HTTP 413 rejection. It does not assert that the model token window is
+full. Host evidence contains exact bytes; unavailable server counts stay absent.
+The schema 32 to 33 edge atomically changes only the manifest fence; existing
+conversation records retain their bytes and remain available through the same
+canonical owner. Media validation and upload failures do not trigger compaction.
