@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Upgrade golang.org/x/net to v0.62.0 to fix reachable HTML parser and renderer
+  vulnerabilities GO-2026-6860 and GO-2026-6866. Update its required x/sys and
+  x/text dependencies without changing Floret APIs or conversation formats.
+
 - Add optional host-authored tools.Definition.BatchExclusiveGroup to reject
   conflicting prepared calls before authorization while preserving independent
   calls, paired feedback, default behavior and existing resource permissions.
