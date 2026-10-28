@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade golang.org/x/image to v0.47.0 to remove the reachable VP8L decoder
+  vulnerability GO-2026-6222 before downstream image transport adoption.
 - Add opt-in temporary DeepSeek image Files transport with explicit expiry,
   bounded credential-scoped reuse, media validation and authorization on every
   preparation. Preserve visual token budgeting and immutable transport retries.

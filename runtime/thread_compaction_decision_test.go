@@ -33,3 +33,30 @@ func TestCompactionDecisionSnapshotIsolation(t *testing.T) {
 		t.Fatalf("canonical evidence changed: %v", err)
 	}
 }
+
+func TestCapacityDecisionRoundTripAndIsolation(t *testing.T) {
+	for _, capacity := range []*observation.CompactionCapacity{
+		{Kind: "request_bytes", Stage: "prepare", Source: "host_policy", ActualBytes: 101, LimitBytes: 100},
+		{Kind: "request_bytes", Stage: "response", Source: "provider"},
+	} {
+		decision := &observation.CompactionDecision{Capacity: capacity, Pressure: config.ContextPressure{Signal: "request_bytes", Source: "request_capacity", ContextWindowTokens: 1000, ThresholdTokens: 900, RequestSafeLimit: 950}}
+		entry, err := sessiontree.NewThreadContextCompactionEntry(sessiontree.ThreadContextCompaction{ThreadID: "thread", TurnID: "turn", RunID: "run", OperationID: "capacity", RequestID: "request", Phase: "start", Status: "running", Decision: decision, ObservedAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
+		if err != nil || !reflect.DeepEqual(decoded.Decision, decision) {
+			t.Fatalf("capacity round trip: %+v %v", decoded, err)
+		}
+		snapshot := &ThreadContextSnapshot{Compactions: []ThreadContextCompaction{{Decision: decoded.Decision}}}
+		clone := cloneThreadContextSnapshot(snapshot)
+		clone.Compactions[0].Decision.Capacity.Source = "changed"
+		if decision.Capacity.Source == "changed" || snapshot.Compactions[0].Decision.Capacity.Source == "changed" {
+			t.Fatal("capacity aliases mutable observation")
+		}
+		again, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
+		if err != nil || !reflect.DeepEqual(again.Decision, snapshot.Compactions[0].Decision) {
+			t.Fatalf("canonical capacity evidence changed: %v", err)
+		}
+	}
+}
