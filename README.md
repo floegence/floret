@@ -396,6 +396,13 @@ values. Custom provider transports and physical storage implementations are
 advanced integration surfaces with separate conformance suites. Downstream
 code must never import `internal/*`.
 
+Tool definitions may opt into `BatchExclusiveGroup`. Two or more valid,
+prepared calls in the same nonempty group receive paired BATCH_CONFLICT
+results before authorization or execution. Unrelated calls continue normally.
+This host-only declaration does not serialize calls, infer dependencies, or
+replace resource permissions and cross-batch locking. Empty groups preserve
+existing behavior.
+
 Tool definitions may provide `InvalidActivity` when a host needs to preserve a
 safe display label from a parseable JSON object that fails the input schema.
 Floret uses that callback only for presentation: the invalid invocation still

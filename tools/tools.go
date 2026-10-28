@@ -50,6 +50,11 @@ type Definition struct {
 	PermissionFor PermissionResolver
 	OutputPolicy  OutputPolicy
 	Annotations   map[string]any
+
+	// BatchExclusiveGroup rejects all prepared calls sharing this nonempty group
+	// in one batch before authorization. Independent groups still run. It is not
+	// a lock, ordering rule or provider-visible instruction.
+	BatchExclusiveGroup string
 }
 
 type DispatchOptions struct {
@@ -540,6 +545,7 @@ func (r *Registry) DispatchBatchObserved(ctx context.Context, calls []ToolCall, 
 	}
 	prepared := make([]preparedDispatch, len(calls))
 	ready := make([]bool, len(calls))
+	groups := make(map[string][]int)
 	requests := make([]EffectDispatchRequest, 0, len(calls))
 	for index, call := range calls {
 		callOpts := opts
@@ -552,7 +558,26 @@ func (r *Registry) DispatchBatchObserved(ctx context.Context, calls []ToolCall, 
 		}
 		prepared[index] = item
 		ready[index] = true
-		requests = append(requests, item.request)
+		if item.batchExclusiveGroup != "" {
+			groups[item.batchExclusiveGroup] = append(groups[item.batchExclusiveGroup], index)
+		}
+	}
+	// Reject all conflicting prepared members before authorization. Invalid
+	// siblings retain their errors; no arbitrary winner or dependency is inferred.
+	for _, indices := range groups {
+		if len(indices) < 2 {
+			continue
+		}
+		for _, index := range indices {
+			ready[index] = false
+			results[index] = ErrorResult(calls[index].ID, calls[index].Name,
+				"BATCH_CONFLICT: multiple calls share an exclusive execution group. Send these calls in separate batches. Tool execution has not started; no action was executed.")
+		}
+	}
+	for index, ok := range ready {
+		if ok {
+			requests = append(requests, prepared[index].request)
+		}
 	}
 	if opts.EffectBatchPreflight != nil && len(requests) > 0 {
 		if err := opts.EffectBatchPreflight(ctx, requests); err != nil {
@@ -669,8 +694,9 @@ func invalidCallActivity(def Definition, call ToolCall, opts DispatchOptions, ra
 }
 
 type preparedDispatch struct {
-	request EffectDispatchRequest
-	invoke  func(context.Context) Result
+	batchExclusiveGroup string
+	request             EffectDispatchRequest
+	invoke              func(context.Context) Result
 }
 
 func (p preparedDispatch) dispatch(ctx context.Context, dispatcher EffectDispatcher) (result Result) {
@@ -817,7 +843,7 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 		Resources: append([]ResourceRef(nil), resources...), Effects: append([]Effect(nil), t.Definition.Effects...), Permission: permission,
 		ReadOnly: t.Definition.ReadOnly, Destructive: t.Definition.Destructive, OpenWorld: t.Definition.OpenWorld,
 	}
-	return preparedDispatch{request: request, invoke: invoke}, Result{}, true
+	return preparedDispatch{request: request, invoke: invoke, batchExclusiveGroup: t.Definition.BatchExclusiveGroup}, Result{}, true
 }
 
 func preparedDispatchActivity(def Definition, inv erasedInvocation) *ActivityPresentation {

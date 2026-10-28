@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional host-authored tools.Definition.BatchExclusiveGroup to reject
+  conflicting prepared calls before authorization while preserving independent
+  calls, paired feedback, default behavior and existing resource permissions.
+
 - Retain confirmed intermediate response membership across interaction continuations
   within one turn. Preserve run-local supersession, unknown partial output and
   bounded cold/warm window reads without rewriting historical conversations.

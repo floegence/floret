@@ -2319,6 +2319,7 @@ field Definition.Permission github.com/floegence/floret/v7/tools.PermissionSpec
 field Definition.PermissionFor github.com/floegence/floret/v7/tools.PermissionResolver
 field Definition.OutputPolicy github.com/floegence/floret/v7/tools.OutputPolicy
 field Definition.Annotations map[string]any
+field Definition.BatchExclusiveGroup string
 type DispatchOptions struct
 field DispatchOptions.RunID github.com/floegence/floret/v7/identity.RunID
 field DispatchOptions.ThreadID github.com/floegence/floret/v7/identity.ThreadID

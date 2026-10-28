@@ -180,6 +180,15 @@ Hosts decide how to present results; answer citations are not per-call results.
 
 # Batch Execution
 
+The optional public tools.Definition.BatchExclusiveGroup declares a batch-local
+exclusion constraint. The Registry rejects every prepared member of a duplicated
+nonempty group with paired BATCH_CONFLICT feedback before authorization; invalid
+calls retain their original errors and unrelated calls still execute. The default
+empty group preserves existing behavior. This compatible API addition lets hosts
+express shared-control constraints without copying batch lifecycle or counting
+unrelated calls. It is host metadata, not model arguments, an ordering guarantee,
+a resource lock or a permission grant. No new durable state or migration is needed.
+
 The engine validates and prepares the complete ordinary-call batch before any
 handler may cross dispatch, then starts eligible calls concurrently.
 `DispatchOptions.BatchIndex` and `BatchSize` identify each call's original
