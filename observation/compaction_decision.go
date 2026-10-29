@@ -24,11 +24,13 @@ type CompactionRequestSnapshot struct {
 // CompactionCapacity records a capacity failure independently of token pressure.
 // Unknown server byte counts remain zero. It never contains request content.
 type CompactionCapacity struct {
-	Kind        string `json:"kind"`
-	Stage       string `json:"stage"`
-	Source      string `json:"source"`
-	ActualBytes int64  `json:"actual_bytes,omitempty"`
-	LimitBytes  int64  `json:"limit_bytes,omitempty"`
+	ActualImages int64  `json:"actual_images,omitempty"`
+	LimitImages  int64  `json:"limit_images,omitempty"`
+	Kind         string `json:"kind"`
+	Stage        string `json:"stage"`
+	Source       string `json:"source"`
+	ActualBytes  int64  `json:"actual_bytes,omitempty"`
+	LimitBytes   int64  `json:"limit_bytes,omitempty"`
 }
 
 func (c *CompactionCapacity) Validate() error {
@@ -36,6 +38,14 @@ func (c *CompactionCapacity) Validate() error {
 		return nil
 	}
 	valid := c.Kind == "request_bytes" && ((c.Stage == "prepare" && c.Source == "host_policy" && c.LimitBytes > 0 && c.ActualBytes > c.LimitBytes) || (c.Stage == "response" && c.Source == "provider" && c.ActualBytes == 0 && c.LimitBytes == 0))
+	switch c.Kind {
+	case "image_count":
+		valid = (c.Stage == "prepare" || c.Stage == "response") && c.Source == "provider" && c.ActualImages > c.LimitImages && c.LimitImages > 0 && c.ActualBytes == 0 && c.LimitBytes == 0
+	case "image_bytes":
+		valid = (c.Stage == "prepare" || c.Stage == "response") && c.Source == "provider" && c.ActualBytes > c.LimitBytes && c.LimitBytes > 0 && c.ActualImages == 0 && c.LimitImages == 0
+	default:
+		valid = valid && c.ActualImages == 0 && c.LimitImages == 0
+	}
 	if !valid {
 		return fmt.Errorf("invalid compaction capacity evidence")
 	}

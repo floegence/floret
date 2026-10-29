@@ -79,3 +79,32 @@ func TestVisualExchangeWithSupplementalAnchorCannotCompact(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, summary.calls)
 	}
 }
+
+func TestMediaRecoverySummarizesOlderUserImagesButKeepsCurrentImages(t *testing.T) {
+	history := []session.Message{
+		{Role: session.User, EntryID: "older", Content: "old frame", Attachments: []session.MessageAttachment{{ResourceRef: "old", MIMEType: "image/png", SizeBytes: 100}}},
+		{Role: session.Assistant, EntryID: "answer", Content: "reviewed"},
+		{Role: session.User, EntryID: "current", Content: "current frame", Attachments: []session.MessageAttachment{{ResourceRef: "current", MIMEType: "image/png", SizeBytes: 100}}},
+	}
+	for _, reason := range []Reason{"image_count", "image_bytes", "request_bytes"} {
+		prep, err := Prepare(t.Context(), Request{History: history, Trigger: TriggerOverflow, Reason: reason, Policy: contextpolicy.Policy{ContextWindowTokens: 950000}}, &minimalExchangeSummary{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var refs []string
+		for _, m := range prep.ActiveMessages {
+			for _, a := range m.Attachments {
+				refs = append(refs, a.ResourceRef)
+			}
+		}
+		if len(refs) != 1 || refs[0] != "current" {
+			t.Fatalf("retained media: %v", refs)
+		}
+		if len(prep.CompactedHead[0].Attachments) != 1 || prep.CompactedHead[0].Attachments[0].ResourceRef != "old" {
+			t.Fatal("historical image omitted from summary")
+		}
+		if history[0].Attachments[0].ResourceRef != "old" {
+			t.Fatal("mutated canonical source")
+		}
+	}
+}

@@ -33,6 +33,7 @@ cp "${repository_root}/scripts/testdata/v7_adoption_test.go" adoption_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/responses_history_test.go" > responses_history_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/moonshot_test.go" > moonshot_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/model_image_test.go" > model_image_test.go
+sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/media_capacity_test.go" > media_capacity_test.go
 cp "${repository_root}/scripts/testdata/historical_compaction_test.go" historical_compaction_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_correction_test.go" > historical_correction_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/tool-correction-v7.69.1" historical-correction

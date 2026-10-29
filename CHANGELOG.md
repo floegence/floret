@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Recover aggregate image count and decoded-byte capacity through the existing
+  Engine compaction path, independently of token pressure. Summary requests
+  shrink the same unconsumed batch and preserve every image in order. Retain
+  current user images, summarize older images once, validate the full replacement
+  before installation, and never replay completed tools.
+- Add optional MediaLimitError.RequestCapacityLimit and typed image counts in
+  CompactionCapacity, preserving published error identities. Append transactional
+  schema 33 to 34 manifest fencing without rewriting conversation records.
+
 - Attribute the Harness-owned Goal tool to Floret so request token and visible
   character breakdowns classify it as a system tool instead of an unknown source.
 - Add explicit bounded model-image resizing and quality compression with source

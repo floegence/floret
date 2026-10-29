@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -12,6 +13,30 @@ import (
 	"github.com/floegence/floret/v7/observation"
 	publicprovider "github.com/floegence/floret/v7/provider"
 )
+
+func TestPreparedMediaCapacityRecoversWithoutTokenOverflow(t *testing.T) {
+	for _, kind := range []string{"count", "total_bytes"} {
+		t.Run(kind, func(t *testing.T) {
+			cause := &publicprovider.MediaLimitError{Kind: kind, Actual: 3, Limit: 2}
+			p := newPreparedLifecycleProvider(preparedBehavior{prepareErr: cause, events: preparedDone("after compact")})
+			store := session.NewMemoryStore()
+			if err := store.AppendTranscript("run", session.Message{Role: session.User, Content: "older", EntryID: "u1"}, session.Message{Role: session.User, Content: "newer", EntryID: "u2"}); err != nil {
+				t.Fatal(err)
+			}
+			e := newTestEngine(p, &event.Recorder{})
+			e.Store = store
+			e.Options.ProviderName, e.Options.Model = "fixture", "fixture-model"
+			e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+			got := e.Run(t.Context(), "")
+			if got.Status != engine.Completed {
+				t.Fatalf("media capacity should recover: %+v", got)
+			}
+			if errors.Is(cause, publicprovider.ErrContextOverflow) {
+				t.Fatal("media must retain its independent error identity")
+			}
+		})
+	}
+}
 
 func TestPreparedByteOverflowKeepsCapacityCause(t *testing.T) {
 	cause := &publicprovider.RequestByteLimitError{ActualBytes: 101, LimitBytes: 100}
@@ -101,5 +126,72 @@ func TestTemporaryReferenceRenewalIsBoundedAndDoesNotCompact(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMediaCapacityServerRecoveryIsBounded(t *testing.T) {
+	for _, repeated := range []bool{false, true} {
+		t.Run(fmt.Sprint(repeated), func(t *testing.T) {
+			cause := &publicprovider.MediaLimitError{Kind: "count", Actual: 3, Limit: 2}
+			second := preparedBehavior{events: preparedDone("recovered")}
+			if repeated {
+				second = preparedBehavior{streamErr: cause}
+			}
+			p := newPreparedLifecycleProvider(preparedBehavior{streamErr: cause}, second)
+			e := newTestEngine(p, &event.Recorder{})
+			e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+			got := e.Run(t.Context(), "inspect images")
+			if (got.Status == engine.Completed) == repeated || len(p.snapshotHandles()) != 2 {
+				t.Fatalf("status=%s handles=%d err=%v", got.Status, len(p.snapshotHandles()), got.Err)
+			}
+			if repeated && errors.Is(got.Err, provider.ErrContextOverflow) {
+				t.Fatal("image failure became token overflow")
+			}
+		})
+	}
+}
+func TestIndividualImageFailureDoesNotCompact(t *testing.T) {
+	for _, kind := range []string{"dimension", "bytes", "animated_dimension"} {
+		p := newPreparedLifecycleProvider(preparedBehavior{prepareErr: &publicprovider.MediaLimitError{Kind: kind, Actual: 3, Limit: 2}})
+		recorder := &event.Recorder{}
+		e := newTestEngine(p, recorder)
+		e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+		got := e.Run(t.Context(), "current image")
+		if got.Status != engine.Failed || got.Metrics.Compactions != 0 {
+			t.Fatalf("%s: %+v", kind, got)
+		}
+		for _, ev := range recorder.Events {
+			if ev.Type == event.ContextCompact {
+				t.Fatal("invalid image entered recovery")
+			}
+		}
+	}
+}
+
+type mandatoryMediaProvider struct{ attempts int }
+
+func (p *mandatoryMediaProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	return nil, errors.New("must not dispatch")
+}
+func (p *mandatoryMediaProvider) PrepareRequest(context.Context, provider.Request) (provider.PreparedRequest, error) {
+	p.attempts++
+	return nil, &publicprovider.MediaLimitError{Kind: "count", Actual: 3, Limit: 2}
+}
+func TestMandatoryMediaFailureNeverInstallsCheckpoint(t *testing.T) {
+	p := &mandatoryMediaProvider{}
+	recorder := &event.Recorder{}
+	e := newTestEngine(p, recorder)
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+	got := e.RunTurn(t.Context(), engine.RunInput{RunID: "run", ThreadID: "thread", TurnID: "turn", PromptScopeID: "thread", History: []session.Message{{Role: session.User, Content: "current images", EntryID: "current", Attachments: []session.MessageAttachment{{ResourceRef: "one", MIMEType: "image/png"}, {ResourceRef: "two", MIMEType: "image/png"}, {ResourceRef: "three", MIMEType: "image/png"}}}}})
+	if got.Status != engine.Failed || p.attempts > 2 || got.Metrics.Compactions != 0 {
+		t.Fatalf("attempts=%d result=%+v", p.attempts, got)
+	}
+	for _, m := range got.Messages {
+		if m.Kind == session.MessageKindCompactionSummary {
+			t.Fatal("failed replacement installed")
+		}
+	}
+	if len(got.Messages) != 1 || len(got.Messages[0].Attachments) != 3 {
+		t.Fatal("current images were dropped")
 	}
 }

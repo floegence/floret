@@ -72,7 +72,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			req.AttemptEpoch = details.Attempts + 1
 			req.AttemptID = fmt.Sprintf("%s:generation:0:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
 			prepared, inputTokens, err := g.prepareSummaryRequest(ctx, req)
-			if err != nil && !errors.Is(err, provider.ErrContextOverflow) {
+			if err != nil && !provider.IsCapacityOverflow(err) {
 				return "", details, err
 			}
 			capacityErr := err
@@ -92,7 +92,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 					details.Batches++
 					break
 				}
-				if !errors.Is(err, provider.ErrContextOverflow) {
+				if !provider.IsCapacityOverflow(err) {
 					return "", details, err
 				}
 				details.OverflowRetries++

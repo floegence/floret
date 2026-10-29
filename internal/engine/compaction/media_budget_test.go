@@ -10,12 +10,14 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 	sessioncompaction "github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	publicprovider "github.com/floegence/floret/v7/provider"
 )
 
 type mediaBudgetProvider struct {
-	accepted []string
-	rejected int
-	all      bool
+	accepted     []string
+	rejected     int
+	all          bool
+	capacityKind string
 }
 
 func (p *mediaBudgetProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
@@ -27,6 +29,9 @@ func (p *mediaBudgetProvider) Stream(_ context.Context, req provider.Request) (<
 	}
 	if p.all || len(refs) > 1 {
 		p.rejected++
+		if p.capacityKind != "" {
+			return nil, &publicprovider.MediaLimitError{Kind: p.capacityKind, Actual: int64(len(refs)), Limit: 1}
+		}
 		return nil, provider.ErrContextOverflow
 	}
 	p.accepted = append(p.accepted, refs...)
@@ -72,6 +77,9 @@ func (p *preparationOverflowProvider) PrepareRequest(_ context.Context, req prov
 		count += len(m.Attachments)
 	}
 	if count > 1 {
+		if p.capacityKind != "" {
+			return nil, &publicprovider.MediaLimitError{Kind: p.capacityKind, Actual: int64(count), Limit: 1}
+		}
 		return nil, provider.ErrContextOverflow
 	}
 	return &preparedMediaSummary{owner: p, request: req}, nil
@@ -104,5 +112,49 @@ func TestSummaryPreparationOverflowShrinksWithoutSkippingImages(t *testing.T) {
 		if ref != fmt.Sprintf("image:%d", i) {
 			t.Fatal(p.accepted)
 		}
+	}
+}
+
+func TestSummaryTypedMediaCapacityCoversAllImages(t *testing.T) {
+	for _, kind := range []string{"count", "total_bytes"} {
+		t.Run(kind, func(t *testing.T) {
+			p := &mediaBudgetProvider{capacityKind: kind}
+			m := session.Message{Role: session.User, Content: "inspect all frames"}
+			for i := range 6 {
+				m.Attachments = append(m.Attachments, session.MessageAttachment{ResourceRef: fmt.Sprintf("image:%d", i), Name: "frame", MIMEType: "image/png", SizeBytes: 1024})
+			}
+			_, details, err := (ProviderSummaryGenerator{Provider: p, Policy: contextpolicy.Policy{ContextWindowTokens: 950000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{m}})
+			if err != nil || len(p.accepted) != 6 || details.OverflowRetries == 0 {
+				t.Fatalf("accepted=%v details=%+v err=%v", p.accepted, details, err)
+			}
+			for i, ref := range p.accepted {
+				if ref != fmt.Sprintf("image:%d", i) {
+					t.Fatal(p.accepted)
+				}
+			}
+		})
+	}
+}
+
+func TestSummaryTypedPreparationCapacityAndAtomicFailure(t *testing.T) {
+	p := &preparationOverflowProvider{mediaBudgetProvider: mediaBudgetProvider{capacityKind: "count"}}
+	m := session.Message{Role: session.User, Content: "all frames"}
+	for i := range 6 {
+		m.Attachments = append(m.Attachments, session.MessageAttachment{ResourceRef: fmt.Sprintf("image:%d", i), MIMEType: "image/png", SizeBytes: 1024})
+	}
+	_, details, err := (ProviderSummaryGenerator{Provider: p, Policy: contextpolicy.Policy{ContextWindowTokens: 950000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{m}})
+	if err != nil || len(p.accepted) != 6 || details.OverflowRetries == 0 || p.preparations > 30 {
+		t.Fatalf("accepted=%v details=%+v err=%v", p.accepted, details, err)
+	}
+	for i, ref := range p.accepted {
+		if ref != fmt.Sprintf("image:%d", i) {
+			t.Fatal(p.accepted)
+		}
+	}
+	impossible := &mediaBudgetProvider{all: true, capacityKind: "count"}
+	_, _, err = (ProviderSummaryGenerator{Provider: impossible, Policy: contextpolicy.Policy{ContextWindowTokens: 950000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{m}})
+	var cause *publicprovider.MediaLimitError
+	if !errors.As(err, &cause) || impossible.rejected > 10 {
+		t.Fatalf("rejected=%d err=%v", impossible.rejected, err)
 	}
 }

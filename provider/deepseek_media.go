@@ -13,7 +13,8 @@ import (
 )
 
 // MediaLimitError describes an independently enforced media restriction.
-// It is not context overflow: summarizing cannot repair an invalid attachment.
+// Aggregate limits may be relieved by compacting history; individual invalid
+// attachments retain their independent terminal error identity.
 type MediaLimitError struct {
 	Kind          string
 	Actual, Limit int64
@@ -85,4 +86,20 @@ func validateDeepSeekFileImages(input []json.RawMessage, images map[string]deepS
 		return &MediaLimitError{Kind: "dimension", Actual: int64(maxSide), Limit: int64(limit)}
 	}
 	return nil
+}
+
+// RequestCapacityLimit exposes aggregate image capacity without aliasing
+// ErrContextOverflow. Empty kind means an individual-image failure.
+func (e *MediaLimitError) RequestCapacityLimit() (kind string, actual, limit int64) {
+	if e == nil || e.Limit <= 0 || e.Actual <= e.Limit {
+		return "", 0, 0
+	}
+	switch e.Kind {
+	case "count":
+		return "image_count", e.Actual, e.Limit
+	case "total_bytes":
+		return "image_bytes", e.Actual, e.Limit
+	default:
+		return "", 0, 0
+	}
 }

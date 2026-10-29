@@ -84,8 +84,13 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 	}
 	envelope := format.envelope
 	if format.version == backendDomainV32Version && kind == backendDomainRecordManifest {
-		if manifest, ok := value.(backendDomainManifest); ok && manifest.Version == backendDomainV33Version {
-			envelope = "sessiontree-v33-manifest"
+		if manifest, ok := value.(backendDomainManifest); ok {
+			switch manifest.Version {
+			case backendDomainV33Version:
+				envelope = "sessiontree-v33-manifest"
+			case backendDomainV34Version:
+				envelope = "sessiontree-v34-manifest"
+			}
 		}
 	}
 	return storagecodec.EncodeEnvelope(envelope, record)
@@ -93,10 +98,18 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 
 func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (backendDomainRecord, error) {
 	payload, err := storagecodec.DecodeEnvelope(encoded, format.envelope)
-	manifestV33 := false
+	manifestVersion := 0
 	if err != nil && format.version == backendDomainV32Version {
 		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v33-manifest")
-		manifestV33 = err == nil
+		if err == nil {
+			manifestVersion = backendDomainV33Version
+		}
+		if err != nil {
+			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v34-manifest")
+			if err == nil {
+				manifestVersion = backendDomainV34Version
+			}
+		}
 	}
 	if err != nil {
 		return backendDomainRecord{}, err
@@ -105,12 +118,12 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 	if err := storagecodec.DecodeJSON(payload, &record); err != nil {
 		return backendDomainRecord{}, err
 	}
-	if record.Version != format.version || strings.TrimSpace(record.Kind) == "" || len(record.Value) == 0 || manifestV33 && record.Kind != backendDomainRecordManifest {
+	if record.Version != format.version || strings.TrimSpace(record.Kind) == "" || len(record.Value) == 0 || manifestVersion != 0 && record.Kind != backendDomainRecordManifest {
 		return backendDomainRecord{}, fmt.Errorf("unsupported session-tree %s record", format.label)
 	}
 	if format.version == backendDomainV32Version && record.Kind == backendDomainRecordManifest {
 		var manifest backendDomainManifest
-		if err := storagecodec.DecodeJSON(record.Value, &manifest); err != nil || (manifest.Version == backendDomainV33Version) != manifestV33 {
+		if err := storagecodec.DecodeJSON(record.Value, &manifest); err != nil || manifestVersion != 0 && manifest.Version != manifestVersion || manifestVersion == 0 && manifest.Version != backendDomainV32Version {
 			return backendDomainRecord{}, ErrAuthorityCorrupt
 		}
 	}

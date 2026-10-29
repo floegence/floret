@@ -307,7 +307,18 @@ func withCompactionIdentityMetadata(meta map[string]any, manual ManualCompaction
 	return meta
 }
 
-func compactionOverflowCause(err error, tracker *ContextPressureTracker, policy contextpolicy.Policy) (contextpolicy.ContextPressure, compaction.Reason, *observation.CompactionCapacity) {
+func compactionOverflowCause(err error, tracker *ContextPressureTracker, policy contextpolicy.Policy, stage string) (contextpolicy.ContextPressure, compaction.Reason, *observation.CompactionCapacity) {
+	if kind, actual, limit := provider.CapacityLimit(err); kind != "" {
+		pressure := contextpolicy.PressureFromManual(contextpolicy.Usage{}, policy)
+		pressure.Signal, pressure.Source, pressure.Confidence = contextpolicy.PressureSignal(kind), "request_capacity", contextpolicy.EstimateConservative
+		capacity := &observation.CompactionCapacity{Kind: kind, Stage: stage, Source: "provider"}
+		if kind == "image_count" {
+			capacity.ActualImages, capacity.LimitImages = actual, limit
+		} else {
+			capacity.ActualBytes, capacity.LimitBytes = actual, limit
+		}
+		return pressure, compaction.Reason(kind), capacity
+	}
 	var bytes interface{ RequestByteLimit() (int64, int64) }
 	if errors.As(err, &bytes) {
 		actual, limit := bytes.RequestByteLimit()

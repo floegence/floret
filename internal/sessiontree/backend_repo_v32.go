@@ -70,7 +70,7 @@ func NewFreshCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Ba
 	if !fresh {
 		return nil, errors.Join(ErrAuthorityCorrupt, errors.New("fresh initialization encountered existing domain state"))
 	}
-	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV33Version}); err != nil {
+	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV34Version}); err != nil {
 		return nil, err
 	}
 	return NewBackendRepoForFormat(backend, now, parentEvents, backendDomainV32Format)

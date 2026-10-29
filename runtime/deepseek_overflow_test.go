@@ -86,14 +86,42 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 		if initialHistory != "" {
 			name = "large_earlier_observation"
 		}
-		t.Run(name, func(t *testing.T) { testDeepSeekImageHistoryOverflow(t, initialHistory, false) })
+		t.Run(name, func(t *testing.T) { testDeepSeekImageHistoryOverflow(t, initialHistory, false, false) })
 	}
 	t.Run("mixed_frame_transport_bytes", func(t *testing.T) {
-		testDeepSeekImageHistoryOverflow(t, strings.Repeat("Earlier observed application state. ", 1500), true)
+		testDeepSeekImageHistoryOverflow(t, strings.Repeat("Earlier observed application state. ", 1500), true, false)
 	})
 }
 
-func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, transportBudget bool) {
+func TestTypedMediaCapacityRecoversWithoutReplayingTools(t *testing.T) {
+	testDeepSeekImageHistoryOverflow(t, "", false, true)
+}
+
+type capacityTestGateway struct {
+	provider.Gateway
+	rejected *atomic.Int32
+}
+
+func (g capacityTestGateway) Prepare(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
+	count := 0
+	for _, m := range req.Messages {
+		count += len(m.Attachments)
+		if m.ToolResult != nil {
+			count += len(m.ToolResult.Attachments)
+		}
+	}
+	limit := 3
+	if len(req.Tools) == 0 {
+		limit = 1
+	}
+	if count > limit {
+		g.rejected.Add(1)
+		return nil, &provider.MediaLimitError{Kind: "count", Actual: int64(count), Limit: int64(limit)}
+	}
+	return g.Gateway.(provider.RequestPreparer).Prepare(ctx, req)
+}
+
+func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, transportBudget, typedMedia bool) {
 	var requests, calls, overflows, effects, recoveries atomic.Int32
 	var latestCall string
 	var awaitingRecovery bool
@@ -182,6 +210,10 @@ func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, trans
 	if err != nil {
 		t.Fatal(err)
 	}
+	var capacityRejections atomic.Int32
+	if typedMedia {
+		gateway = capacityTestGateway{Gateway: gateway, rejected: &capacityRejections}
+	}
 	capture := tools.Define[map[string]any](tools.Definition{Name: "capture", InputSchema: tools.StrictObject(map[string]any{"frame": map[string]any{"type": "integer"}}, []string{"frame"}), ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
 		index := effects.Add(1)
 		text := "captured"
@@ -240,7 +272,7 @@ func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, trans
 	if view.Failure != nil {
 		t.Fatalf("image history recovery failed: %+v", view.Failure)
 	}
-	if effects.Load() != 10 || calls.Load() != 10 || overflows.Load() == 0 || recoveries.Load() != overflows.Load() {
+	if effects.Load() != 10 || calls.Load() != 10 || !typedMedia && (overflows.Load() == 0 || recoveries.Load() != overflows.Load()) || typedMedia && capacityRejections.Load() == 0 {
 		t.Fatalf("calls=%d effects=%d overflows=%d recoveries=%d", calls.Load(), effects.Load(), overflows.Load(), recoveries.Load())
 	}
 }

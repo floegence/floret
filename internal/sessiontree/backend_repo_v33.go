@@ -35,5 +35,5 @@ func migrateBackendDomainV32ToV33(ctx context.Context, tx spi.WriteTx, source ba
 }
 
 func validDomainManifestVersion(format backendDomainFormat, version int) bool {
-	return version == format.version || format.version == backendDomainV32Version && version == backendDomainV33Version
+	return version == format.version || format.version == backendDomainV32Version && (version == backendDomainV33Version || version == backendDomainV34Version)
 }

@@ -219,7 +219,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if start <= 0 || start >= len(history) {
 		return Preparation{}, ErrNoCutPoint
 	}
-	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
+	keptUsers := selectCompactionUsers(history, req)
 	var tailShrunk bool
 	start, tailShrunk = fitTailStartForCompactedContext(history, start, keptUsers, req.Policy, protectedAnchor)
 	head := append([]session.Message(nil), history[:start]...)
@@ -1062,7 +1062,7 @@ func completeVisualExchange(history []session.Message) bool {
 }
 
 func prepareEntireHistory(ctx context.Context, req Request, history []session.Message, previousBaseline *session.ModelContextSnapshot, usageBefore contextpolicy.Usage, generator SummaryGenerator) (Preparation, error) {
-	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
+	keptUsers := selectCompactionUsers(history, req)
 	details := mergeDetails(req.Details, map[string]string{"history_messages": fmt.Sprint(len(history)), "compacted_messages": fmt.Sprint(len(history)), "retained_tail_messages": "0"})
 	if len(history) == 1 {
 		details["single_message_compaction"] = "true"
@@ -1113,4 +1113,14 @@ func prepareEntireHistory(ctx context.Context, req Request, history []session.Me
 	prep.Result.UsageAfter = usageAfter
 	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
 	return prep, nil
+}
+
+// Capacity recovery summarizes older user images instead of retaining them a
+// second time through the recent-user budget. The latest user remains exact.
+func selectCompactionUsers(history []session.Message, req Request) []session.Message {
+	kept := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
+	if req.Trigger == TriggerOverflow && (req.Reason == "image_count" || req.Reason == "image_bytes" || req.Reason == "request_bytes") && len(kept) > 1 {
+		return kept[len(kept)-1:]
+	}
+	return kept
 }

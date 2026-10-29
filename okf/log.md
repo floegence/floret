@@ -1890,3 +1890,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-28: Document temporary DeepSeek file references, independent byte-capacity evidence, bounded preparation renewal, and schema 33 manifest fencing.
 
 - 2026-10-29: Document native Responses history ownership and explicit continuation selection.
+
+- 2026-10-29: Document aggregate image capacity recovery, complete ordered summary batching, protected current inputs, and schema 34 observation fencing.

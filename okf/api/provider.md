@@ -511,3 +511,24 @@ prefix fails closed. Unknown items or record fields, overlapping records and
 history beyond 8 MiB fail explicitly. Search, encrypted reasoning and function
 output retain original fields. See [implementation](../../provider/responses_history.go)
 and [boundary tests](../../provider/responses_history_test.go).
+
+## Aggregate image capacity recovery
+
+Redeven is the identified consumer of the additive optional
+MediaLimitError.RequestCapacityLimit method and CompactionCapacity image-count
+fields. Valid count and total_bytes failures expose image_count and image_bytes;
+per-image failures remain independent and terminal. Existing errors.Is/errors.As
+contracts remain unchanged. Engine preparation, response recovery and summary
+batching share the same classifier. No token usage is fabricated.
+
+Recovery uses existing protected cuts and validates the complete replacement
+before installation. Older user images enter the summary exactly once rather
+than being reintroduced by the recent-user budget; the current user and complete
+tool boundaries remain protected. Summary overflow shrinks the same unconsumed
+batch, and indivisible failures terminate. Original canonical records survive.
+Schema 33 to 34 appends a metadata-only fence for the new observation fields.
+
+Evidence: [capacity recovery](../../internal/engine/capacity_regression_test.go),
+[ordered batching](../../internal/engine/compaction/media_budget_test.go),
+[protected inputs](../../internal/session/compaction/minimal_exchange_test.go),
+[migration rollback](../../internal/sessiontree/backend_repo_v34_test.go).

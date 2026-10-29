@@ -51,3 +51,23 @@ func TestCompactionDecisionObservationPreservesMissingAndFrozenScopes(t *testing
 		}
 	}
 }
+
+func TestImageCapacityEvidenceRoundTrip(t *testing.T) {
+	for _, c := range []*CompactionCapacity{
+		{Kind: "image_count", Stage: "prepare", Source: "provider", ActualImages: 17, LimitImages: 15},
+		{Kind: "image_bytes", Stage: "response", Source: "provider", ActualBytes: 201, LimitBytes: 200},
+	} {
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(c)
+		var restored CompactionCapacity
+		if err := json.Unmarshal(raw, &restored); err != nil || restored != *c || restored.Validate() != nil {
+			t.Fatalf("round trip: %s %v", raw, err)
+		}
+		restored.ActualImages, restored.ActualBytes = 1, 1
+		if restored.Validate() == nil {
+			t.Fatal("mixed units accepted")
+		}
+	}
+}

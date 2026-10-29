@@ -2889,8 +2889,8 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
-		if errors.Is(err, provider.ErrContextOverflow) {
-			pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy)
+		if provider.IsCapacityOverflow(err) {
+			pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy, "prepare")
 			next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerOverflow, reason, pressure, nil, metrics, failures, capacity)
 			if compactErr != nil {
 				return provider.Request{}, history, false, overflowRecoveryError(err, compactErr)
@@ -3018,7 +3018,7 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 // provider request as evidence. An unsafe cut or capacity limit remains a
 // provider failure; storage and contract failures must not be hidden by it.
 func overflowRecoveryError(providerErr, compactionErr error) error {
-	if !errors.Is(compactionErr, compaction.ErrNoCutPoint) && !errors.Is(compactionErr, provider.ErrContextOverflow) {
+	if !errors.Is(compactionErr, compaction.ErrNoCutPoint) && !provider.IsCapacityOverflow(compactionErr) {
 		compactionErr = withFailureOrigin(compactionErr, FailureOriginContract)
 	}
 	return errors.Join(compactionErr, providerErr)
@@ -3042,7 +3042,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	if err == nil || !overflow {
 		return req, history, stepOutput, latency, false, err
 	}
-	pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy)
+	pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy, "response")
 	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, reason, pressure, compactionRequestSnapshot(req, tracker), metrics, failures, capacity)
 	if compactErr != nil {
 		return req, history, StepOutput{}, latency, false, overflowRecoveryError(err, compactErr)
@@ -3051,7 +3051,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	retryReq, stepOutput, retryLatency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, retryReq, metrics)
 	latency += retryLatency
 	if overflow {
-		return retryReq, history, stepOutput, latency, true, withFailureOrigin(fmt.Errorf("provider context overflow retry exhausted: %w", errors.Join(err, provider.ErrContextOverflow)), FailureOriginProvider)
+		return retryReq, history, stepOutput, latency, true, withFailureOrigin(fmt.Errorf("provider capacity recovery exhausted: %w", err), FailureOriginProvider)
 	}
 	return retryReq, history, stepOutput, latency, true, err
 }
@@ -3109,7 +3109,7 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	releaseProviderGate()
 	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
-	if errors.Is(err, provider.ErrContextOverflow) {
+	if provider.IsCapacityOverflow(err) {
 		return StepOutput{}, latency, true, withFailureOrigin(err, FailureOriginProvider)
 	}
 	if err != nil {
@@ -3118,7 +3118,7 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	out, err = e.consume(ctx, opts, step, stream, req, attempt)
 	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
-	if errors.Is(err, provider.ErrContextOverflow) {
+	if provider.IsCapacityOverflow(err) {
 		return out, latency, true, withFailureOrigin(err, FailureOriginProvider)
 	}
 	return out, latency, false, withFailureOrigin(err, FailureOriginProvider)
@@ -3391,6 +3391,11 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			e.emitCompactionNoop(opts, step, operationID, trigger, "insufficient_savings", beforePressure, usage, lifecycle)
 			return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
 		}
+
+		if trigger == compaction.TriggerOverflow && (reason == "image_count" || reason == "image_bytes") && imageOccurrences(history) > 0 && imageOccurrences(active) >= imageOccurrences(history) {
+			err = errors.New("compaction cannot reduce required image capacity")
+			break
+		}
 		rebuildStarted := time.Now()
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, lifecycle, map[string]any{
 			"compaction_convergence_attempt": compactAttempt,
@@ -3427,6 +3432,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			"message_count":                  len(req.Messages),
 			"raw_segment_count":              len(req.RawPlan.Segments),
 		}, nil, rebuildStarted)
+		if trigger == compaction.TriggerOverflow && candidate != nil && candidate.PayloadFingerprint == req.RawPlan.PayloadHash {
+			err = errors.New("compaction produced an unchanged rejected request")
+			break
+		}
 		validation = compactedRequestValidationForRequest(req)
 		if !validation.ContextPressure.HardLimitExceeded {
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), nil, time.Time{})
@@ -5001,4 +5010,27 @@ func toolResultProgressToken(result tools.Result) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func imageOccurrences(history []session.Message) int {
+	projected, _, err := session.ProjectProviderHistory(history, "")
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, m := range projected {
+		for _, a := range m.Attachments {
+			if strings.HasPrefix(strings.ToLower(a.MIMEType), "image/") {
+				count++
+			}
+		}
+		if m.ToolResult != nil {
+			for _, a := range m.ToolResult.Attachments {
+				if strings.HasPrefix(strings.ToLower(a.MIMEType), "image/") {
+					count++
+				}
+			}
+		}
+	}
+	return count
 }

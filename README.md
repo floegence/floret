@@ -1747,6 +1747,20 @@ Image references still contribute the normal visual token budget.
 `observation.CompactionDecision.Capacity` distinguishes host request-byte limits
 from server HTTP 413 rejection. It does not assert that the model token window is
 full. Host evidence contains exact bytes; unavailable server counts stay absent.
+Aggregate image count and decoded-byte failures expose the optional
+`RequestCapacityLimit() (kind string, actual, limit int64)` error method. The Engine recovers through its existing safe
+compaction boundary even when token pressure is low. Individual dimension,
+invalid-format and source-size errors are not token overflow and require image
+preparation or corrected input. Summary batches shrink without skipping images;
+current user images remain exact. A replacement must pass provider preparation
+and token validation before any checkpoint is installed. Recovery is bounded to
+one preflight compaction and one response compaction per provider step; unchanged
+transport retries always replay the frozen request.
+
+Schema 33 to 34 appends an atomic manifest fence for typed image-capacity evidence.
+Existing original media, messages, tool exchanges and released migration edges
+remain unchanged. Quantity evidence uses image counts, never byte/token fields.
+
 The schema 32 to 33 edge atomically changes only the manifest fence; existing
 conversation records retain their bytes and remain available through the same
 canonical owner. Media validation and upload failures do not trigger compaction.

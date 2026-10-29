@@ -114,7 +114,7 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
+				return migrateCurrentManifest(t.Context(), tx, manifest)
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +164,7 @@ func TestCurrentStartupRepairsMissingQueryMetadata(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
+		return migrateCurrentManifest(t.Context(), tx, manifest)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestCurrentStartupPreservesOnDemandCorruptionChecks(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return migrateBackendDomainV32ToV33(t.Context(), tx, manifest)
+				return migrateCurrentManifest(t.Context(), tx, manifest)
 			}); err != nil {
 				t.Fatal(err)
 			}

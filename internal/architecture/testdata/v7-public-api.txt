@@ -378,6 +378,7 @@ field MediaLimitError.Kind string
 field MediaLimitError.Actual int64
 field MediaLimitError.Limit int64
 method *MediaLimitError.Error func() string
+method *MediaLimitError.RequestCapacityLimit func() (kind string, actual int64, limit int64)
 type Message struct
 field Message.Attribution *github.com/floegence/floret/v7/provider.MessageAttribution tag="json:\"attribution,omitempty\""
 field Message.Role github.com/floegence/floret/v7/provider.MessageRole tag="json:\"role\""
@@ -2969,6 +2970,8 @@ func BuildActivityTimeline func(meta github.com/floegence/floret/v7/observation.
 func CloneActivityPresentation func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
 func CloneActivityTimeline func(in *github.com/floegence/floret/v7/observation.ActivityTimeline) *github.com/floegence/floret/v7/observation.ActivityTimeline
 type CompactionCapacity struct
+field CompactionCapacity.ActualImages int64 tag="json:\"actual_images,omitempty\""
+field CompactionCapacity.LimitImages int64 tag="json:\"limit_images,omitempty\""
 field CompactionCapacity.Kind string tag="json:\"kind\""
 field CompactionCapacity.Stage string tag="json:\"stage\""
 field CompactionCapacity.Source string tag="json:\"source\""
