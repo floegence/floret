@@ -414,6 +414,7 @@ field OutputPart.OutputIndex int tag="json:\"output_index\""
 field OutputPart.ContentIndex int tag="json:\"content_index\""
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 func PrepareImage func(ctx context.Context, source []byte, options github.com/floegence/floret/v7/provider.ImagePreparationOptions) (github.com/floegence/floret/v7/provider.PreparedImage, error)
+func PrepareResponsesHistory func(options github.com/floegence/floret/v7/provider.ResponsesHistoryOptions, canonical []encoding/json.RawMessage, previous *github.com/floegence/floret/v7/provider.State) (*github.com/floegence/floret/v7/provider.ResponsesHistory, error)
 type PreparedImage struct
 field PreparedImage.Bytes []byte
 field PreparedImage.MIMEType string
@@ -521,6 +522,14 @@ method *RequestTimeoutError.Unwrap func() error
 method *RequestTimeoutError.Is func(target error) bool
 method *RequestTimeoutError.Timeout func() bool
 method *RequestTimeoutError.Temporary func() bool
+type ResponsesHistory struct
+method *ResponsesHistory.Input func() []encoding/json.RawMessage
+method *ResponsesHistory.Continuation func() (string, []encoding/json.RawMessage)
+method *ResponsesHistory.Commit func(responseID string, visible []encoding/json.RawMessage, output []encoding/json.RawMessage) (*github.com/floegence/floret/v7/provider.State, error)
+type ResponsesHistoryOptions struct
+field ResponsesHistoryOptions.Kind string
+field ResponsesHistoryOptions.ID string
+field ResponsesHistoryOptions.FunctionNamespace string
 type RetryAdvice struct
 field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""
 field RetryAdvice.NotBefore time.Time tag="json:\"not_before,omitempty\""

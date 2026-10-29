@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add provider-owned native Responses history for stateless replay and explicit
+  server continuation. Preserve hosted search and reasoning across local tools,
+  validate canonical boundaries, and read published ChatGPT state unchanged.
+
 - Add authorized canonical item pages without observation installation. Validate
   an optional ancestor while allowing append, return source-bound turn facts,
   and bound previews and total response size without reading unrelated context.

@@ -475,3 +475,25 @@ rewriting existing v32 records. Current-store inspection and bounded runtime sta
 Evidence: [file transport tests](../../provider/deepseek_files_test.go),
 [engine capacity regression](../../internal/engine/capacity_regression_test.go),
 [metadata migration](../../internal/sessiontree/backend_repo_v33_test.go).
+
+## Native Responses history ownership
+
+The additive ResponsesHistoryOptions, PrepareResponsesHistory and immutable
+ResponsesHistory API own native Responses history for Redeven's API-key and
+ChatGPT adapters. Adapters map SDK items and canonical visible projections;
+Floret validates records and owns the opaque native_output state envelope.
+This API decision does not change the session-tree schema or rewrite history.
+
+Input returns complete history for preparation and estimation. Continuation
+returns a validated response ID with only its subsequent canonical input, used
+only when endpoint support and Engine policy permit. No network retry or tool
+execution occurs. Commit accepts completed output, published atomically with
+its visible projection. Supplemental input forbids retained state; model and
+account isolation remain Gateway/Engine boundaries.
+
+The published ChatGPT state format remains readable throughout v7. Changed
+canonical prefixes prune stale suffixes; visible-output drift under a matching
+prefix fails closed. Unknown items or record fields, overlapping records and
+history beyond 8 MiB fail explicitly. Search, encrypted reasoning and function
+output retain original fields. See [implementation](../../provider/responses_history.go)
+and [boundary tests](../../provider/responses_history_test.go).

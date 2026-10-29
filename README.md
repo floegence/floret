@@ -1750,3 +1750,19 @@ reports its actual leaf. Pages include selected items and turn facts, with at
 most 150 items and 512 KiB of JSON. Activity details remain deferred. Hosts keep
 live state with observation, authorize every page, and choose finite presentation
 boundaries instead of chasing an advancing tail. This adds no storage schema.
+
+### Native Responses history
+
+`provider.PrepareResponsesHistory` owns native Responses replay for protocol
+adapters. `ResponsesHistory.Input` returns complete native history for estimation
+and stateless replay. `Continuation` returns a validated response ID and only
+its subsequent input, used when endpoint support and Engine policy permit.
+`Commit` binds completed original output to its canonical visible projection;
+adapters publish both atomically and retain immutable prepared retries. Model,
+account, endpoint and supplemental-secret isolation remain Gateway/Engine fences.
+
+This additive API serves Redeven's API-key and ChatGPT adapters. It reads the
+published ChatGPT native_output envelope without rewriting conversations.
+Changed canonical prefixes prune stale native suffixes and server IDs; visible
+output drift, malformed state, unsupported items and history above 8 MiB fail
+explicitly. Search evidence is never reconstructed from UI activity.
