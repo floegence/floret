@@ -6,9 +6,91 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
+	publicprovider "github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/tools"
 )
+
+func TestGoalInstallationAttributesSystemTool(t *testing.T) {
+	for _, source := range []string{"static", "dynamic", "definition"} {
+		t.Run(source, func(t *testing.T) {
+			other := tools.Define[map[string]any](tools.Definition{Name: "inspect", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil)}, nil, nil,
+				func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+					return tools.Result{}, nil
+				})
+			registry := tools.NewRegistry(other)
+			projection := &turnProjection{thread: &Thread{id: "thread", harness: New(Options{})}, turnID: "turn", runID: "run"}
+			options := engine.Options{}
+			switch source {
+			case "static":
+				projection.thread.harness.options.Tools = registry
+			case "dynamic":
+				options.ToolSurfaceProvider = func(context.Context, engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+					return engine.ToolSurface{Tools: registry}, nil
+				}
+			case "definition":
+				options.ToolSurfaceProvider = func(context.Context, engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+					return engine.ToolSurface{Tools: registry, ToolDefinitions: registry.Definitions()}, nil
+				}
+			}
+			projection.installGoals(&options, nil)
+			surface, err := options.ToolSurfaceProvider(t.Context(), engine.ToolSurfaceRequest{Phase: "provider_request"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			definitions := surface.ToolDefinitions
+			if definitions == nil {
+				definitions = surface.Tools.Definitions()
+			}
+			estimate, err := provider.GenericRequestEstimate(provider.Request{Tools: definitions})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if estimate.Breakdown.Details == nil {
+				t.Fatal("missing tool token attribution")
+			}
+			origins := map[string]string{}
+			for _, item := range estimate.Breakdown.Details.Items {
+				if item.Category == "tool_definition" && item.Tokens > 0 {
+					origins[item.Key] = item.Source
+				}
+			}
+			if len(origins) != 2 || origins[goalToolName] != "floret" || origins["inspect"] != "" {
+				t.Fatalf("tool token origins = %v", origins)
+			}
+			gateway, err := publicprovider.NewDeepSeek(publicprovider.DeepSeekOptions{Model: "deepseek-flash", BaseURL: "https://provider.invalid/v1", APIKey: "test", StateCompatibilityKey: "fixture"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := gateway.(publicprovider.RequestPreparer).Prepare(t.Context(), publicprovider.Request{
+				RunID: "run", PromptScopeID: "thread", Tools: definitions, MaxOutputTokens: 32,
+				Messages: []publicprovider.Message{{Role: publicprovider.RoleUser, Text: "Inspect the project."}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer prepared.Close()
+			characters := prepared.TokenEstimate().Characters
+			if characters == nil || characters.Validate() != nil {
+				t.Fatalf("invalid prepared characters: %+v", characters)
+			}
+			origins = map[string]string{}
+			for _, category := range characters.Categories {
+				if category.Category == "tool_definition" {
+					for _, item := range category.Details {
+						if item.Characters > 0 {
+							origins[item.Key] = item.Source
+						}
+					}
+				}
+			}
+			if len(origins) != 2 || origins[goalToolName] != "floret" || origins["inspect"] != "" {
+				t.Fatalf("tool character origins = %v", origins)
+			}
+		})
+	}
+}
 
 func TestGoalInstallationRejectsHostReplacement(t *testing.T) {
 	var invoked bool

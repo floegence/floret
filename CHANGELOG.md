@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Attribute the Harness-owned Goal tool to Floret so request token and visible
+  character breakdowns classify it as a system tool instead of an unknown source.
+
 - Add provider-owned native Responses history for stateless replay and explicit
   server continuation. Preserve hosted search and reasoning across local tools,
   validate canonical boundaries, and read published ChatGPT state unchanged.
