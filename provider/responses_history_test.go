@@ -162,3 +162,40 @@ func TestResponsesHistoryReadsPublishedEmptyStateAndHostedOnlyOutput(t *testing.
 		}
 	}
 }
+
+func TestResponsesHistoryRetainsConfirmedTruncatedSnapshot(t *testing.T) {
+	options := provider.ResponsesHistoryOptions{Kind: "responses", ID: "model"}
+	input := responsesItems("{\"role\":\"user\",\"content\":\"find docs\"}")
+	history, err := provider.PrepareResponsesHistory(options, input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := responsesItems("{\"role\":\"assistant\",\"content\":\"partial\"}")
+	output := responsesItems(
+		"{\"type\":\"web_search_call\",\"status\":\"completed\",\"opaque_results\":\"receipt\"}",
+		"{\"type\":\"message\",\"status\":\"incomplete\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial\"}]}",
+	)
+	state, err := history.Commit("truncated-response", visible, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored provider.State
+	if err = json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	history, err = provider.PrepareResponsesHistory(options, append(input, visible...), &restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := history.Input()
+	if len(replay) != 3 || string(replay[1]) != string(output[0]) || string(replay[2]) != string(output[1]) {
+		t.Fatalf("terminal snapshot changed: %s", replay)
+	}
+	if id, suffix := history.Continuation(); id != "truncated-response" || len(suffix) != 0 {
+		t.Fatalf("length continuation changed: %q %s", id, suffix)
+	}
+}

@@ -1757,7 +1757,8 @@ boundaries instead of chasing an advancing tail. This adds no storage schema.
 adapters. `ResponsesHistory.Input` returns complete native history for estimation
 and stateless replay. `Continuation` returns a validated response ID and only
 its subsequent input, used when endpoint support and Engine policy permit.
-`Commit` binds completed original output to its canonical visible projection;
+`Commit` binds confirmed terminal output, including exact snapshots from length
+truncation, to its canonical visible projection;
 adapters publish both atomically and retain immutable prepared retries. Model,
 account, endpoint and supplemental-secret isolation remain Gateway/Engine fences.
 

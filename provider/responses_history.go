@@ -146,10 +146,13 @@ func (h *ResponsesHistory) Continuation() (string, []json.RawMessage) {
 	return h.responseID, cloneResponsesItems(h.canonical[h.continuationStart:])
 }
 
-// Commit binds a completed response's original output to its canonical visible
+// Commit binds a confirmed terminal response's output to its canonical visible
 // projection. The returned opaque State must be committed with that projection.
 // An empty responseID permits stateless replay on endpoints without response IDs.
-// Incomplete/failed output must not be passed here. Neither h nor inputs mutate.
+// A terminal incomplete response may retain its exact snapshot for length
+// continuation. An interrupted stream or failed response must not be committed.
+// The adapter validates terminal evidence; the Engine owns finish disposition
+// and canonical publication. Neither h nor inputs mutate.
 func (h *ResponsesHistory) Commit(responseID string, visible, output []json.RawMessage) (*State, error) {
 	if responseID != "" && !validResponsesResponseID(responseID) {
 		return nil, errors.New("invalid Responses response identity")

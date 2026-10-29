@@ -487,8 +487,11 @@ This API decision does not change the session-tree schema or rewrite history.
 Input returns complete history for preparation and estimation. Continuation
 returns a validated response ID with only its subsequent canonical input, used
 only when endpoint support and Engine policy permit. No network retry or tool
-execution occurs. Commit accepts completed output, published atomically with
-its visible projection. Supplemental input forbids retained state; model and
+execution occurs. Commit accepts confirmed terminal output, including exact
+snapshots from length truncation, published atomically with its visible
+projection. Adapters validate terminal evidence; interrupted or failed streams
+never commit. Engine finish disposition decides canonical publication.
+Supplemental input forbids retained state; model and
 account isolation remain Gateway/Engine boundaries.
 
 The published ChatGPT state format remains readable throughout v7. Changed

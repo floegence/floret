@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-29: Clarify confirmed terminal Responses snapshot preservation for
+  length continuation; see [provider history](api/provider.md).
+
 - 2026-10-28: Add bounded atomic range navigation and protected identity selection;
   see [thread updates](api/thread-updates.md).
 
