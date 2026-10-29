@@ -12,6 +12,15 @@ diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 Floret is not a graph workflow framework, a multi-agent orchestrator, or a
 product persistence layer.
 
+Hosts may use `provider.PrepareModelImage` for bounded, deterministic model-only
+PNG/JPEG/WebP/static-GIF resizing and quality compression. Explicit options own
+quality, longest side, source bytes and pixel limits. EXIF orientation is applied,
+alpha is retained, and animations are preserved unchanged within bounds or rejected
+without selecting a frame. Hosts own product defaults and coordinate mapping;
+source identity and original dimensions are returned alongside model dimensions.
+Always transform original authorized bytes before request estimation and freezing.
+No derivative storage or conversation migration is introduced.
+
 Hosts can explicitly opt into model-only PNG compression with
 `provider.PrepareImage`. It preserves dimensions and source identity, keeps
 transparency lossless, and only uses a smaller JPEG candidate. The zero quality

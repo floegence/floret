@@ -4,6 +4,9 @@
 
 - Attribute the Harness-owned Goal tool to Floret so request token and visible
   character breakdowns classify it as a system tool instead of an unknown source.
+- Add explicit bounded model-image resizing and quality compression with source
+  identity, orientation, transparency and animation semantics. Preserve the
+  published PrepareImage contract and all canonical conversation assets.
 
 - Clarify native Responses history preservation for confirmed terminal length
   truncation, retaining exact snapshots while excluding failed or interrupted

@@ -391,6 +391,17 @@ type MessageAttribution struct
 field MessageAttribution.Category string tag="json:\"category\""
 field MessageAttribution.Parts []github.com/floegence/floret/v7/provider.ContentAttributionPart tag="json:\"parts,omitempty\""
 type MessageRole string
+type ModelImage struct
+field ModelImage.<embedded> github.com/floegence/floret/v7/provider.PreparedImage
+field ModelImage.SourceWidth int
+field ModelImage.SourceHeight int
+field ModelImage.Orientation int
+field ModelImage.Animated bool
+type ModelImageOptions struct
+field ModelImageOptions.JPEGQuality int
+field ModelImageOptions.MaxDimension int
+field ModelImageOptions.MaxSourceBytes int64
+field ModelImageOptions.MaxPixels int64
 func NewAnthropic func(options github.com/floegence/floret/v7/provider.AnthropicOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewDeepSeek func(options github.com/floegence/floret/v7/provider.DeepSeekOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewDeepSeekImageFiles func(options github.com/floegence/floret/v7/provider.DeepSeekImageFilesOptions) (*github.com/floegence/floret/v7/provider.DeepSeekImageFiles, error)
@@ -414,6 +425,7 @@ field OutputPart.OutputIndex int tag="json:\"output_index\""
 field OutputPart.ContentIndex int tag="json:\"content_index\""
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 func PrepareImage func(ctx context.Context, source []byte, options github.com/floegence/floret/v7/provider.ImagePreparationOptions) (github.com/floegence/floret/v7/provider.PreparedImage, error)
+func PrepareModelImage func(ctx context.Context, source []byte, options github.com/floegence/floret/v7/provider.ModelImageOptions) (github.com/floegence/floret/v7/provider.ModelImage, error)
 func PrepareResponsesHistory func(options github.com/floegence/floret/v7/provider.ResponsesHistoryOptions, canonical []encoding/json.RawMessage, previous *github.com/floegence/floret/v7/provider.State) (*github.com/floegence/floret/v7/provider.ResponsesHistory, error)
 type PreparedImage struct
 field PreparedImage.Bytes []byte

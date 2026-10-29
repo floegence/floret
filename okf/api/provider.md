@@ -404,6 +404,17 @@ bind a changed transport; Engine retries use the new handle's prefix.
 
 ## Model image and byte preparation
 
+The additive model-image API decision serves every Redeven image input through
+`PrepareModelImage`, `ModelImageOptions` and `ModelImage`. It adds explicit
+longest-side resizing, JPEG recompression, bounded PNG/JPEG/GIF/WebP decoding,
+EXIF orientation and alpha preservation without changing `PrepareImage`.
+Animations remain byte-identical within bounds; oversized animations fail
+explicitly. Source dimensions, orientation, identity and model dimensions let
+the host maintain truthful coordinate mapping. Hosts own defaults, authorization
+and capability checks. Transform originals once per prepared request; reuse
+frozen bytes for transport retries. No storage or domain schema is added.
+
+
 The additive v7.82 API decision serves Redeven's screenshot adapter through
 `PrepareImage`, `ImagePreparationOptions`, `PreparedImage`,
 `CheckRequestBytes` and `RequestByteLimitError`. Hosts authorize and resolve
