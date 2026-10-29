@@ -88,6 +88,9 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 		return WindowProjection{}, spi.ErrInvalidArgument
 	}
 	needs := windowPreparationNeeds{membership: true, window: true, context: true, model: true, response: options.SkipRange != nil && options.SkipRange.IntermediateAssistant}
+	if options.ItemsOnly {
+		needs.context, needs.model = false, false
+	}
 	if options.SummaryOnly {
 		needs = windowPreparationNeeds{window: true}
 	}
@@ -99,8 +102,10 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 	if delegate := repo.delegate.Load(); delegate != nil {
 		return delegate.ReadWindowProjection(ctx, options, fields)
 	}
-	if err := repo.prepareCurrentQueueSources(ctx, options.ThreadID); err != nil {
-		return WindowProjection{}, err
+	if !options.ItemsOnly {
+		if err := repo.prepareCurrentQueueSources(ctx, options.ThreadID); err != nil {
+			return WindowProjection{}, err
+		}
 	}
 	var result WindowProjection
 	err := repo.canonicalThreadView(ctx, options.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
@@ -133,6 +138,11 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 
 func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, options ItemMembershipWindowOptions, fields func(PathMetadata, bool) []string, parentEvents bool) (WindowProjection, error) {
 	result := WindowProjection{Meta: meta}
+	if options.AncestorLeafID != "" {
+		if _, err := activeLocatedEntry(ctx, tx, meta, options.AncestorLeafID); err != nil {
+			return WindowProjection{}, err
+		}
+	}
 	tx = newProjectionSourceTx(tx)
 	if options.SummaryOnly {
 		return readSummaryProjection(ctx, tx, meta, fields)
@@ -185,7 +195,7 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 		turns = append(turns, member.TurnID)
 		seeds = append(seeds, member.SourceID)
 	}
-	result.Facts, err = readWindowSources(ctx, tx, meta, meta.LeafID, turns)
+	result.Facts, err = readWindowSources(ctx, tx, meta, meta.LeafID, turns, options.ItemsOnly)
 	if err != nil {
 		return WindowProjection{}, err
 	}
@@ -280,6 +290,9 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 			return WindowProjection{}, err
 		}
 	}
+	if options.ItemsOnly {
+		return result, nil
+	}
 	projection, err := readStoredContextProjection(ctx, tx, meta)
 	if err != nil {
 		return WindowProjection{}, err
@@ -325,6 +338,9 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 		return WindowProjection{}, spi.ErrConflict
 	}
 	entries, err := repo.canonicalPathLocked(ctx, options.ThreadID, meta.LeafID)
+	if err == nil && options.AncestorLeafID != "" && !slices.ContainsFunc(entries, func(e Entry) bool { return e.ID == options.AncestorLeafID }) {
+		err = ErrEntryNotFound
+	}
 	var queue []Entry
 	var parents *ParentEventPage
 	if err == nil {

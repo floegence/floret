@@ -1592,6 +1592,23 @@ field ThreadItemKindCounts.Tool int tag="json:\"tool\""
 field ThreadItemKindCounts.Interaction int tag="json:\"interaction\""
 field ThreadItemKindCounts.Goal int tag="json:\"goal\""
 field ThreadItemKindCounts.Steering int tag="json:\"steering\""
+type ThreadItemPage struct
+field ThreadItemPage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemPage.LeafID string tag="json:\"leaf_id\""
+field ThreadItemPage.FirstItemID string tag="json:\"first_item_id,omitempty\""
+field ThreadItemPage.LastItemID string tag="json:\"last_item_id,omitempty\""
+field ThreadItemPage.HasBefore bool tag="json:\"has_before\""
+field ThreadItemPage.HasAfter bool tag="json:\"has_after\""
+field ThreadItemPage.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items\""
+field ThreadItemPage.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns,omitempty\""
+type ThreadItemPageInput struct
+field ThreadItemPageInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemPageInput.AncestorLeafID string tag="json:\"ancestor_leaf_id,omitempty\""
+field ThreadItemPageInput.AnchorID string tag="json:\"anchor_id,omitempty\""
+field ThreadItemPageInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction,omitempty\""
+field ThreadItemPageInput.Limit int tag="json:\"limit,omitempty\""
+field ThreadItemPageInput.PreviewBytes int tag="json:\"preview_bytes,omitempty\""
+type ThreadItemPageReader interface interface{ItemPage(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadItemPageInput) (github.com/floegence/floret/v7/runtime.ThreadItemPage, error)}
 type ThreadItemRange struct
 field ThreadItemRange.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadItemRange.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""

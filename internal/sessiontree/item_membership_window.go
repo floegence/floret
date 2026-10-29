@@ -10,6 +10,10 @@ import (
 )
 
 type ItemMembershipWindowOptions struct {
+	// ItemsOnly omits unrelated context, queue and parent-event snapshots.
+	ItemsOnly bool
+	// AncestorLeafID validates path continuity while permitting append.
+	AncestorLeafID string
 	// SkipRange resolves the current anchor's range and reads beyond it, with
 	// both endpoints retained. RetainItemIDs joins bounded protected rows in
 	// the same canonical transaction instead of a second selection read.

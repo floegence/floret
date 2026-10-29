@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add authorized canonical item pages without observation installation. Validate
+  an optional ancestor while allowing append, return source-bound turn facts,
+  and bound previews and total response size without reading unrelated context.
+
+
 - Add bounded canonical range navigation to window subscriptions. Resolve safe
   same-turn/run ranges and protected identities at one leaf, retain both range
   endpoints, and install a finite interest without materializing skipped bodies.

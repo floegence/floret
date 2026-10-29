@@ -48,6 +48,42 @@ func TestFieldWindowDoesNotReplayReplacedToolResults(t *testing.T) {
 		})
 	}
 }
+func TestItemPageDoesNotReplayReplacedToolResults(t *testing.T) {
+	for _, count := range []int{20, 300, 1000} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			memory := newMemoryRepo(time.Now)
+			if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i <= count; i++ {
+				entry := Entry{ID: fmt.Sprint("source-", i), ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "inspect", ToolCallID: "call", ToolResult: &session.ToolResultView{Status: "success"}}}
+				if i == 0 {
+					entry.Type = EntryToolCall
+					entry.Message.Role = session.Assistant
+					entry.Message.ToolResult = nil
+				}
+				if _, err := memory.Append(t.Context(), entry, AppendOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			backend, repo := openV31ReviewFixture(t, memory)
+			input := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, ActivityFields: true, ItemsOnly: true}
+			if _, err := repo.ReadWindowProjection(t.Context(), input, func(PathMetadata, bool) []string { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			measured := &currentStartupBackend{Backend: backend}
+			repo.backend = measured
+			window, err := repo.ReadWindowProjection(t.Context(), input, func(PathMetadata, bool) []string { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("results=%d sources=%d metadata_gets=%d body_reads=%d", count, len(window.Entries), measured.gets, measured.bodies)
+			if len(window.Entries) > 4 || measured.gets > 150 || measured.journalRows > 6 {
+				t.Fatalf("replayed replacements: results=%d sources=%d canonical=%d gets=%d", count, len(window.Entries), measured.journalRows, measured.gets)
+			}
+		})
+	}
+}
 
 func TestFieldWindowSourceRollbackAndBranch(t *testing.T) {
 	backend, repo := projectionSourcesFixture(t, 1)

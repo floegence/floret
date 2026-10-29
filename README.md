@@ -1741,3 +1741,12 @@ full. Host evidence contains exact bytes; unavailable server counts stay absent.
 The schema 32 to 33 edge atomically changes only the manifest fence; existing
 conversation records retain their bytes and remain available through the same
 canonical owner. Media validation and upload failures do not trigger compaction.
+
+
+`runtime.ThreadItemPageReader` supplies demand-only canonical presentation pages
+without installing a live reading interest. `AncestorLeafID` verifies continued
+membership of the source path while allowing ordinary append; each response
+reports its actual leaf. Pages include selected items and turn facts, with at
+most 150 items and 512 KiB of JSON. Activity details remain deferred. Hosts keep
+live state with observation, authorize every page, and choose finite presentation
+boundaries instead of chasing an advancing tail. This adds no storage schema.

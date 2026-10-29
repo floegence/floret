@@ -330,7 +330,8 @@ func (repo *BackendRepo) ReadWindowSources(ctx context.Context, thread, leaf str
 	return result, err
 }
 
-func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf string, turns []string) (WindowSources, error) {
+func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf string, turns []string, itemsOnly ...bool) (WindowSources, error) {
+	only := len(itemsOnly) > 0 && itemsOnly[0]
 	tx = newProjectionSourceTx(tx)
 	if leaf != "" && meta.LeafID != leaf {
 		return WindowSources{}, spi.ErrConflict
@@ -342,8 +343,10 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 	if stored.Leaf.ID != meta.LeafID || stored.SummaryVersion != 1 {
 		return WindowSources{}, ErrAuthorityCorrupt
 	}
-	if err := validateWindowCompactionSources(ctx, tx, meta, stored); err != nil {
-		return WindowSources{}, err
+	if !only {
+		if err := validateWindowCompactionSources(ctx, tx, meta, stored); err != nil {
+			return WindowSources{}, err
+		}
 	}
 	result := WindowSources{SummarySource: stored.SummarySource, LeafID: meta.LeafID, Anchors: stored.Anchors, CompactionOrdinals: stored.CompactionOrdinals}
 	seen := map[string]bool{}
@@ -365,7 +368,7 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 		}
 	}
 	selected := slices.Clone(turns)
-	if stored.Latest != "" {
+	if !only && stored.Latest != "" {
 		entry, err := activeLocatedEntry(ctx, tx, meta, stored.Latest)
 		if err != nil || entry.Type != EntryTurnMarker {
 			return WindowSources{}, errors.Join(ErrAuthorityCorrupt, err)
@@ -388,18 +391,20 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 	addGroup := func(group projectionSourceGroup) error {
 		return visitProjectionSources(ctx, tx, meta, node, group, func(entry Entry) error { return add(entry.ID) })
 	}
-	refs, err := readGoalSourceContext(tx, meta.ID, meta.LeafID)
-	if err != nil {
-		return WindowSources{}, err
-	}
-	goal, err := goalSourceState(ctx, tx, meta.ID, node, refs)
-	if err != nil {
-		return WindowSources{}, err
-	}
-	result.Goal = &goal
-	for _, id := range stored.Pending {
-		if err := add(id); err != nil {
+	if !only {
+		refs, err := readGoalSourceContext(tx, meta.ID, meta.LeafID)
+		if err != nil {
 			return WindowSources{}, err
+		}
+		goal, err := goalSourceState(ctx, tx, meta.ID, node, refs)
+		if err != nil {
+			return WindowSources{}, err
+		}
+		result.Goal = &goal
+		for _, id := range stored.Pending {
+			if err := add(id); err != nil {
+				return WindowSources{}, err
+			}
 		}
 	}
 	seenTurns := map[string]bool{}

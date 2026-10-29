@@ -181,7 +181,7 @@ func (service *threadRuntimeService) loadSourceWindowWithInterests(ctx context.C
 	return view, page, nil
 }
 
-func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, input ThreadWindowInput, window sessiontree.WindowProjection) (canonicalThreadView, threadSourceProjection, error) {
+func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, input ThreadWindowInput, window sessiontree.WindowProjection, itemsOnly ...bool) (canonicalThreadView, threadSourceProjection, error) {
 	page, facts, sources := window.Membership, window.Facts, window.Entries
 	selected := map[string]bool{}
 	for _, member := range page.Members {
@@ -248,6 +248,9 @@ func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, in
 			turn.FinalItemIDs = selectedThreadIDs(turn.FinalItemIDs, selected)
 			view.Turns = append(view.Turns, turn)
 		}
+	}
+	if len(itemsOnly) > 0 && itemsOnly[0] {
+		return view, threadSourceProjection{leaf: page.LeafID, items: selectedItems, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter}, nil
 	}
 	contextSnapshot, modelSources := window.Context, window.ModelContext
 	model, err := service.modelContextFromHistory(ctx, input.ThreadID, modelSources.Entries, modelSources.Messages)

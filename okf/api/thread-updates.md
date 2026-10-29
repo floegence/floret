@@ -821,3 +821,22 @@ Prepared SQLite navigation is logarithmic in membership plus bounded selected
 rows. The 1k/10k/100k regression forbids storage scans and body reads, including
 reopened readers. Neither frozen counts nor sparse endpoints claim live complete
 coverage; the host must expose missing details when a disclosure is expanded.
+
+
+## Canonical item pages
+
+`ThreadItemPageReader.ItemPage` is a read-only companion to observation. It uses
+the canonical membership/source projector without subscribing or changing actor
+state. Pages carry no actor version, lifecycle, summary, context, queue or parent
+receipt snapshot. Hosts use the existing parent-event query for receipt gaps.
+The actual `LeafID` identifies the read; optional `AncestorLeafID` requires that
+source to remain on the active path while allowing append. It does not freeze
+mutable tool facts. Stable before/after anchors and a host-selected finite end
+bound ongoing disclosure reads. Removed paths fail without substitution.
+
+Every call reauthorizes scope. Defaults are 40 items and 1 KiB previews; hard
+limits remain 150 items and 512 KiB encoded response. Large details use existing
+source readers. Prepared persistent reads use indexed membership and selected
+turn dependencies, omitting unrelated context/queue/Goal sources. Existing
+window observation remains the sole live owner. No migration or durable cursor
+is introduced.
