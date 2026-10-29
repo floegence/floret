@@ -2,6 +2,14 @@
 
 This file is the repository-level operating guide for `floret/`.
 
+## Tool Design
+
+- Tools stay general-purpose; results are clear and factual — observed facts, confirmed effects, explicit uncertainty.
+- The LLM decides task-specific handling inside runtime-enforced permissions and safety limits. No hardcoded task decisions, no accumulating special-case rules.
+- Recovery must not blindly replay uncertain effects, silently substitute targets, or widen the requested scope without authorization. Never infer retry safety from error wording alone.
+- Human interaction only at a real authorization boundary, for user-only input, or on explicit instruction.
+- Verify at the final model-visible and user-visible boundary.
+
 ## Git Workflow
 
 Goals:
