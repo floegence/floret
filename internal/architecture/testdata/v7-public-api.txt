@@ -1613,6 +1613,8 @@ const ThreadItemRangeErrorPayload github.com/floegence/floret/v7/runtime.ThreadI
 const ThreadItemRangeErrorWithoutFailure github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 4
 type ThreadItemRangeFact uint32
 type ThreadItemRangeInput struct
+field ThreadItemRangeInput.LeafID string tag="json:\"leaf_id,omitempty\""
+field ThreadItemRangeInput.IntermediateAssistant bool tag="json:\"intermediate_assistant,omitempty\""
 field ThreadItemRangeInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadItemRangeInput.AnchorID string tag="json:\"anchor_id\""
 field ThreadItemRangeInput.Kinds []github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kinds\""
@@ -1910,6 +1912,8 @@ const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDire
 const ThreadWindowBefore github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "before"
 type ThreadWindowDirection string
 type ThreadWindowInput struct
+field ThreadWindowInput.SkipRange *github.com/floegence/floret/v7/runtime.ThreadWindowRange tag="json:\"skip_range,omitempty\""
+field ThreadWindowInput.RetainItemIDs []string tag="json:\"retain_item_ids,omitempty\""
 field ThreadWindowInput.PreviewBytes int tag="json:\"preview_bytes,omitempty\""
 field ThreadWindowInput.IncludeSummary bool tag="json:\"include_summary,omitempty\""
 field ThreadWindowInput.AnchorOffset int tag="json:\"anchor_offset,omitempty\""
@@ -1920,7 +1924,13 @@ field ThreadWindowInput.ThreadID github.com/floegence/floret/v7/identity.ThreadI
 field ThreadWindowInput.AnchorID string tag="json:\"anchor_id,omitempty\""
 field ThreadWindowInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction\""
 field ThreadWindowInput.Limit int tag="json:\"limit,omitempty\""
+type ThreadWindowRange struct
+field ThreadWindowRange.SettledActivities bool tag="json:\"settled_activities,omitempty\""
+field ThreadWindowRange.Kinds []github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kinds\""
+field ThreadWindowRange.Exclude github.com/floegence/floret/v7/runtime.ThreadItemRangeFact tag="json:\"exclude,omitempty\""
+field ThreadWindowRange.IntermediateAssistant bool tag="json:\"intermediate_assistant,omitempty\""
 type ThreadWindowSnapshot struct
+field ThreadWindowSnapshot.SkippedRange *github.com/floegence/floret/v7/runtime.ThreadItemRange tag="json:\"skipped_range,omitempty\""
 field ThreadWindowSnapshot.Summary *github.com/floegence/floret/v7/runtime.ThreadSummary tag="json:\"summary,omitempty\""
 field ThreadWindowSnapshot.RequestID string tag="json:\"request_id,omitempty\""
 field ThreadWindowSnapshot.ItemSelection bool tag="json:\"item_selection,omitempty\""

@@ -223,7 +223,7 @@ func (repo *BackendRepo) DisplayPrepared(ctx context.Context, thread string) (bo
 				return nil
 			}
 		}
-		needs, err := missingWindowPreparation(tx, meta, windowPreparationNeeds{true, true, true, true})
+		needs, err := missingWindowPreparation(tx, meta, windowPreparationNeeds{membership: true, window: true, context: true, model: true})
 		if err != nil || needs != (windowPreparationNeeds{}) {
 			return err
 		}

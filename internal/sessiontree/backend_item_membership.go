@@ -18,10 +18,11 @@ import (
 const itemMembershipNamespace = "floret.sessiontree.item-membership.v8"
 
 type itemMembershipManifest struct {
-	Leaf    string `json:"leaf"`
-	Hash    string `json:"hash"`
-	Slots   int    `json:"slots"`
-	Visible int    `json:"visible"`
+	ResponseRangesVersion int    `json:"response_ranges_version,omitempty"`
+	Leaf                  string `json:"leaf"`
+	Hash                  string `json:"hash"`
+	Slots                 int    `json:"slots"`
+	Visible               int    `json:"visible"`
 }
 
 // No body, lifecycle, actor, or public view is stored here. The source hash and
@@ -73,7 +74,7 @@ func readItemManifest(tx spi.ReadTx, thread string) (itemMembershipManifest, boo
 	if errors.Is(err, spi.ErrNotFound) {
 		return m, false, nil
 	}
-	if err != nil || m.Slots < 0 || m.Visible < 0 || m.Visible > m.Slots || (m.Leaf == "") != (m.Hash == "") {
+	if err != nil || m.ResponseRangesVersion < 0 || m.ResponseRangesVersion > 1 || m.Slots < 0 || m.Visible < 0 || m.Visible > m.Slots || (m.Leaf == "") != (m.Hash == "") {
 		return m, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return m, true, nil
@@ -563,7 +564,7 @@ func storeItemMembership(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, e
 			return err
 		}
 	}
-	m := itemMembershipManifest{Leaf: meta.LeafID, Hash: hashes[meta.LeafID]}
+	m := itemMembershipManifest{ResponseRangesVersion: 1, Leaf: meta.LeafID, Hash: hashes[meta.LeafID]}
 	bySource := map[string][]int{}
 	for i, member := range projection.Members {
 		var err error

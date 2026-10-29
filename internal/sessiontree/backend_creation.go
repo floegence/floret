@@ -173,7 +173,7 @@ func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadM
 	if err := putJournalCount(tx, meta.ID, 0); err != nil {
 		return nil, err
 	}
-	if err := putItemJSON(tx, itemManifestKey(meta.ID), itemMembershipManifest{}); err != nil {
+	if err := putItemJSON(tx, itemManifestKey(meta.ID), itemMembershipManifest{ResponseRangesVersion: 1}); err != nil {
 		return nil, err
 	}
 	if err := putItemJSON(tx, contextProjectionKey(meta.ID), storedContextProjection{}); err != nil {

@@ -145,6 +145,60 @@ func rangeLevel(count int) int {
 	return level
 }
 
+func TestItemRangeIntermediateAssistantBoundary(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(e Entry) {
+		e.ThreadID, e.TurnID, e.RunID = "thread", "turn", "run"
+		if _, err := memory.Append(t.Context(), e, AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(Entry{ID: "start", Type: EntryTurnMarker, TurnStatus: TurnStarted, Metadata: map[string]string{ResponseSegmentsMetadataKey: "1"}})
+	add(Entry{ID: "user", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "request"}})
+	add(Entry{ID: "prose", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "checking"}})
+	add(Entry{ID: "call", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: "call"}})
+	add(Entry{ID: "tail", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "partial answer"}})
+	backend, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareThread(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range []ItemMembershipRangeReader{memory, repo, reopenCurrentStartupRepo(t, backend, false)} {
+		input := ItemMembershipRangeOptions{ThreadID: "thread", AnchorID: "tool:turn:call", Kinds: []string{"assistant", "tool", "thinking"}, IntermediateAssistant: true}
+		got, err := reader.ItemMembershipRange(t.Context(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Counts.Assistant != 1 || got.Counts.Tool != 1 || got.FirstOrdinal != 2 || got.LastOrdinal != 3 {
+			t.Fatalf("intermediate range: %+v", got)
+		}
+		navigation := ItemMembershipWindowOptions{ThreadID: "thread", AnchorID: "tool:turn:call", Direction: PathWindowBefore, Limit: 1, SkipRange: &input, RetainItemIDs: []string{"assistant:entry:tail"}}
+		windowReader := reader.(ItemMembershipReader)
+		page, err := windowReader.ItemMembershipWindow(t.Context(), navigation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Members) != 4 || page.Members[0].ID != "user" || page.Members[3].ID != "assistant:entry:tail" || page.SkippedRange == nil {
+			t.Fatalf("navigation lost boundaries: %+v", page)
+		}
+		input.LeafID = "stale"
+		if _, err := reader.ItemMembershipRange(t.Context(), input); !errors.Is(err, spi.ErrConflict) {
+			t.Fatalf("stale leaf: %v", err)
+		}
+		input.LeafID = ""
+		window, err := memory.ItemMembershipWindow(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.AnchorID = window.Members[len(window.Members)-1].ID
+		if _, err := reader.ItemMembershipRange(t.Context(), input); !errors.Is(err, spi.ErrInvalidArgument) {
+			t.Fatalf("partial response entered range: %v", err)
+		}
+	}
+}
+
 func TestItemRangeActivityCountsFollowLateResults(t *testing.T) {
 	memory := newMemoryRepo(time.Now)
 	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
@@ -411,6 +465,16 @@ func TestItemRangeCompleteQueryReadBudget(t *testing.T) {
 				t.Fatalf("unbounded reads: %+v", measured)
 			}
 			t.Logf("members=%d gets=%d metadata_bytes=%d canonical_reads=%d scans=%d body_reads=%d", count, measured.gets, measured.bytes, measured.sources, measured.scans, measured.bodies)
+			measured.gets, measured.scans, measured.bodies = 0, 0, 0
+			navigation, err := repo.ItemMembershipWindow(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", AnchorID: input.AnchorID, Direction: PathWindowBefore, Limit: 1, SkipRange: &input})
+			if err != nil || len(navigation.Members) != 3 || navigation.Members[0].ID != "source-0" {
+				t.Fatalf("navigation: %+v %v", navigation, err)
+			}
+			if measured.scans != 0 || measured.bodies != 0 || measured.gets > 200*rangeLevel(count+2) {
+				t.Fatalf("unbounded navigation: %+v", measured)
+			}
+			t.Logf("navigation members=%d gets=%d scans=%d body_reads=%d", count, measured.gets, measured.scans, measured.bodies)
+
 		})
 	}
 }
@@ -536,5 +600,95 @@ func TestItemRangeMissingOrdinaryActivityMetadataFailsClosed(t *testing.T) {
 		return err
 	}); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatalf("missing ordinary metadata became an unknown status: %v", err)
+	}
+}
+
+func TestNavigationSettledActivityAndMemoryProjection(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	appendEntry := func(entry Entry) {
+		entry.ThreadID = "thread"
+		entry.TurnID = "turn"
+		entry.RunID = "run"
+		if _, err := memory.Append(t.Context(), entry, AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEntry(Entry{ID: "user", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "request"}})
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprint(i)
+		appendEntry(Entry{ID: "call-" + id, Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: id}})
+		if i != 2 {
+			appendEntry(Entry{ID: "result-" + id, Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "inspect", ToolCallID: id, ToolResult: &session.ToolResultView{Status: "success"}}})
+		}
+	}
+	backend, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareThread(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
+	options := ItemMembershipWindowOptions{ThreadID: "thread", AnchorID: "tool:turn:4", Direction: PathWindowBefore, Limit: 1, SkipRange: &ItemMembershipRangeOptions{Kinds: []string{"tool"}, SettledActivities: true}}
+	for _, reader := range []ItemMembershipReader{memory, repo, reopenCurrentStartupRepo(t, backend, false)} {
+		got, err := reader.ItemMembershipWindow(t.Context(), options)
+		if err != nil || got.SkippedRange == nil || got.SkippedRange.First.ID != "tool:turn:3" || len(got.Members) != 3 || got.Members[0].ID != "tool:turn:2" {
+			t.Fatalf("%T navigation: %+v %v", reader, got, err)
+		}
+	}
+	projected, err := memory.ReadWindowProjection(t.Context(), options, func(PathMetadata, bool) []string { return nil })
+	if err != nil || projected.Membership.SkippedRange == nil || projected.Membership.SkippedRange.Counts.Tool != 2 {
+		t.Fatalf("memory projection: %+v %v", projected.Membership, err)
+	}
+	options.AnchorID = "tool:turn:2"
+	got, err := repo.ItemMembershipWindow(t.Context(), options)
+	if err != nil || got.SkippedRange != nil || len(got.Members) != 1 || got.Members[0].ID != "tool:turn:1" {
+		t.Fatalf("unsettled anchor: %+v %v", got, err)
+	}
+	options.SkipRange.Kinds = []string{"invalid"}
+	if _, err := repo.ItemMembershipWindow(t.Context(), options); !errors.Is(err, spi.ErrInvalidArgument) {
+		t.Fatalf("invalid predicate accepted: %v", err)
+	}
+}
+
+func TestResponseRangePreparationUpgradesOnlyDerivedMetadata(t *testing.T) {
+	backend, repo := projectionSourcesFixture(t, 8)
+	if err := repo.PrepareThread(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		m, _, err := readItemManifest(tx, "thread")
+		if err != nil {
+			return err
+		}
+		m.ResponseRangesVersion = 0
+		return putItemJSON(tx, itemManifestKey("thread"), m)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	input := ItemMembershipRangeOptions{ThreadID: "thread", AnchorID: "tool:turn:work", Kinds: []string{"tool"}, IntermediateAssistant: true}
+	if _, err := repo.ItemMembershipRange(t.Context(), input); err != nil {
+		t.Fatal(err)
+	}
+	for ns, records := range before {
+		if ns != itemMembershipNamespace && !reflect.DeepEqual(records, backend.records[ns]) {
+			t.Fatalf("rewrote canonical namespace %s", ns)
+		}
+	}
+	after := cloneMigrationRecords(backend.records)
+	if _, err := repo.ItemMembershipRange(t.Context(), input); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, backend.records) {
+		t.Fatal("repeated query rewrote prepared metadata")
+	}
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		m, _, err := readItemManifest(tx, "thread")
+		if m.ResponseRangesVersion != 1 {
+			t.Errorf("version=%d", m.ResponseRangesVersion)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

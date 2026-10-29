@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-28: Add bounded atomic range navigation and protected identity selection;
+  see [thread updates](api/thread-updates.md).
+
 - 2026-10-27: Bind the Goal tool and lifecycle through one Harness execution
   installation, declare canonical state writes, and preserve host tool authority;
   see [thread Goals](decisions/thread-goals.md).

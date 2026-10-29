@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add bounded canonical range navigation to window subscriptions. Resolve safe
+  same-turn/run ranges and protected identities at one leaf, retain both range
+  endpoints, and install a finite interest without materializing skipped bodies.
+  Keep trailing assistant output and unsettled activities outside opt-in skips.
+
 - Upgrade golang.org/x/image to v0.47.0 to remove the reachable VP8L decoder
   vulnerability GO-2026-6222 before downstream image transport adoption.
 - Add opt-in temporary DeepSeek image Files transport with explicit expiry,

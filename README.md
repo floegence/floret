@@ -1665,6 +1665,14 @@ hidden member bodies or define product grouping policy. Hosts must supply fresh
 read authorization and account for resident drafts separately; unprepared
 historical metadata still requires owner-controlled preparation.
 
+Window subscriptions optionally combine a before/after seek with
+ThreadWindowInput.SkipRange and RetainItemIDs. The canonical owner resolves the
+range and bounded union at one leaf, retains both endpoints, and installs the
+result as a finite identity selection. IntermediateAssistant admits only
+canonically superseded response segments; SettledActivities keeps mutable tools
+outside a skip. SkippedRange is baseline-only metadata, not a live count.
+The combined request budget is 150 identities including two endpoint slots.
+
 Prepared bounded windows retain the latest canonical summary source alongside
 membership. Sidebar Summary after a historical or tool-only window reads no
 historical metadata scan. Only source positions are durable; preview text is

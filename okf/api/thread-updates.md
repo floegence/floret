@@ -785,3 +785,39 @@ authorizes scope and validates the current source association. A frozen live
 extent cannot grow while being read. Canonical installation requires refreshing
 a live locator. Recent source manifest pages occupy at most 32 in-memory pages
 of 150 locators each, bound to the frozen leaf; there is no durable text cache.
+
+
+## Atomic range navigation decision
+
+The additive public API extends ThreadWindowInput with SkipRange and
+RetainItemIDs, and ThreadWindowSnapshot with baseline-only SkippedRange.
+ThreadWindowRange contains canonical kind/fact predicates, IntermediateAssistant
+and SettledActivities. Product grouping, disclosure, geometry and missing-content
+controls remain host-owned. There is no new durable lifecycle or subscription.
+
+An explicit positive Limit reserves adjacent members. The sum of Limit, retained
+identities and two endpoint slots must not exceed 150. ItemIDs cannot combine
+with navigation. A before/after skip requires an identity anchor and excludes
+numeric offsets. Malformed predicates fail; an otherwise valid predicate that
+no longer includes its anchor performs an ordinary adjacent read. Missing
+identities, source corruption and cancellation retain the prior interest.
+
+Persistent range resolution and membership selection share one canonical read
+transaction. A resident actor accepts range facts only at that same canonical
+leaf, retries at most eight publication races, and otherwise fails without
+replacing the reader. Streaming drafts do not advance that canonical leaf.
+The installed interest contains only the resolved finite identities; refresh
+never repeats the navigation operation. Every request retains ordinary fresh
+scope authorization and the existing ordered baseline/delta channel.
+
+Intermediate assistant eligibility uses canonical segmented response boundaries
+within the same run and excludes control-owned output. Trailing or unclassified
+prose remains outside the range. SettledActivities excludes pending, running,
+waiting and unknown tool facts. Rebuildable membership metadata adds a response
+source discriminator; old derived metadata is prepared only when this optional
+capability is requested. Current canonical bytes and schema lineage are unchanged.
+
+Prepared SQLite navigation is logarithmic in membership plus bounded selected
+rows. The 1k/10k/100k regression forbids storage scans and body reads, including
+reopened readers. Neither frozen counts nor sparse endpoints claim live complete
+coverage; the host must expose missing details when a disclosure is expanded.

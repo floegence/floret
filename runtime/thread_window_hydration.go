@@ -10,6 +10,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/threadquery"
 )
 
 // Prepared bodies are disposable request-local data. The actor still selects
@@ -72,6 +73,11 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 	var coldView *canonicalThreadView
 	var coldBefore, coldAfter bool
 	var coldAnchor string
+	var skippedRange *ThreadItemRange
+	var warmLeaf string
+	var warmRangeReady bool
+	var warmInput ThreadWindowInput
+	warmAttempts := 0
 	for {
 		var missing []ThreadItem
 		var loadCold bool
@@ -111,6 +117,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 					cold, coldView, cache = actor.sourceWindow, nil, map[string]preparedWindowItem{}
 					coldBefore, coldAfter = cold.hasBefore, cold.hasAfter
 					coldAnchor = cold.resolvedAnchor
+					skippedRange = cold.skippedRange
 				}
 				if coldView == nil {
 					if sameWindowInterval(input, cold.input) {
@@ -126,6 +133,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 								coldView = &value
 								coldBefore, coldAfter = frozen.page.hasBefore, frozen.page.hasAfter
 								coldAnchor = frozen.page.resolvedAnchor
+								skippedRange = frozen.page.skippedRange
 								break
 							}
 						}
@@ -139,7 +147,22 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 				snapshot = ThreadWindowSnapshot{resolvedAnchor: coldAnchor, ThreadID: input.ThreadID, LeafID: cold.leaf, HasBefore: coldBefore, HasAfter: coldAfter}
 				turns, interactions = coldView.Turns, coldView.Interactions
 			} else {
-				selected, before, after, err := actor.selectWindowItems(input)
+				if input.SkipRange != nil {
+					if actor.canonical == nil {
+						return ErrUnsupportedStoreCapability
+					}
+					if !warmRangeReady || warmLeaf != actor.canonical.leafID {
+						warmLeaf = actor.canonical.leafID
+						warmRangeReady = false
+						loadCold = true
+						return nil
+					}
+				}
+				selectionInput := input
+				if input.SkipRange != nil {
+					selectionInput = warmInput
+				}
+				selected, before, after, err := actor.selectWindowItems(selectionInput)
 				if err != nil {
 					return err
 				}
@@ -149,8 +172,9 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 					snapshot.LeafID = actor.canonical.leafID
 				}
 			}
+			snapshot.SkippedRange = skippedRange
 			snapshot.RequestID = input.RequestID
-			snapshot.ItemSelection = input.ItemIDs != nil
+			snapshot.ItemSelection = input.ItemIDs != nil || input.SkipRange != nil || len(input.RetainItemIDs) > 0
 			limit = min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1), windowTextLimit(input))
 			snapshot.Items = make([]ThreadItem, len(items))
 			nextCache := make(map[string]preparedWindowItem, len(items))
@@ -237,7 +261,8 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 				previous.lifetime.cancel()
 			}
 			retainedInput := normalizeWindowInput(input)
-			if input.AnchorOffset != 0 {
+			if input.AnchorOffset != 0 || input.SkipRange != nil || len(input.RetainItemIDs) > 0 {
+				retainedInput.SkipRange, retainedInput.RetainItemIDs = nil, nil
 				retainedInput.AnchorID, retainedInput.AnchorOffset, retainedInput.Direction = "", 0, ""
 				retainedInput.ItemIDs = make([]string, len(snapshot.Items))
 				for i, item := range snapshot.Items {
@@ -260,6 +285,41 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			}
 			continue
 		}
+		if loadCold && !warmRangeReady && input.SkipRange != nil && cold == nil {
+			reader, ok := actor.service.host.store.repo.(sessiontree.ItemMembershipRangeReader)
+			if !ok {
+				return ErrUnsupportedStoreCapability
+			}
+			warmAttempts++
+			if warmAttempts > 8 {
+				return spi.ErrConflict
+			}
+			query := canonicalWindowRange(input.SkipRange)
+			query.ThreadID, query.LeafID, query.AnchorID = input.ThreadID.String(), warmLeaf, input.AnchorID
+			selected, err := reader.ItemMembershipRange(ctx, *query)
+			value := publicThreadItemRange(input.ThreadID, selected)
+			if errors.Is(err, spi.ErrConflict) {
+				continue
+			}
+			err = activityReadError(err)
+			if err != nil && !errors.Is(err, threadquery.ErrInvalidQuery) {
+				return err
+			}
+			warmInput = input
+			warmInput.SkipRange = nil
+			skippedRange = nil
+			if err == nil {
+				skippedRange = &value
+				if input.Direction == ThreadWindowBefore {
+					warmInput.AnchorID = value.FirstItemID
+				} else {
+					warmInput.AnchorID = value.LastItemID
+				}
+				warmInput.RetainItemIDs = append(slices.Clone(input.RetainItemIDs), value.FirstItemID, value.LastItemID)
+			}
+			warmRangeReady = true
+			continue
+		}
 		if loadCold {
 			// Read another interval at the already accepted leaf without replacing
 			// actor facts. The next actor turn discards it if publication advanced.
@@ -279,6 +339,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			}
 			coldView = &value
 			coldBefore, coldAfter, coldAnchor = page.hasBefore, page.hasAfter, page.resolvedAnchor
+			skippedRange = page.skippedRange
 			continue
 		}
 		for _, item := range missing {
@@ -329,6 +390,13 @@ func selectedWindowInteractions(items []ThreadItem, interactions []ThreadInterac
 }
 
 func normalizeWindowInput(input ThreadWindowInput) ThreadWindowInput {
+	input.RetainItemIDs = slices.Clone(input.RetainItemIDs)
+	if input.SkipRange != nil {
+		value := *input.SkipRange
+		value.Kinds = slices.Clone(value.Kinds)
+		input.SkipRange = &value
+	}
+
 	if input.ItemIDs != nil {
 		input.ItemIDs = slices.Clone(input.ItemIDs)
 		input.Limit = len(input.ItemIDs)
@@ -342,7 +410,7 @@ func normalizeWindowInput(input ThreadWindowInput) ThreadWindowInput {
 }
 func sameWindowInterval(a, b ThreadWindowInput) bool {
 	a, b = normalizeWindowInput(a), normalizeWindowInput(b)
-	return slices.Equal(a.ItemIDs, b.ItemIDs) && (a.ItemIDs == nil) == (b.ItemIDs == nil) && a.ActivityFields == b.ActivityFields && windowTextLimit(a) == windowTextLimit(b) && a.AnchorID == b.AnchorID && a.AnchorOffset == b.AnchorOffset && a.Direction == b.Direction && a.Limit == b.Limit
+	return reflect.DeepEqual(a.SkipRange, b.SkipRange) && slices.Equal(a.RetainItemIDs, b.RetainItemIDs) && slices.Equal(a.ItemIDs, b.ItemIDs) && (a.ItemIDs == nil) == (b.ItemIDs == nil) && a.ActivityFields == b.ActivityFields && windowTextLimit(a) == windowTextLimit(b) && a.AnchorID == b.AnchorID && a.AnchorOffset == b.AnchorOffset && a.Direction == b.Direction && a.Limit == b.Limit
 }
 
 // A live body is append-only. A bounded prefix already read from this exact
@@ -383,6 +451,33 @@ func windowTextLimit(input ThreadWindowInput) int {
 }
 
 func validateWindowSelection(input ThreadWindowInput) error {
+	if input.SkipRange != nil || len(input.RetainItemIDs) > 0 {
+		if input.ItemIDs != nil || input.Limit < 1 || len(input.RetainItemIDs)+input.Limit+2 > threadDisplayPageItems {
+			return errors.New("invalid navigation window size")
+		}
+		seen := map[string]bool{}
+		for _, id := range input.RetainItemIDs {
+			if id == "" || seen[id] {
+				return errors.New("invalid retained identity")
+			}
+			seen[id] = true
+		}
+		if input.SkipRange != nil {
+			if input.AnchorID == "" || input.AnchorOffset != 0 || input.Direction != ThreadWindowBefore && input.Direction != ThreadWindowAfter || len(input.SkipRange.Kinds) == 0 || len(input.SkipRange.Kinds) > 7 {
+				return errors.New("invalid range navigation")
+			}
+			allowed := map[ThreadItemKind]bool{ThreadItemUser: true, ThreadItemAssistant: true, ThreadItemThinking: true, ThreadItemTool: true, ThreadItemInteraction: true, ThreadItemGoal: true, ThreadItemSteering: true}
+			for _, kind := range input.SkipRange.Kinds {
+				if !allowed[kind] {
+					return errors.New("invalid range kind")
+				}
+			}
+			if input.SkipRange.Exclude & ^ThreadItemRangeFact(255) != 0 {
+				return errors.New("invalid range facts")
+			}
+		}
+	}
+
 	if input.PreviewBytes != 0 && (input.PreviewBytes < 128 || input.PreviewBytes > threadDisplayTextBytes) {
 		return errors.New("invalid thread window preview budget")
 	}
@@ -414,7 +509,27 @@ func (actor *threadRuntimeState) selectWindowItems(input ThreadWindowInput) ([]T
 		if err != nil {
 			return nil, false, false, err
 		}
-		return actor.state.view.Items[page.first:page.last], page.hasBefore, page.hasAfter, nil
+		if len(input.RetainItemIDs) == 0 {
+			return actor.state.view.Items[page.first:page.last], page.hasBefore, page.hasAfter, nil
+		}
+		ids := make([]string, 0, len(input.RetainItemIDs)+page.last-page.first)
+		seen := map[string]bool{}
+		for _, id := range input.RetainItemIDs {
+			if !seen[id] {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+		}
+		for _, item := range actor.state.view.Items[page.first:page.last] {
+			if !seen[item.ID] {
+				ids = append(ids, item.ID)
+				seen[item.ID] = true
+			}
+		}
+		if len(ids) > threadDisplayPageItems {
+			return nil, false, false, errors.New("navigation exceeds window size")
+		}
+		return actor.selectWindowItems(ThreadWindowInput{ItemIDs: ids})
 	}
 	positions := make([]int, 0, len(input.ItemIDs))
 	for _, id := range input.ItemIDs {

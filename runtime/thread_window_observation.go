@@ -23,6 +23,13 @@ const (
 // subscription. Append preserves existing history anchors. A missing anchor
 // fails explicitly; callers can request the available tail with no AnchorID.
 type ThreadWindowInput struct {
+	// SkipRange reads beyond the maximal eligible canonical range at AnchorID.
+	// Both endpoints remain selected. This is one explicit navigation operation;
+	// the accepted interest retains identities and never repeats the skip.
+	SkipRange *ThreadWindowRange `json:"skip_range,omitempty"`
+	// RetainItemIDs joins protected rows to an interval in the same baseline.
+	// The combined selection, including range endpoints, is limited to 150.
+	RetainItemIDs []string `json:"retain_item_ids,omitempty"`
 	// PreviewBytes bounds each item text prefix before source hydration. Zero
 	// retains the published 64 KiB maximum; values must be 128..65536. The
 	// aggregate window budget still applies. Omitted text keeps its body locator.
@@ -73,6 +80,9 @@ type ThreadItemBody struct {
 // Window replacement also replaces Turns with selected membership. Interactions
 // contains all pending controls plus resolved controls in the accepted interval.
 type ThreadWindowSnapshot struct {
+	// SkippedRange is navigation metadata at this baseline's canonical leaf.
+	// It is not a live aggregate; later updates do not refresh its counts.
+	SkippedRange   *ThreadItemRange `json:"skipped_range,omitempty"`
 	resolvedAnchor string
 	// Summary is present only when explicitly requested. Its activity state and
 	// preview are frozen at this ViewVersion; it requires no second host read.

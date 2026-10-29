@@ -26,10 +26,24 @@ const (
 // AnchorID, with the same turn/run, allowed kinds, and no excluded facts. The
 // anchor must satisfy the predicate. Read authorization must be freshly supplied.
 type ThreadItemRangeInput struct {
-	ThreadID identity.ThreadID   `json:"thread_id"`
-	AnchorID string              `json:"anchor_id"`
-	Kinds    []ThreadItemKind    `json:"kinds"`
-	Exclude  ThreadItemRangeFact `json:"exclude,omitempty"`
+	// LeafID optionally requires this exact canonical snapshot.
+	LeafID string `json:"leaf_id,omitempty"`
+	// IntermediateAssistant admits assistant members only before a canonical
+	// segmented response boundary in their run. Trailing output stays visible.
+	IntermediateAssistant bool                `json:"intermediate_assistant,omitempty"`
+	ThreadID              identity.ThreadID   `json:"thread_id"`
+	AnchorID              string              `json:"anchor_id"`
+	Kinds                 []ThreadItemKind    `json:"kinds"`
+	Exclude               ThreadItemRangeFact `json:"exclude,omitempty"`
+}
+
+// ThreadWindowRange selects product-neutral canonical facts for one seek.
+type ThreadWindowRange struct {
+	// SettledActivities excludes pending, running, waiting and unknown tools.
+	SettledActivities     bool                `json:"settled_activities,omitempty"`
+	Kinds                 []ThreadItemKind    `json:"kinds"`
+	Exclude               ThreadItemRangeFact `json:"exclude,omitempty"`
+	IntermediateAssistant bool                `json:"intermediate_assistant,omitempty"`
 }
 
 type ThreadItemKindCounts struct {
@@ -96,10 +110,25 @@ func (service *threadRuntimeService) ItemRange(ctx context.Context, scope thread
 	for i, kind := range input.Kinds {
 		kinds[i] = string(kind)
 	}
-	value, err := reader.ItemMembershipRange(ctx, sessiontree.ItemMembershipRangeOptions{ThreadID: input.ThreadID.String(), AnchorID: input.AnchorID, Kinds: kinds, Exclude: sessiontree.ItemRangeFacts(input.Exclude)})
+	value, err := reader.ItemMembershipRange(ctx, sessiontree.ItemMembershipRangeOptions{LeafID: input.LeafID, IntermediateAssistant: input.IntermediateAssistant, ThreadID: input.ThreadID.String(), AnchorID: input.AnchorID, Kinds: kinds, Exclude: sessiontree.ItemRangeFacts(input.Exclude)})
 	if err != nil {
 		return ThreadItemRange{}, activityReadError(err)
 	}
+	return publicThreadItemRange(input.ThreadID, value), nil
+}
+
+func publicThreadItemRange(threadID identity.ThreadID, value sessiontree.ItemMembershipRange) ThreadItemRange {
 	c, a := value.Counts, value.Activity
-	return ThreadItemRange{ThreadID: input.ThreadID, TurnID: identity.TurnID(value.First.TurnID), RunID: identity.RunID(value.First.RunID), LeafID: value.LeafID, FirstItemID: value.First.ID, LastItemID: value.Last.ID, FirstOrdinal: value.FirstOrdinal, LastOrdinal: value.LastOrdinal, Counts: ThreadItemKindCounts{User: c.User, Assistant: c.Assistant, Thinking: c.Thinking, Tool: c.Tool, Interaction: c.Interaction, Goal: c.Goal, Steering: c.Steering}, Activity: ThreadItemActivityCounts{Pending: a.Pending, Running: a.Running, Waiting: a.Waiting, Success: a.Success, Error: a.Error, Declined: a.Declined, Canceled: a.Canceled, Unknown: a.Unknown}, Facts: ThreadItemRangeFact(value.Facts), HasBefore: value.HasBefore, HasAfter: value.HasAfter}, nil
+	return ThreadItemRange{ThreadID: threadID, TurnID: identity.TurnID(value.First.TurnID), RunID: identity.RunID(value.First.RunID), LeafID: value.LeafID, FirstItemID: value.First.ID, LastItemID: value.Last.ID, FirstOrdinal: value.FirstOrdinal, LastOrdinal: value.LastOrdinal, Counts: ThreadItemKindCounts{User: c.User, Assistant: c.Assistant, Thinking: c.Thinking, Tool: c.Tool, Interaction: c.Interaction, Goal: c.Goal, Steering: c.Steering}, Activity: ThreadItemActivityCounts{Pending: a.Pending, Running: a.Running, Waiting: a.Waiting, Success: a.Success, Error: a.Error, Declined: a.Declined, Canceled: a.Canceled, Unknown: a.Unknown}, Facts: ThreadItemRangeFact(value.Facts), HasBefore: value.HasBefore, HasAfter: value.HasAfter}
+}
+
+func canonicalWindowRange(input *ThreadWindowRange) *sessiontree.ItemMembershipRangeOptions {
+	if input == nil {
+		return nil
+	}
+	value := &sessiontree.ItemMembershipRangeOptions{SettledActivities: input.SettledActivities, Exclude: sessiontree.ItemRangeFacts(input.Exclude), IntermediateAssistant: input.IntermediateAssistant}
+	for _, kind := range input.Kinds {
+		value.Kinds = append(value.Kinds, string(kind))
+	}
+	return value
 }

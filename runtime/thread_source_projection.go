@@ -13,6 +13,7 @@ import (
 // The membership reader supplies public item ordinals. Complete context, turn
 // facts and pending controls are still required before installing a baseline.
 type threadSourceProjection struct {
+	skippedRange        *ThreadItemRange
 	meta                sessiontree.ThreadMeta
 	resolvedAnchor      string
 	summary             *sessiontree.WindowSummary
@@ -146,7 +147,7 @@ func (service *threadRuntimeService) loadSourceWindowWithInterests(ctx context.C
 	if limit == 0 {
 		limit = threadDisplayPageItems
 	}
-	options := sessiontree.ItemMembershipWindowOptions{Summary: true, OmitMissing: omitMissing, ItemIDs: input.ItemIDs, ThreadID: input.ThreadID.String(), ActivityFields: input.ActivityFields, LeafID: leaf, AnchorID: input.AnchorID, AnchorOffset: input.AnchorOffset, Direction: sessiontree.PathWindowDirection(input.Direction), Limit: limit}
+	options := sessiontree.ItemMembershipWindowOptions{SkipRange: canonicalWindowRange(input.SkipRange), RetainItemIDs: input.RetainItemIDs, Summary: true, OmitMissing: omitMissing, ItemIDs: input.ItemIDs, ThreadID: input.ThreadID.String(), ActivityFields: input.ActivityFields, LeafID: leaf, AnchorID: input.AnchorID, AnchorOffset: input.AnchorOffset, Direction: sessiontree.PathWindowDirection(input.Direction), Limit: limit}
 	for _, interest := range interests {
 		value := normalizeWindowInput(interest.input)
 		options.Companions = append(options.Companions, sessiontree.ItemMembershipWindowOptions{Summary: true, OmitMissing: true, MissingAnchorTail: true, ItemIDs: value.ItemIDs, ThreadID: value.ThreadID.String(), ActivityFields: value.ActivityFields, AnchorID: value.AnchorID, AnchorOffset: value.AnchorOffset, Direction: sessiontree.PathWindowDirection(value.Direction), Limit: value.Limit})
@@ -283,5 +284,10 @@ func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, in
 			return canonicalThreadView{}, threadSourceProjection{}, err
 		}
 	}
-	return view, threadSourceProjection{meta: window.Meta, resolvedAnchor: page.ResolvedAnchorID, summary: window.Summary, leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter, anchorUnavailable: page.AnchorUnavailable}, nil
+	var skipped *ThreadItemRange
+	if page.SkippedRange != nil {
+		value := publicThreadItemRange(input.ThreadID, *page.SkippedRange)
+		skipped = &value
+	}
+	return view, threadSourceProjection{skippedRange: skipped, meta: window.Meta, resolvedAnchor: page.ResolvedAnchorID, summary: window.Summary, leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter, anchorUnavailable: page.AnchorUnavailable}, nil
 }

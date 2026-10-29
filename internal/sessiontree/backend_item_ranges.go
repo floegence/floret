@@ -165,12 +165,13 @@ func activityRangeFacts(f ActivityFacts, status string) ItemRangeFacts {
 }
 
 type itemRangeSummary struct {
-	Pending   int
-	Facts     ItemRangeFacts
-	Activity  ItemActivityCounts
-	Counts    ItemKindCounts
-	Turn, Run string
-	Mixed     bool
+	NonResponseAssistant int
+	Pending              int
+	Facts                ItemRangeFacts
+	Activity             ItemActivityCounts
+	Counts               ItemKindCounts
+	Turn, Run            string
+	Mixed                bool
 }
 
 func (s *itemRangeSummary) add(b itemRangeSummary) {
@@ -182,6 +183,7 @@ func (s *itemRangeSummary) add(b itemRangeSummary) {
 		return
 	}
 	s.Mixed = s.Mixed || b.Mixed || s.Turn != b.Turn || s.Run != b.Run
+	s.NonResponseAssistant += b.NonResponseAssistant
 	s.Pending += b.Pending
 	s.Counts.add(b.Counts)
 	s.Activity.add(b.Activity)
@@ -204,7 +206,7 @@ func readItemRangeSummary(tx spi.ReadTx, thread string, level, block int) (itemR
 	if err := decodeActivityMetadata(raw, "item-range-v2", &result); err != nil {
 		return result, err
 	}
-	if result.Pending < 0 || result.Pending > result.Counts.Tool || result.Facts & ^itemRangeAllFacts != 0 {
+	if result.NonResponseAssistant < 0 || result.NonResponseAssistant > result.Counts.Assistant || result.Pending < 0 || result.Pending > result.Counts.Tool || result.Facts & ^itemRangeAllFacts != 0 {
 		return result, ErrAuthorityCorrupt
 	}
 	a := result.Activity
@@ -237,7 +239,11 @@ func itemRangeLeaf(member ItemMember) (itemRangeSummary, error) {
 	if member.ActivityPending {
 		pending = 1
 	}
-	return itemRangeSummary{Pending: pending, Counts: counts, Activity: activity, Facts: member.RangeFacts, Turn: member.TurnID, Run: member.RunID}, err
+	nonResponse := 0
+	if member.Kind == "assistant" && !member.AssistantResponse {
+		nonResponse = 1
+	}
+	return itemRangeSummary{NonResponseAssistant: nonResponse, Pending: pending, Counts: counts, Activity: activity, Facts: member.RangeFacts, Turn: member.TurnID, Run: member.RunID}, err
 }
 func updateItemRange(tx spi.WriteTx, thread string, count int, member ItemMember) error {
 	s, err := itemRangeLeaf(member)
@@ -307,9 +313,12 @@ func storeItemRanges(ctx context.Context, tx spi.WriteTx, thread string, members
 }
 
 type ItemMembershipRangeOptions struct {
-	Exclude            ItemRangeFacts
-	ThreadID, AnchorID string
-	Kinds              []string
+	SettledActivities     bool
+	LeafID                string
+	IntermediateAssistant bool
+	Exclude               ItemRangeFacts
+	ThreadID, AnchorID    string
+	Kinds                 []string
 }
 type ItemMembershipRange struct {
 	Facts                     ItemRangeFacts
@@ -342,170 +351,15 @@ func (repo *BackendRepo) ItemMembershipRange(ctx context.Context, input ItemMemb
 	if err != nil {
 		return ItemMembershipRange{}, err
 	}
-	if err := repo.prepareWindowReadSources(ctx, input.ThreadID, windowPreparationNeeds{membership: true}); err != nil {
+	if err := repo.prepareWindowReadSources(ctx, input.ThreadID, windowPreparationNeeds{membership: true, window: input.IntermediateAssistant, response: input.IntermediateAssistant}); err != nil {
 		return ItemMembershipRange{}, err
 	}
 	var result ItemMembershipRange
 	err = repo.withActivitySummaryPreparation(ctx, input.ThreadID, func() error {
 		return repo.canonicalThreadView(ctx, input.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-			tx = newProjectionSourceTx(tx)
-			m, found, err := readItemManifest(tx, meta.ID)
-			if err != nil || !found || m.Leaf != meta.LeafID {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			if m.Slots == 0 {
-				return ErrEntryNotFound
-			}
-			leaf, err := activeLocatedEntry(ctx, tx, meta, m.Leaf)
-			if err != nil || leaf.RawHash != m.Hash {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			rankTotal, err := itemRankPrefix(tx, meta.ID, m.Slots)
-			if err != nil || rankTotal != m.Visible {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			root, err := readItemRangeSummary(tx, meta.ID, bits.Len(uint(m.Slots-1)), 0)
-			if err != nil || root.Counts.total() != m.Visible {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			var slot int
-			if err := readItemJSON(tx, itemIdentityKey(meta.ID, input.AnchorID), &slot); err != nil {
-				if errors.Is(err, spi.ErrNotFound) {
-					return ErrEntryNotFound
-				}
-				return err
-			}
-			member, err := readItemSlot(tx, meta.ID, slot)
-			if err != nil || slot < 0 || slot >= m.Slots || member.ID != input.AnchorID || member.Hidden {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			if err := validateItemActivitySource(ctx, tx, meta, member.ItemMember); err != nil {
-				return err
-			}
-			if member.ActivityPending {
-				return &activitySummaryPreparationRequired{source: member.SourceID}
-			}
-			if !kinds[member.Kind] || member.RangeFacts&input.Exclude != 0 {
-				return spi.ErrInvalidArgument
-			}
-			matches := func(s itemRangeSummary) bool {
-				return s.Counts.total() == 0 || s.Pending == 0 && !s.Mixed && s.Turn == member.TurnID && s.Run == member.RunID && s.Counts.selected(kinds) == s.Counts.total() && s.Facts&input.Exclude == 0
-			}
-			// Locate the nearest incompatible visible item on each side. A matching
-			// subtree is skipped in one read; only the two boundary paths are descended.
-			var boundary func(int, int, int, int, bool) (int, error)
-			boundary = func(level, block, start, end int, reverse bool) (int, error) {
-				if err := ctx.Err(); err != nil {
-					return -1, err
-				}
-				lo, hi := block<<level, min((block+1)<<level, m.Slots)
-				if lo >= end || hi <= start {
-					return -1, nil
-				}
-				s, err := readItemRangeSummary(tx, meta.ID, level, block)
-				if err != nil {
-					return -1, err
-				}
-				if matches(s) {
-					return -1, nil
-				}
-				if level == 0 {
-					if s.Pending > 0 {
-						pending, err := readItemSlot(tx, meta.ID, lo)
-						if err != nil {
-							return -1, err
-						}
-						return -1, &activitySummaryPreparationRequired{source: pending.SourceID}
-					}
-					return lo, nil
-				}
-				first, second := block*2, block*2+1
-				if reverse {
-					first, second = second, first
-				}
-				if found, err := boundary(level-1, first, start, end, reverse); err != nil || found >= 0 {
-					return found, err
-				}
-				return boundary(level-1, second, start, end, reverse)
-			}
-			level := bits.Len(uint(m.Slots - 1))
-			before, err := boundary(level, 0, 0, slot, true)
-			if err != nil {
-				return err
-			}
-			after, err := boundary(level, 0, slot+1, m.Slots, false)
-			if err != nil {
-				return err
-			}
-			if after < 0 {
-				after = m.Slots
-			}
-			var aggregate func(int, int) error
-			var total itemRangeSummary
-			aggregate = func(level, block int) error {
-				lo, hi := block<<level, min((block+1)<<level, m.Slots)
-				if lo >= after || hi <= before+1 {
-					return nil
-				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if lo >= before+1 && hi <= after {
-					s, err := readItemRangeSummary(tx, meta.ID, level, block)
-					if err != nil {
-						return err
-					}
-					total.add(s)
-					return nil
-				}
-				if err := aggregate(level-1, block*2); err != nil {
-					return err
-				}
-				return aggregate(level-1, block*2+1)
-			}
-			if err := aggregate(level, 0); err != nil {
-				return err
-			}
-			firstRank, err := itemRankPrefix(tx, meta.ID, before+1)
-			if err != nil {
-				return err
-			}
-			firstRank++
-			lastRank, err := itemRankPrefix(tx, meta.ID, after)
-			if err != nil {
-				return err
-			}
-			if lastRank-firstRank+1 != total.Counts.total() || !matches(total) {
-				return ErrAuthorityCorrupt
-			}
-			resolve := func(rank int) (ItemMember, error) {
-				position, err := selectItemRank(tx, meta.ID, m.Slots, rank)
-				if err != nil {
-					return ItemMember{}, err
-				}
-				selected, err := readItemSlot(tx, meta.ID, position)
-				if err != nil || selected.Hidden {
-					return ItemMember{}, errors.Join(ErrAuthorityCorrupt, err)
-				}
-				source, err := activeLocatedEntry(ctx, tx, meta, selected.SourceID)
-				if err != nil || source.RawHash != selected.RawHash || uint64(source.PathDepth) != selected.CanonicalOrdinal || source.TurnID != selected.TurnID || source.RunID != selected.RunID {
-					return ItemMember{}, errors.Join(ErrAuthorityCorrupt, err)
-				}
-				if err := validateItemActivitySource(ctx, tx, meta, selected.ItemMember); err != nil {
-					return ItemMember{}, err
-				}
-				return selected.ItemMember, nil
-			}
-			first, err := resolve(firstRank)
-			if err != nil {
-				return err
-			}
-			last, err := resolve(lastRank)
-			if err != nil {
-				return err
-			}
-			result = ItemMembershipRange{LeafID: m.Leaf, First: first, Last: last, FirstOrdinal: uint64(firstRank), LastOrdinal: uint64(lastRank), Counts: total.Counts, Activity: total.Activity, Facts: total.Facts, HasBefore: firstRank > 1, HasAfter: lastRank < m.Visible}
-			return nil
+			var err error
+			result, err = readItemMembershipRange(ctx, tx, meta, input, kinds)
+			return err
 		}, func(memory *MemoryRepo) error {
 			var err error
 			result, err = memory.ItemMembershipRange(ctx, input)
@@ -523,10 +377,17 @@ func (repo *MemoryRepo) ItemMembershipRange(ctx context.Context, input ItemMembe
 	if err != nil {
 		return ItemMembershipRange{}, err
 	}
+	if input.LeafID != "" && input.LeafID != meta.LeafID {
+		return ItemMembershipRange{}, spi.ErrConflict
+	}
 	entries, err := repo.Path(ctx, input.ThreadID, meta.LeafID)
 	if err != nil {
 		return ItemMembershipRange{}, err
 	}
+	return memoryItemMembershipRange(ctx, meta, entries, input, kinds)
+}
+
+func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []Entry, input ItemMembershipRangeOptions, kinds map[string]bool) (ItemMembershipRange, error) {
 	var projection ItemMembership
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -581,11 +442,32 @@ func (repo *MemoryRepo) ItemMembershipRange(ctx context.Context, input ItemMembe
 		return ItemMembershipRange{}, ErrEntryNotFound
 	}
 	selected := members[anchor]
-	if !kinds[selected.Kind] || selected.RangeFacts&input.Exclude != 0 {
+	boundary := uint64(0)
+	segmented := false
+	if input.IntermediateAssistant {
+		for _, entry := range entries {
+			if entry.TurnID != selected.TurnID {
+				continue
+			}
+			if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+				segmented = entry.Metadata[ResponseSegmentsMetadataKey] == "1"
+			}
+			if entry.RunID == selected.RunID && windowResponseBoundary(entry) {
+				boundary = uint64(entry.PathDepth)
+			}
+		}
+	}
+	settled := func(m ItemMember) bool {
+		return !input.SettledActivities || m.Kind != "tool" || m.ActivityStatus == "success" || m.ActivityStatus == "error" || m.ActivityStatus == "declined" || m.ActivityStatus == "canceled"
+	}
+	assistantAllowed := func(m ItemMember) bool {
+		return !input.IntermediateAssistant || m.Kind != "assistant" || segmented && m.AssistantResponse && m.CanonicalOrdinal < boundary
+	}
+	if !settled(selected) || !assistantAllowed(selected) || !kinds[selected.Kind] || selected.RangeFacts&input.Exclude != 0 {
 		return ItemMembershipRange{}, spi.ErrInvalidArgument
 	}
 	matches := func(m ItemMember) bool {
-		return kinds[m.Kind] && m.TurnID == selected.TurnID && m.RunID == selected.RunID && m.RangeFacts&input.Exclude == 0
+		return settled(m) && assistantAllowed(m) && kinds[m.Kind] && m.TurnID == selected.TurnID && m.RunID == selected.RunID && m.RangeFacts&input.Exclude == 0
 	}
 	first, last := anchor, anchor+1
 	for first > 0 && matches(members[first-1]) {
@@ -641,4 +523,227 @@ func validateItemActivitySource(ctx context.Context, tx spi.ReadTx, meta ThreadM
 		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return nil
+}
+
+// Reuse canonical source locators; no new durable projection or startup scan.
+func rangeResponseBoundary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, turnID, runID string) (uint64, error) {
+	var turn storedWindowTurnSources
+	if err := readItemJSON(tx, windowTurnSourcesKey(meta.ID, turnID), &turn); err != nil {
+		return 0, err
+	}
+	if turn.Started == "" {
+		return 0, nil
+	}
+	started, err := activeLocatedEntry(ctx, tx, meta, turn.Started)
+	if err != nil || started.Type != EntryTurnMarker || started.TurnStatus != TurnStarted || started.TurnID != turnID {
+		return 0, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if started.Metadata[ResponseSegmentsMetadataKey] != "1" || turn.Boundaries[runID] == "" {
+		return 0, nil
+	}
+	boundary, err := activeLocatedEntry(ctx, tx, meta, turn.Boundaries[runID])
+	if err != nil || boundary.TurnID != turnID || boundary.RunID != runID || !windowResponseBoundary(boundary) {
+		return 0, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return uint64(boundary.PathDepth), nil
+}
+
+// Slots are append ordered, including hidden interaction reservations.
+func itemSlotBeforeDepth(ctx context.Context, tx spi.ReadTx, thread string, count int, depth uint64) (int, error) {
+	lo, hi := 0, count
+	for lo < hi {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		mid := lo + (hi-lo)/2
+		member, err := readItemSlot(tx, thread, mid)
+		if err != nil {
+			return 0, err
+		}
+		if member.CanonicalOrdinal < depth {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo, nil
+}
+
+func readItemMembershipRange(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, input ItemMembershipRangeOptions, kinds map[string]bool) (ItemMembershipRange, error) {
+	var result ItemMembershipRange
+	err := func() error {
+		tx = newProjectionSourceTx(tx)
+		if input.LeafID != "" && input.LeafID != meta.LeafID {
+			return spi.ErrConflict
+		}
+		m, found, err := readItemManifest(tx, meta.ID)
+		if err != nil || !found || m.Leaf != meta.LeafID {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if m.Slots == 0 {
+			return ErrEntryNotFound
+		}
+		leaf, err := activeLocatedEntry(ctx, tx, meta, m.Leaf)
+		if err != nil || leaf.RawHash != m.Hash {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		rankTotal, err := itemRankPrefix(tx, meta.ID, m.Slots)
+		if err != nil || rankTotal != m.Visible {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		root, err := readItemRangeSummary(tx, meta.ID, bits.Len(uint(m.Slots-1)), 0)
+		if err != nil || root.Counts.total() != m.Visible {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		var slot int
+		if err := readItemJSON(tx, itemIdentityKey(meta.ID, input.AnchorID), &slot); err != nil {
+			if errors.Is(err, spi.ErrNotFound) {
+				return ErrEntryNotFound
+			}
+			return err
+		}
+		member, err := readItemSlot(tx, meta.ID, slot)
+		if err != nil || slot < 0 || slot >= m.Slots || member.ID != input.AnchorID || member.Hidden {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := validateItemActivitySource(ctx, tx, meta, member.ItemMember); err != nil {
+			return err
+		}
+		if member.ActivityPending {
+			return &activitySummaryPreparationRequired{source: member.SourceID}
+		}
+		assistantEnd := m.Slots
+		if input.IntermediateAssistant {
+			depth, err := rangeResponseBoundary(ctx, tx, meta, member.TurnID, member.RunID)
+			if err != nil {
+				return err
+			}
+			assistantEnd, err = itemSlotBeforeDepth(ctx, tx, meta.ID, m.Slots, depth)
+			if err != nil {
+				return err
+			}
+		}
+		if input.SettledActivities && member.Kind == "tool" && member.ActivityStatus != "success" && member.ActivityStatus != "error" && member.ActivityStatus != "declined" && member.ActivityStatus != "canceled" || !kinds[member.Kind] || member.RangeFacts&input.Exclude != 0 || input.IntermediateAssistant && member.Kind == "assistant" && (!member.AssistantResponse || slot >= assistantEnd) {
+			return spi.ErrInvalidArgument
+		}
+		matches := func(s itemRangeSummary) bool {
+			return s.Counts.total() == 0 || s.Pending == 0 && !s.Mixed && s.Turn == member.TurnID && s.Run == member.RunID && s.Counts.selected(kinds) == s.Counts.total() && s.Facts&input.Exclude == 0 && (!input.SettledActivities || s.Activity.Pending+s.Activity.Running+s.Activity.Waiting+s.Activity.Unknown == 0)
+		}
+		// Locate the nearest incompatible visible item on each side. A matching
+		// subtree is skipped in one read; only the two boundary paths are descended.
+		var boundary func(int, int, int, int, bool) (int, error)
+		boundary = func(level, block, start, end int, reverse bool) (int, error) {
+			if err := ctx.Err(); err != nil {
+				return -1, err
+			}
+			lo, hi := block<<level, min((block+1)<<level, m.Slots)
+			if lo >= end || hi <= start {
+				return -1, nil
+			}
+			s, err := readItemRangeSummary(tx, meta.ID, level, block)
+			if err != nil {
+				return -1, err
+			}
+			if matches(s) && (!input.IntermediateAssistant || s.Counts.Assistant == 0 || s.NonResponseAssistant == 0 && hi <= assistantEnd) {
+				return -1, nil
+			}
+			if level == 0 {
+				if s.Pending > 0 {
+					pending, err := readItemSlot(tx, meta.ID, lo)
+					if err != nil {
+						return -1, err
+					}
+					return -1, &activitySummaryPreparationRequired{source: pending.SourceID}
+				}
+				return lo, nil
+			}
+			first, second := block*2, block*2+1
+			if reverse {
+				first, second = second, first
+			}
+			if found, err := boundary(level-1, first, start, end, reverse); err != nil || found >= 0 {
+				return found, err
+			}
+			return boundary(level-1, second, start, end, reverse)
+		}
+		level := bits.Len(uint(m.Slots - 1))
+		before, err := boundary(level, 0, 0, slot, true)
+		if err != nil {
+			return err
+		}
+		after, err := boundary(level, 0, slot+1, m.Slots, false)
+		if err != nil {
+			return err
+		}
+		if after < 0 {
+			after = m.Slots
+		}
+		var aggregate func(int, int) error
+		var total itemRangeSummary
+		aggregate = func(level, block int) error {
+			lo, hi := block<<level, min((block+1)<<level, m.Slots)
+			if lo >= after || hi <= before+1 {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if lo >= before+1 && hi <= after {
+				s, err := readItemRangeSummary(tx, meta.ID, level, block)
+				if err != nil {
+					return err
+				}
+				total.add(s)
+				return nil
+			}
+			if err := aggregate(level-1, block*2); err != nil {
+				return err
+			}
+			return aggregate(level-1, block*2+1)
+		}
+		if err := aggregate(level, 0); err != nil {
+			return err
+		}
+		firstRank, err := itemRankPrefix(tx, meta.ID, before+1)
+		if err != nil {
+			return err
+		}
+		firstRank++
+		lastRank, err := itemRankPrefix(tx, meta.ID, after)
+		if err != nil {
+			return err
+		}
+		if lastRank-firstRank+1 != total.Counts.total() || !matches(total) {
+			return ErrAuthorityCorrupt
+		}
+		resolve := func(rank int) (ItemMember, error) {
+			position, err := selectItemRank(tx, meta.ID, m.Slots, rank)
+			if err != nil {
+				return ItemMember{}, err
+			}
+			selected, err := readItemSlot(tx, meta.ID, position)
+			if err != nil || selected.Hidden {
+				return ItemMember{}, errors.Join(ErrAuthorityCorrupt, err)
+			}
+			source, err := activeLocatedEntry(ctx, tx, meta, selected.SourceID)
+			if err != nil || source.RawHash != selected.RawHash || uint64(source.PathDepth) != selected.CanonicalOrdinal || source.TurnID != selected.TurnID || source.RunID != selected.RunID {
+				return ItemMember{}, errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if err := validateItemActivitySource(ctx, tx, meta, selected.ItemMember); err != nil {
+				return ItemMember{}, err
+			}
+			return selected.ItemMember, nil
+		}
+		first, err := resolve(firstRank)
+		if err != nil {
+			return err
+		}
+		last, err := resolve(lastRank)
+		if err != nil {
+			return err
+		}
+		result = ItemMembershipRange{LeafID: m.Leaf, First: first, Last: last, FirstOrdinal: uint64(firstRank), LastOrdinal: uint64(lastRank), Counts: total.Counts, Activity: total.Activity, Facts: total.Facts, HasBefore: firstRank > 1, HasAfter: lastRank < m.Visible}
+		return nil
+	}()
+	return result, err
 }

@@ -13,7 +13,7 @@ import (
 
 // Readiness anchors are cheap startup checks, not a repeated integrity audit.
 // Actual window reads still validate every requested source at one frozen leaf.
-type windowPreparationNeeds struct{ membership, window, context, model bool }
+type windowPreparationNeeds struct{ membership, window, context, model, response bool }
 
 func missingWindowPreparation(tx spi.ReadTx, meta ThreadMeta, wanted windowPreparationNeeds) (windowPreparationNeeds, error) {
 	var needs windowPreparationNeeds
@@ -22,7 +22,7 @@ func missingWindowPreparation(tx spi.ReadTx, meta ThreadMeta, wanted windowPrepa
 		if err != nil {
 			return needs, err
 		}
-		needs.membership = !found || membership.Leaf != meta.LeafID
+		needs.membership = !found || membership.Leaf != meta.LeafID || wanted.response && membership.ResponseRangesVersion == 0
 	}
 	var window storedWindowSources
 	var context storedContextProjection
@@ -56,7 +56,7 @@ func missingWindowPreparation(tx spi.ReadTx, meta ThreadMeta, wanted windowPrepa
 	return needs, nil
 }
 func (repo *BackendRepo) prepareWindowProjection(ctx context.Context, thread string) error {
-	return repo.prepareWindowReadSources(ctx, thread, windowPreparationNeeds{true, true, true, true})
+	return repo.prepareWindowReadSources(ctx, thread, windowPreparationNeeds{membership: true, window: true, context: true, model: true})
 }
 
 // Narrow readers and complete windows share preparation and publication. Only
@@ -124,7 +124,7 @@ func (tx *windowPreparationRecords) Delete(string, []byte) error { return spi.Er
 // caught up through existing reducers; requested readiness anchors publish only
 // after private metadata reaches the current tail. Branch changes still fail.
 func (repo *BackendRepo) prepareWindowProjectionSnapshot(ctx context.Context, thread string) error {
-	return repo.prepareWindowReadSnapshot(ctx, thread, windowPreparationNeeds{true, true, true, true})
+	return repo.prepareWindowReadSnapshot(ctx, thread, windowPreparationNeeds{membership: true, window: true, context: true, model: true})
 }
 
 func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread string, wanted windowPreparationNeeds) error {

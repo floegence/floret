@@ -87,7 +87,7 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 	if ctx == nil || strings.TrimSpace(options.ThreadID) == "" || options.Limit < 1 || options.Limit > 256 || fields == nil {
 		return WindowProjection{}, spi.ErrInvalidArgument
 	}
-	needs := windowPreparationNeeds{true, true, true, true}
+	needs := windowPreparationNeeds{membership: true, window: true, context: true, model: true, response: options.SkipRange != nil && options.SkipRange.IntermediateAssistant}
 	if options.SummaryOnly {
 		needs = windowPreparationNeeds{window: true}
 	}
@@ -406,37 +406,28 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 		byID[entry.ID] = entry
 	}
 	members := []ItemMember{}
-	anchor := -1
 	for _, member := range membership.Members {
-		if member.Hidden {
-			continue
+		if !member.Hidden {
+			members = append(members, member)
 		}
-		if member.ID == options.AnchorID {
-			anchor = len(members)
-		}
-		members = append(members, member)
 	}
-	if options.AnchorID == "" {
-		anchor = len(members)
-	} else if anchor < 0 {
-		return WindowProjection{}, ErrEntryNotFound
+	readMembership := func(input ItemMembershipWindowOptions) (ItemMembershipWindow, error) {
+		return memoryProjectionMembership(meta.LeafID, members, input)
 	}
-	first, last, err := membershipWindowBounds(len(members), anchor, options)
+	var page ItemMembershipWindow
+	if options.SkipRange != nil || len(options.RetainItemIDs) > 0 {
+		page, err = navigateMembershipWindow(ctx, options, readMembership, func(input ItemMembershipRangeOptions) (ItemMembershipRange, error) {
+			kinds, err := validateItemRangeOptions(ctx, input)
+			if err != nil {
+				return ItemMembershipRange{}, err
+			}
+			return memoryItemMembershipRange(ctx, meta, entries, input, kinds)
+		})
+	} else {
+		page, err = readMembership(options)
+	}
 	if err != nil {
 		return WindowProjection{}, err
-	}
-	page := ItemMembershipWindow{LeafID: meta.LeafID, Members: members[first:last], Ordinals: []uint64{}, HasBefore: first > 0, HasAfter: last < len(members)}
-	if options.Direction == PathWindowAround {
-		page.ResolvedAnchorID = members[anchor+options.AnchorOffset].ID
-	}
-	for i := first; i < last; i++ {
-		page.Ordinals = append(page.Ordinals, uint64(i+1))
-	}
-	if options.ItemIDs != nil {
-		page, err = selectMemoryMembershipItems(meta.LeafID, members, options.ItemIDs, options.OmitMissing)
-		if err != nil {
-			return WindowProjection{}, err
-		}
 	}
 	contextSnapshot, err := projection.Snapshot(time.Time{})
 	if err != nil {

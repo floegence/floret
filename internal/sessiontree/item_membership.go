@@ -21,6 +21,7 @@ type ItemMember struct {
 	ToolName           string
 	RangeFacts         ItemRangeFacts
 	ActivityPending    bool
+	AssistantResponse  bool
 	ActivityStatus     string
 	ActivitySource     contextSourceRef
 	InteractionSource  contextSourceRef
@@ -96,7 +97,7 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 	}
 	p.ordinal = ordinal
 	add := func(id, kind string, hidden bool) *ItemContribution {
-		m := ItemMember{ID: id, Kind: kind, SourceID: entry.ID, TurnID: entry.TurnID, RunID: entry.RunID, CanonicalOrdinal: ordinal, Slot: len(p.Members), Hidden: hidden}
+		m := ItemMember{AssistantResponse: kind == "assistant" && entry.Type == EntryAssistantMessage && entry.Message.Kind != "control_signal", ID: id, Kind: kind, SourceID: entry.ID, TurnID: entry.TurnID, RunID: entry.RunID, CanonicalOrdinal: ordinal, Slot: len(p.Members), Hidden: hidden}
 		p.Members = append(p.Members, m)
 		return &ItemContribution{Member: m, New: true}
 	}

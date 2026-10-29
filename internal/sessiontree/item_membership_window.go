@@ -10,6 +10,11 @@ import (
 )
 
 type ItemMembershipWindowOptions struct {
+	// SkipRange resolves the current anchor's range and reads beyond it, with
+	// both endpoints retained. RetainItemIDs joins bounded protected rows in
+	// the same canonical transaction instead of a second selection read.
+	SkipRange     *ItemMembershipRangeOptions
+	RetainItemIDs []string
 	// SummaryOnly reads current canonical sources and preview without item,
 	// context or receipt hydration. It is internal summary-reader selection.
 	SummaryOnly bool
@@ -31,6 +36,7 @@ type ItemMembershipWindowOptions struct {
 	Limit                      int
 }
 type ItemMembershipWindow struct {
+	SkippedRange        *ItemMembershipRange
 	LeafID              string
 	ResolvedAnchorID    string
 	Members             []ItemMember
@@ -87,18 +93,20 @@ func (repo *BackendRepo) ItemMembershipWindow(ctx context.Context, options ItemM
 	if ctx == nil || validateMembershipSeek(options) != nil || strings.TrimSpace(options.ThreadID) == "" || options.Limit < 1 || options.Limit > 256 {
 		return ItemMembershipWindow{}, spi.ErrInvalidArgument
 	}
-	if err := repo.prepareWindowReadSources(ctx, options.ThreadID, windowPreparationNeeds{membership: true}); err != nil {
+	if err := repo.prepareWindowReadSources(ctx, options.ThreadID, windowPreparationNeeds{membership: true, window: options.SkipRange != nil && options.SkipRange.IntermediateAssistant, response: options.SkipRange != nil && options.SkipRange.IntermediateAssistant}); err != nil {
 		return ItemMembershipWindow{}, err
 	}
 	var result ItemMembershipWindow
-	err := repo.canonicalThreadView(ctx, options.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-		var err error
-		result, err = readItemMembershipWindow(ctx, tx, meta, options)
-		return err
-	}, func(memory *MemoryRepo) error {
-		var err error
-		result, err = memory.ItemMembershipWindow(ctx, options)
-		return err
+	err := repo.withActivitySummaryPreparation(ctx, options.ThreadID, func() error {
+		return repo.canonicalThreadView(ctx, options.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+			var err error
+			result, err = readItemMembershipWindow(ctx, tx, meta, options)
+			return err
+		}, func(memory *MemoryRepo) error {
+			var err error
+			result, err = memory.ItemMembershipWindow(ctx, options)
+			return err
+		})
 	})
 	if err != nil {
 		return ItemMembershipWindow{}, err
@@ -111,6 +119,9 @@ func readItemMembershipWindow(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 		return ItemMembershipWindow{}, err
 	}
 	tx = newProjectionSourceTx(tx)
+	if options.SkipRange != nil || len(options.RetainItemIDs) > 0 {
+		return readNavigatedMembershipWindow(ctx, tx, meta, options)
+	}
 	if options.LeafID != "" && options.LeafID != meta.LeafID {
 		return ItemMembershipWindow{}, spi.ErrConflict
 	}
@@ -236,6 +247,7 @@ func readItemMembershipWindow(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 }
 
 func (repo *MemoryRepo) ItemMembershipWindow(ctx context.Context, options ItemMembershipWindowOptions) (ItemMembershipWindow, error) {
+
 	if ctx == nil || validateMembershipSeek(options) != nil || options.Limit < 1 || options.Limit > 256 {
 		return ItemMembershipWindow{}, spi.ErrInvalidArgument
 	}
@@ -266,6 +278,17 @@ func (repo *MemoryRepo) ItemMembershipWindow(ctx context.Context, options ItemMe
 			anchor = len(members)
 		}
 		members = append(members, member)
+	}
+	if options.SkipRange != nil || len(options.RetainItemIDs) > 0 {
+		return navigateMembershipWindow(ctx, options, func(input ItemMembershipWindowOptions) (ItemMembershipWindow, error) {
+			return memoryProjectionMembership(meta.LeafID, members, input)
+		}, func(input ItemMembershipRangeOptions) (ItemMembershipRange, error) {
+			kinds, err := validateItemRangeOptions(ctx, input)
+			if err != nil {
+				return ItemMembershipRange{}, err
+			}
+			return memoryItemMembershipRange(ctx, meta, entries, input, kinds)
+		})
 	}
 	if options.ItemIDs != nil {
 		return selectMemoryMembershipItems(meta.LeafID, members, options.ItemIDs, options.OmitMissing)
