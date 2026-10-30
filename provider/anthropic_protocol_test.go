@@ -286,3 +286,20 @@ func TestAnthropicAttachmentsFreezeOnceAndKeepAttemptIdentity(t *testing.T) {
 		t.Fatalf("byte limit classification=%v", err)
 	}
 }
+
+func TestAnthropicPublishedOverflowClassification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(413)
+		fmt.Fprint(w, `{"error":{"type":"request_too_large","message":"request too large"}}`)
+	}))
+	defer server.Close()
+	gateway, err := provider.NewAnthropic(provider.AnthropicOptions{Provider: "anthropic", Model: "fixture", BaseURL: server.URL, APIKey: "key", StateCompatibilityKey: "account", Capabilities: provider.Capabilities{Reasoning: provider.ReasoningUnsupported}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = gateway.Stream(t.Context(), provider.Request{RunID: "run", PromptScopeID: "scope", MaxOutputTokens: 100, Messages: []provider.Message{{Role: provider.RoleUser, Text: "hello"}}})
+	var httpError *provider.ProviderHTTPError
+	if !errors.Is(err, provider.ErrContextOverflow) || !errors.As(err, &httpError) || httpError.StatusCode != 413 {
+		t.Fatalf("published classification/details lost: %v", err)
+	}
+}

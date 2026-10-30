@@ -37,8 +37,8 @@ func (p AnthropicProvider) streamAnthropic(ctx context.Context, prepared *anthro
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		defer response.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		if response.StatusCode == 400 && looksLikeContextOverflow(raw) {
-			return nil, provider.ErrContextOverflow
+		if response.StatusCode == http.StatusRequestEntityTooLarge || response.StatusCode == 400 && looksLikeContextOverflow(raw) {
+			return nil, errors.Join(provider.ErrContextOverflow, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now()))
 		}
 		return nil, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now())
 	}
@@ -94,7 +94,7 @@ func (p AnthropicProvider) streamAnthropic(ctx context.Context, prepared *anthro
 			return
 		}
 		var state *provider.State
-		if err == nil && prepared.stateAllowed {
+		if err == nil && prepared.stateAllowed && len(anthropicVisible(result.Content)) > 0 {
 			state, err = prepared.history.commit(result.Content)
 		}
 		if err == nil && result.ID != "" && result.Usage.inputReported && result.Usage.readReported && result.Usage.writeReported {
@@ -139,6 +139,10 @@ func (p AnthropicProvider) streamAnthropic(ctx context.Context, prepared *anthro
 		}
 		if err != nil {
 			emit(provider.StreamEvent{Type: provider.Error, Err: err, Reason: err.Error()})
+			return
+		}
+		if len(result.Content) == 0 {
+			emit(provider.StreamEvent{Type: provider.Empty})
 			return
 		}
 		var calls []provider.ToolCall

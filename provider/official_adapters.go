@@ -501,7 +501,11 @@ func officialPreparationError(err error) error {
 	}
 	if errors.As(err, &wire) {
 		name, status, code, message := wire.ProviderHTTPDetails()
-		return WithRetryAdvice(&ProviderHTTPError{Provider: name, StatusCode: status, Code: code, Message: message}, RetryAdviceForError(publicRetryError(err)))
+		mapped := WithRetryAdvice(&ProviderHTTPError{Provider: name, StatusCode: status, Code: code, Message: message}, RetryAdviceForError(publicRetryError(err)))
+		if errors.Is(err, internalprovider.ErrContextOverflow) {
+			return errors.Join(ErrContextOverflow, mapped)
+		}
+		return mapped
 	}
 	var size interface{ RequestByteLimit() (int64, int64) }
 	if errors.As(err, &size) {
