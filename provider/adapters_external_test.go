@@ -49,6 +49,13 @@ func TestOpenAICompatibleGatewayUsesExplicitContract(t *testing.T) {
 		t.Fatalf("identity = %#v", identity)
 	}
 	events := streamGateway(t, gateway)
+	semantic := events[:0]
+	for _, event := range events {
+		if event.Type != provider.EventTransport {
+			semantic = append(semantic, event)
+		}
+	}
+	events = semantic
 	if len(events) != 3 || events[0].Type != provider.EventDelta || events[0].Text != "world" || events[1].Type != provider.EventUsage || events[2].Type != provider.EventDone {
 		t.Fatalf("events = %#v", events)
 	}
@@ -77,6 +84,13 @@ func TestAnthropicGatewayUsesExplicitContract(t *testing.T) {
 	}
 	var _ provider.Gateway = gateway
 	events := streamGateway(t, gateway)
+	semantic := events[:0]
+	for _, event := range events {
+		if event.Type != provider.EventTransport {
+			semantic = append(semantic, event)
+		}
+	}
+	events = semantic
 	if len(events) != 3 || events[0].Type != provider.EventDelta || events[0].Text != "world" || events[1].Type != provider.EventUsage || events[2].Type != provider.EventDone {
 		t.Fatalf("events = %#v", events)
 	}

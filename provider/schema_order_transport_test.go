@@ -30,6 +30,7 @@ func TestOfficialOrderedSchemaHTTPFrozenRetries(t *testing.T) {
 				case "chat":
 					fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
 				case "anthropic":
+					w.Header().Set("Content-Type", "application/json")
 					fmt.Fprint(w, `{"id":"m","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}`)
 				case "deepseek":
 					fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n")

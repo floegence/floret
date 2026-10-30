@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Unify Anthropic Messages preparation and streaming, apply effective ephemeral
+  cache policy with bounded tail/bridge breakpoints, preserve signed native
+  output through canonical state, and qualify request-bound usage conservatively.
+  Add authorized attachment resolution, exact byte limits and sampling controls
+  to the public gateway; preserve frozen retries and published v7 contracts.
+
 - Recover aggregate image count and decoded-byte capacity through the existing
   Engine compaction path, independently of token pressure. Summary requests
   shrink the same unconsumed batch and preserve every image in order. Retain

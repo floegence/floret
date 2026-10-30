@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-30: Document Anthropic native Messages ownership, bounded caching,
+  signed history and request-bound usage in [provider](api/provider.md).
+
 - 2026-10-29: Clarify confirmed terminal Responses snapshot preservation for
   length continuation; see [provider history](api/provider.md).
 - 2026-10-29: Add explicit model-image transformation with bounded decoding,

@@ -1011,7 +1011,7 @@ func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
 	if !strings.Contains(string(body.System), "raw system") {
 		t.Fatalf("system was not built from raw fragment: %s", body.System)
 	}
-	if len(body.Messages) != 1 || body.Messages[0].Content != "raw user" {
+	if len(body.Messages) != 1 || anthropicTestText(body.Messages[0].Content) != "raw user" {
 		t.Fatalf("messages were not built from raw fragment: %#v", body.Messages)
 	}
 }
@@ -1039,7 +1039,7 @@ func TestAnthropicProviderInsertsEphemeralUserAfterRawCanonicalHistory(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Messages) != 3 || out.Messages[1].Role != "user" || out.Messages[1].Content != "private overlay" {
+	if len(out.Messages) != 3 || out.Messages[1].Role != "user" || anthropicTestText(out.Messages[1].Content) != "private overlay" {
 		t.Fatalf("rendered messages=%#v", out.Messages)
 	}
 	after, _ := json.Marshal(req.RawPlan)
@@ -2296,4 +2296,13 @@ func mustRegisterAdapterTestTool(t *testing.T, reg *tools.Registry, tool tools.T
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register %s: %v", tool.Definition.Name, err)
 	}
+}
+
+func anthropicTestText(v any) string {
+	b, _ := anthropicBlocks(v)
+	var s string
+	for _, x := range b {
+		s += x.Text
+	}
+	return s
 }

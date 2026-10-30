@@ -532,3 +532,44 @@ Evidence: [capacity recovery](../../internal/engine/capacity_regression_test.go)
 [ordered batching](../../internal/engine/compaction/media_budget_test.go),
 [protected inputs](../../internal/session/compaction/minimal_exchange_test.go),
 [migration rollback](../../internal/sessiontree/backend_repo_v34_test.go).
+
+## Anthropic native Messages transport
+
+Floret owns Anthropic request preparation, SSE decoding, explicit prompt-cache
+breakpoints, native output history, and request-bound usage. Redeven is the
+identified consumer of the additive AnthropicOptions attachment resolver,
+request-byte limit, temperature and top-p fields. AnthropicAttachment represents
+one authorized image, document or textual manifest; resolvers run once per
+logical preparation. Replay and output refitting retain frozen input. The final
+wire bytes own estimation and fingerprints; request-byte errors preserve the
+public RequestByteLimitError and ErrContextOverflow classifications.
+
+Effective RequestReusePolicy enables five-minute ephemeral markers on the last
+local tool, system block and legal message tail. One prior input breakpoint is
+retained only when native state proves it was submitted with caching enabled.
+At most four markers are emitted. Cache disable removes markers independently
+of native-history permission; supplemental secrets disable both. Neither model
+names nor endpoint brands select special handling.
+
+Completed native blocks, including signatures, redacted thinking and citations,
+are bound to canonical prefix/output fingerprints in the existing opaque State.
+The adapter owns no storage. AgentHarness commits state and canonical output
+atomically; restart retains committed native history. Fork, retry and compaction
+keep their existing isolation boundaries; a fork retains canonical facts and
+clears source continuation state.
+Malformed state fails even beyond a pruned suffix. Adjacent assistant length
+continuations retain their original ordered native blocks. Legacy unsigned
+reasoning remains in canonical history but is not sent as fabricated thinking or
+visible answer text. Existing published histories require no schema rewrite.
+
+Messages usage retains cache partitions and explicit zero values. Complete
+input evidence requires a terminal response, response identity, all input/cache
+fields, and no hosted execution or signed/encrypted input that the service may
+transform. Thinking output cannot certify a response-end anchor. Unqualified
+usage remains billing evidence; context budgeting uses its existing conservative
+estimate path. Failed streams retain reported usage without publishing state or
+measurement. Protocol retries remain Engine-owned.
+
+Evidence: [public wire tests](../../provider/anthropic_protocol_test.go),
+[native history and bridge tests](../../internal/provider/adapters/anthropic_history_test.go),
+and [runtime restart/fork/length test](../../runtime/anthropic_history_test.go).

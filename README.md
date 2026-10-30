@@ -1790,3 +1790,13 @@ published ChatGPT native_output envelope without rewriting conversations.
 Changed canonical prefixes prune stale native suffixes and server IDs; visible
 output drift, malformed state, unsupported items and history above 8 MiB fail
 explicitly. Search evidence is never reconstructed from UI activity.
+
+### Anthropic Messages
+
+The public provider.NewAnthropic gateway prepares and streams one frozen native
+Messages request. Effective reuse policy controls ephemeral prompt caching;
+native signed thinking is retained independently through the existing opaque
+provider state. AnthropicOptions accepts an authorized attachment resolver,
+request-byte limit, temperature and top-p. Retries reuse the exact request and
+never reopen attachments. See [the provider contract](okf/api/provider.md#anthropic-native-messages-transport)
+for usage qualification, historical projection and lifecycle guarantees.

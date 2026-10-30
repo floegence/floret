@@ -35,6 +35,11 @@ type OpenAICompatibleOptions struct {
 // AnthropicOptions configures an explicit Anthropic messages transport.
 // BaseURL is the API root; the gateway sends requests to BaseURL/messages.
 type AnthropicOptions struct {
+	// ResolveAttachment resolves authorized content during preparation, never replay.
+	ResolveAttachment     func(context.Context, Attachment) (AnthropicAttachment, error)
+	MaxRequestBytes       int64
+	Temperature           *float64
+	TopP                  *float64
 	Provider              string
 	Model                 string
 	BaseURL               string
@@ -44,10 +49,22 @@ type AnthropicOptions struct {
 	Capabilities          Capabilities
 }
 
+// AnthropicAttachment is authorized model content. Kind is image, document, or
+// text. Images accept Data or URL, documents accept Data, and text uses Text
+// for an explicit host manifest. Content sources are mutually exclusive.
+type AnthropicAttachment struct {
+	Kind     string
+	MIMEType string
+	Data     []byte
+	URL      string
+	Text     string
+}
+
 type officialGateway struct {
-	identity     Identity
-	capabilities Capabilities
-	transport    internalprovider.Provider
+	cacheRetention cache.Retention
+	identity       Identity
+	capabilities   Capabilities
+	transport      internalprovider.Provider
 }
 
 var _ Gateway = (*officialGateway)(nil)
@@ -81,13 +98,33 @@ func NewAnthropic(options AnthropicOptions) (Gateway, error) {
 		return nil, fmt.Errorf("anthropic gateway: %w", err)
 	}
 	model, _ := catalog.FindModel(identity.Provider, identity.Model)
-	return &officialGateway{
-		identity: identity, capabilities: capabilities,
-		transport: adapters.AnthropicProvider{
-			Endpoint: baseURL + "/messages", APIKey: apiKey, Model: identity.Model,
-			MaxTokens: model.MaxTokens, CostModel: model, Cache: catalog.Cache(identity.Provider, identity.Model), HTTPClient: options.HTTPClient,
-		},
-	}, nil
+	if options.MaxRequestBytes < 0 {
+		return nil, errors.New("negative Anthropic request byte limit")
+	}
+	if options.Temperature != nil && !(*options.Temperature >= 0 && *options.Temperature <= 1) {
+		return nil, errors.New("invalid Anthropic temperature")
+	}
+	if options.TopP != nil && !(*options.TopP >= 0 && *options.TopP <= 1) {
+		return nil, errors.New("invalid Anthropic top_p")
+	}
+	model.Reasoning = configbridge.ReasoningCapability(capabilities.ReasoningCapability)
+	transport := adapters.AnthropicProvider{
+		Endpoint: baseURL + "/messages", APIKey: apiKey, Model: identity.Model,
+		MaxTokens: model.MaxTokens, CostModel: model, Cache: catalog.CacheCapability{AnthropicCacheControl: true}, HTTPClient: options.HTTPClient,
+		StateIdentity: identity.StateCompatibilityKey, MaxRequestBytes: options.MaxRequestBytes, Temperature: copyAnthropicFloat(options.Temperature), TopP: copyAnthropicFloat(options.TopP),
+	}
+	if options.ResolveAttachment != nil {
+		capabilities.AttachmentPayload = AttachmentExpanded
+		transport.ResolveAttachment = func(ctx context.Context, a session.MessageAttachment) (adapters.AnthropicAttachment, error) {
+			attachment := Attachment{ResourceRef: a.ResourceRef, Name: a.Name, MIMEType: a.MIMEType, SizeBytes: a.SizeBytes}
+			if a.TextStats != nil {
+				attachment.TextStats = &AttachmentTextStats{UnicodeCodePointCount: a.TextStats.UnicodeCodePointCount, LogicalLineCount: a.TextStats.LogicalLineCount}
+			}
+			v, e := options.ResolveAttachment(ctx, attachment)
+			return adapters.AnthropicAttachment{Kind: v.Kind, MIMEType: v.MIMEType, Data: v.Data, URL: v.URL, Text: v.Text}, e
+		}
+	}
+	return &officialGateway{identity: identity, capabilities: capabilities, cacheRetention: cache.RetentionShort, transport: transport}, nil
 }
 
 func validateOfficialOptions(providerName, model, baseURL, apiKey, stateKey string, capabilities Capabilities) (Identity, Capabilities, string, string, error) {
@@ -144,12 +181,9 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
-	stream, err := gateway.transport.Stream(ctx, internalRequest(request, gateway.identity))
+	stream, err := gateway.transport.Stream(ctx, gateway.request(request))
 	if err != nil {
-		if errors.Is(err, internalprovider.ErrContextOverflow) {
-			return nil, errors.Join(ErrContextOverflow, publicRetryError(err))
-		}
-		return nil, publicRetryError(err)
+		return nil, officialPreparationError(err)
 	}
 	return publicOfficialStream(ctx, request, stream), nil
 }
@@ -180,6 +214,14 @@ func publicOfficialStream(ctx context.Context, request Request, stream <-chan in
 	return output
 }
 
+func (gateway *officialGateway) request(request Request) internalprovider.Request {
+	out := internalRequest(request, gateway.identity)
+	if out.Cache.Enabled && gateway.cacheRetention != "" {
+		out.Cache.Retention = gateway.cacheRetention
+	}
+	return out
+}
+
 func internalRequest(request Request, identity Identity) internalprovider.Request {
 	var policy cache.CachePolicy
 	if request.ReusePolicy != nil {
@@ -192,6 +234,8 @@ func internalRequest(request Request, identity Identity) internalprovider.Reques
 		}
 	}
 	return internalprovider.Request{
+		DisableProviderState: request.ReusePolicy != nil && !request.ReusePolicy.ProviderStateAllowed,
+		AttemptID:            request.AttemptID, AttemptEpoch: request.AttemptEpoch, LogicalRequestID: request.LogicalRequestID.String(),
 		Cache: policy,
 		RunID: request.RunID.String(), ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(),
 		TraceID: request.TraceID.String(), PromptScopeID: request.PromptScopeID.String(), Step: request.Step,
@@ -208,6 +252,17 @@ func internalMessages(messages []Message) []session.Message {
 	output := make([]session.Message, 0, len(messages))
 	for _, message := range messages {
 		base := session.Message{Role: session.Role(message.Role), Content: message.Text, Reasoning: message.Reasoning}
+		attachments := message.Attachments
+		if message.ToolResult != nil {
+			attachments = message.ToolResult.Attachments
+		}
+		for _, a := range attachments {
+			attachment := session.MessageAttachment{ResourceRef: a.ResourceRef, Name: a.Name, MIMEType: a.MIMEType, SizeBytes: a.SizeBytes}
+			if a.TextStats != nil {
+				attachment.TextStats = &session.MessageAttachmentTextStats{UnicodeCodePointCount: a.TextStats.UnicodeCodePointCount, LogicalLineCount: a.TextStats.LogicalLineCount}
+			}
+			base.Attachments = append(base.Attachments, attachment)
+		}
 		if a := message.Attribution; a != nil {
 			switch a.Category {
 			case "model_context":
@@ -304,7 +359,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 			CostUSD: event.Usage.CostUSD, Source: string(event.Usage.Source), Available: event.Usage.Available,
 			WindowInputTokens: event.Usage.WindowInputTokens,
 		},
-		ResponseID: event.ResponseID, ResponseState: publicState(event.ResponseState), Err: publicRetryError(event.Err),
+		ResponseID: event.ResponseID, ResponseState: publicState(event.ResponseState), Err: officialPreparationError(event.Err),
 	}
 }
 
@@ -349,9 +404,9 @@ func (gateway *officialGateway) Prepare(ctx context.Context, request Request) (P
 	if !ok {
 		return nil, errors.New("official transport does not prepare requests")
 	}
-	prepared, err := preparer.PrepareRequest(ctx, internalRequest(request, gateway.identity))
+	prepared, err := preparer.PrepareRequest(ctx, gateway.request(request))
 	if err != nil {
-		return nil, publicRetryError(err)
+		return nil, officialPreparationError(err)
 	}
 	frozen := Request{}
 	if request.ReusePolicy != nil {
@@ -369,10 +424,7 @@ type officialPrepared struct {
 func (p *officialPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 	stream, err := p.prepared.Stream(ctx)
 	if err != nil {
-		if errors.Is(err, internalprovider.ErrContextOverflow) {
-			return nil, errors.Join(ErrContextOverflow, publicRetryError(err))
-		}
-		return nil, publicRetryError(err)
+		return nil, officialPreparationError(err)
 	}
 	return publicOfficialStream(ctx, p.request, stream), nil
 }
@@ -384,14 +436,32 @@ func (p *officialPrepared) RenderedPayloadFingerprint() string {
 	return p.prepared.PayloadFingerprint()
 }
 func (p *officialPrepared) Close() error { return p.prepared.Close() }
-func (p *officialPrepared) PrepareRetry(ctx context.Context, _ Request) (PreparedRequest, error) {
+func (p *officialPrepared) InputMeasurementPrefix() MeasurementPrefix {
+	if m, ok := p.prepared.(interface {
+		InputMeasurementPrefix() requestmeasure.Prefix
+		MeasurementSuffix(requestmeasure.Prefix) ([]byte, bool)
+	}); ok {
+		return MeasurementPrefix(m.InputMeasurementPrefix())
+	}
+	return MeasurementPrefix{}
+}
+func (p *officialPrepared) MeasurementSuffix(prefix MeasurementPrefix) ([]byte, bool) {
+	if m, ok := p.prepared.(interface {
+		InputMeasurementPrefix() requestmeasure.Prefix
+		MeasurementSuffix(requestmeasure.Prefix) ([]byte, bool)
+	}); ok {
+		return m.MeasurementSuffix(requestmeasure.Prefix(prefix))
+	}
+	return nil, false
+}
+func (p *officialPrepared) PrepareRetry(ctx context.Context, request Request) (PreparedRequest, error) {
 	replay, ok := p.prepared.(internalprovider.PreparedRequestReplay)
 	if !ok {
 		return nil, errors.New("official prepared request cannot replay")
 	}
-	next, err := replay.PrepareRetry(ctx, internalprovider.Request{})
+	next, err := replay.PrepareRetry(ctx, internalprovider.Request{AttemptID: request.AttemptID, AttemptEpoch: request.AttemptEpoch, LogicalRequestID: request.LogicalRequestID.String()})
 	if err != nil {
-		return nil, err
+		return nil, officialPreparationError(err)
 	}
 	return &officialPrepared{prepared: next, request: p.request}, nil
 }
@@ -403,7 +473,7 @@ func (p *officialPrepared) WithMaxOutputTokens(ctx context.Context, limit int64)
 	}
 	next, err := limiter.WithMaxOutputTokens(ctx, limit)
 	if err != nil {
-		return nil, err
+		return nil, officialPreparationError(err)
 	}
 	return &officialPrepared{prepared: next, request: p.request}, nil
 }
@@ -413,4 +483,33 @@ func officialRequestMeasurement(v *requestmeasure.Evidence) *RequestMeasurement 
 		return nil
 	}
 	return &RequestMeasurement{AttemptID: v.AttemptID, CompleteInput: v.CompleteInput, OpaqueInput: v.OpaqueInput, Input: MeasurementPrefix(v.Input), ResponseID: v.ResponseID, ResponseEnd: MeasurementPrefix(v.ResponseEnd)}
+}
+
+func copyAnthropicFloat(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+func officialPreparationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var wire interface {
+		ProviderHTTPDetails() (string, int, string, string)
+	}
+	if errors.As(err, &wire) {
+		name, status, code, message := wire.ProviderHTTPDetails()
+		return WithRetryAdvice(&ProviderHTTPError{Provider: name, StatusCode: status, Code: code, Message: message}, RetryAdviceForError(publicRetryError(err)))
+	}
+	var size interface{ RequestByteLimit() (int64, int64) }
+	if errors.As(err, &size) {
+		actual, limit := size.RequestByteLimit()
+		return &RequestByteLimitError{ActualBytes: actual, LimitBytes: limit}
+	}
+	if errors.Is(err, internalprovider.ErrContextOverflow) {
+		return errors.Join(ErrContextOverflow, publicRetryError(err))
+	}
+	return publicRetryError(err)
 }

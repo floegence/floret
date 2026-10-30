@@ -85,25 +85,6 @@ func (p OpenAICompatibleProvider) PrepareRequest(ctx context.Context, req provid
 	}
 	return freezeWire(req, "openai_chat", body, p.streamRendered)
 }
-func (p AnthropicProvider) PrepareRequest(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	policy, err := p.NormalizeCachePolicy(req.Cache)
-	if err != nil {
-		return nil, err
-	}
-	req.Cache = policy
-	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
-		return nil, err
-	}
-	body, err := p.anthropicRequestBody(req)
-	if err != nil {
-		return nil, err
-	}
-	return freezeWire(req, "anthropic_messages", body, p.streamRendered)
-}
-
 func (p *preparedWire) WithMaxOutputTokens(ctx context.Context, limit int64) (provider.PreparedRequest, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

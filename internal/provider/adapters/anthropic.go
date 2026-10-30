@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
-	"time"
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
@@ -20,16 +19,24 @@ import (
 )
 
 type AnthropicProvider struct {
-	Endpoint   string
-	APIKey     string
-	Model      string
-	MaxTokens  int64
-	CostModel  catalog.Model
-	Cache      catalog.CacheCapability
-	HTTPClient *http.Client
+	StateIdentity     string
+	MaxRequestBytes   int64
+	Temperature       *float64
+	TopP              *float64
+	ResolveAttachment func(context.Context, session.MessageAttachment) (AnthropicAttachment, error)
+	Endpoint          string
+	APIKey            string
+	Model             string
+	MaxTokens         int64
+	CostModel         catalog.Model
+	Cache             catalog.CacheCapability
+	HTTPClient        *http.Client
 }
 
 type anthropicRequest struct {
+	Stream       bool                   `json:"stream,omitempty"`
+	Temperature  *float64               `json:"temperature,omitempty"`
+	TopP         *float64               `json:"top_p,omitempty"`
 	Model        string                 `json:"model"`
 	MaxTokens    int64                  `json:"max_tokens"`
 	System       any                    `json:"system,omitempty"`
@@ -54,6 +61,7 @@ type anthropicMessage struct {
 }
 
 type anthropicTool struct {
+	Strict       bool                   `json:"strict,omitempty"`
 	Name         string                 `json:"name"`
 	Type         string                 `json:"type,omitempty"`
 	Description  string                 `json:"description,omitempty"`
@@ -62,6 +70,12 @@ type anthropicTool struct {
 }
 
 type anthropicContentBlock struct {
+	extra        map[string]json.RawMessage
+	Thinking     string                 `json:"thinking,omitempty"`
+	Signature    string                 `json:"signature,omitempty"`
+	Data         string                 `json:"data,omitempty"`
+	Source       json.RawMessage        `json:"source,omitempty"`
+	Citations    json.RawMessage        `json:"citations,omitempty"`
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text,omitempty"`
 	ID           string                 `json:"id,omitempty"`
@@ -93,6 +107,9 @@ type anthropicCacheControl struct {
 
 type anthropicUsage struct {
 	inputReported            bool
+	outputReported           bool
+	readReported             bool
+	writeReported            bool
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
@@ -100,6 +117,7 @@ type anthropicUsage struct {
 }
 
 type anthropicResponse struct {
+	ID         string                  `json:"id"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
 	Usage      anthropicUsage          `json:"usage"`
@@ -110,100 +128,11 @@ type anthropicResponse struct {
 }
 
 func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
-	if p.Endpoint == "" {
-		return nil, fmt.Errorf("anthropic endpoint is required")
-	}
-	if p.APIKey == "" {
-		return nil, fmt.Errorf("anthropic api key is required")
-	}
-	if p.Model == "" {
-		return nil, fmt.Errorf("anthropic model is required")
-	}
-	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
-		return nil, err
-	}
-	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
+	prepared, err := p.PrepareRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	req.Cache = normalizedCache
-	body, err := p.anthropicRequestBody(req)
-	if err != nil {
-		return nil, err
-	}
-	return p.streamRendered(ctx, body)
-}
-
-func (p AnthropicProvider) streamRendered(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
-	client := p.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("x-api-key", p.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("content-type", "application/json")
-	httpResp, err := client.Do(httpReq)
-	receivedAt := time.Now()
-	if err != nil {
-		return nil, err
-	}
-	defer httpResp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
-	if httpResp.StatusCode == http.StatusRequestEntityTooLarge || httpResp.StatusCode == http.StatusBadRequest && looksLikeContextOverflow(respBody) {
-		return nil, provider.ErrContextOverflow
-	}
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, protocolFailure("anthropic", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
-	}
-	var parsed anthropicResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode anthropic response: %w", err)
-	}
-	if parsed.Error != nil {
-		return nil, protocolFailure("anthropic", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
-	}
-	ch := make(chan provider.StreamEvent, len(parsed.Content)+4)
-	if len(parsed.Content) == 0 {
-		ch <- provider.StreamEvent{Type: provider.Empty}
-		close(ch)
-		return ch, nil
-	}
-	var calls []provider.ToolCall
-	for _, block := range parsed.Content {
-		switch block.Type {
-		case "text":
-			if block.Text != "" {
-				ch <- provider.StreamEvent{Type: provider.Delta, Text: block.Text}
-			}
-		case "tool_use":
-			calls = append(calls, provider.ToolCall{ID: block.ID, Name: block.Name, Args: string(block.Input)})
-		case "server_tool_use":
-			ch <- provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: block.ID, Name: block.Name, Args: block.Query}}
-		case "web_search_tool_result":
-			result := decodeAnthropicWebSearchResult(block.Content)
-			ch <- provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: block.ToolUseID, Name: searchcap.ToolWebSearch}, Text: result.Text, HostedResult: result}
-		}
-	}
-	if usage := normalizeAnthropicUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
-		ch <- provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
-	}
-	if len(calls) > 0 {
-		ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
-	}
-	if parsed.StopReason == "max_tokens" {
-		ch <- provider.StreamEvent{Type: provider.Truncated, Reason: "max_tokens"}
-	} else {
-		ch <- provider.StreamEvent{Type: provider.Done, Reason: parsed.StopReason}
-	}
-	close(ch)
-	return ch, nil
+	return prepared.Stream(ctx)
 }
 
 func decodeAnthropicWebSearchResult(raw json.RawMessage) provider.HostedToolResultData {
@@ -273,6 +202,8 @@ func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens
 	}
 	anthropicReq.Model = p.Model
 	anthropicReq.MaxTokens = maxTokens
+	anthropicReq.Temperature = p.Temperature
+	anthropicReq.TopP = p.TopP
 	if err := p.applyAnthropicReasoning(&anthropicReq, req, maxTokens); err != nil {
 		return anthropicRequest{}, err
 	}
@@ -301,7 +232,7 @@ func (p AnthropicProvider) applyAnthropicReasoning(out *anthropicRequest, req pr
 		}
 		out.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: selection.BudgetTokens}
 	}
-	if selection.Level != "" && selection.Level != provider.ReasoningLevelDefault {
+	if selection.Level != "" && selection.Level != provider.ReasoningLevelDefault && selection.Level != provider.ReasoningLevelOn {
 		out.OutputConfig = &anthropicOutputConfig{Effort: string(selection.Level)}
 		if capability.Kind == provider.ReasoningKindEffort {
 			out.Thinking = &anthropicThinking{Type: "adaptive"}
@@ -388,35 +319,20 @@ func (p AnthropicProvider) DefaultCacheRetention() cache.Retention {
 }
 
 func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
-	policy, err := p.NormalizeCachePolicy(req.Cache)
+	prepared, err := p.PrepareRequest(context.Background(), req)
 	if err != nil {
 		return "", err
 	}
-	req.Cache = policy
-	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
-		return "", err
-	}
-	body, err := p.anthropicRequestBody(req)
-	if err != nil {
-		return "", err
-	}
-	return cache.StableHash(string(body)), nil
+	defer prepared.Close()
+	return cache.StableHash(string(prepared.(*anthropicPrepared).body)), nil
 }
-
-func (p AnthropicProvider) EstimateTokens(_ context.Context, req provider.Request) (provider.TokenEstimate, error) {
-	policy, err := p.NormalizeCachePolicy(req.Cache)
+func (p AnthropicProvider) EstimateTokens(ctx context.Context, req provider.Request) (provider.TokenEstimate, error) {
+	prepared, err := p.PrepareRequest(ctx, req)
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	req.Cache = policy
-	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
-		return provider.TokenEstimate{}, err
-	}
-	body, err := p.anthropicRequestBody(req)
-	if err != nil {
-		return provider.TokenEstimate{}, err
-	}
-	return estimateRenderedRequest(req, "anthropic_messages", body)
+	defer prepared.Close()
+	return prepared.TokenEstimate(), nil
 }
 
 func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, error) {
@@ -433,19 +349,12 @@ func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, err
 }
 
 func (p AnthropicProvider) anthropicRequestBody(req provider.Request) ([]byte, error) {
-	maxTokens, err := p.maxTokensForRequest(req)
+	prepared, err := p.PrepareRequest(context.Background(), req)
 	if err != nil {
 		return nil, err
 	}
-	anthropicReq, err := p.buildAnthropicRequest(req, maxTokens)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(anthropicReq)
-	if err != nil {
-		return nil, err
-	}
-	return toolrender.OrderSchemas("anthropic_messages", raw)
+	defer prepared.Close()
+	return bytes.Clone(prepared.(*anthropicPrepared).body), nil
 }
 
 func (p AnthropicProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {
@@ -546,36 +455,29 @@ func renderAnthropicSystemFromRawPlan(plan cache.RawPlan, cacheControl *anthropi
 }
 
 func renderAnthropicMessages(messages []session.Message, _ *anthropicCacheControl) []anthropicMessage {
-	out := make([]anthropicMessage, 0, len(messages))
-	for _, msg := range messages {
-		switch msg.Role {
-		case session.System:
+	var out []anthropicMessage
+	for _, m := range messages {
+		if m.Role == session.System {
 			continue
-		case session.User:
-			out = append(out, anthropicMessage{Role: "user", Content: msg.Content})
-		case session.Assistant:
-			if msg.ToolCallID != "" && msg.ToolName != "" {
-				input := json.RawMessage(msg.ToolArgs)
-				if !json.Valid(input) {
-					input, _ = json.Marshal(map[string]string{"input": msg.ToolArgs})
-				}
-				out = append(out, anthropicMessage{Role: "assistant", Content: []anthropicContentBlock{{
-					Type:  "tool_use",
-					ID:    msg.ToolCallID,
-					Name:  msg.ToolName,
-					Input: input,
-				}}})
-				continue
-			}
-			out = append(out, anthropicMessage{Role: "assistant", Content: msg.Content})
-		case session.Tool:
-			content, _ := json.Marshal(msg.Content)
-			out = append(out, anthropicMessage{Role: "user", Content: []anthropicContentBlock{{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-				Content:   content,
-			}}})
 		}
+		var blocks []anthropicContentBlock
+		role := string(m.Role)
+		if m.Role == session.Tool {
+			content, _ := json.Marshal(m.Content)
+			blocks = append(blocks, anthropicContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: content})
+			role = "user"
+		} else {
+			if m.Content != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
+			if m.Reasoning != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "floret_reasoning", Thinking: m.Reasoning})
+			}
+			if m.ToolCallID != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "tool_use", ID: m.ToolCallID, Name: m.ToolName, Input: json.RawMessage(m.ToolArgs)})
+			}
+		}
+		out = append(out, anthropicMessage{Role: role, Content: blocks})
 	}
 	return out
 }
@@ -613,6 +515,7 @@ func renderAnthropicTools(defs []tools.ToolDefinition, cacheControl *anthropicCa
 		}
 		tools = append(tools, anthropicTool{
 			Name:         def.Name,
+			Strict:       def.Strict,
 			Description:  def.Description,
 			InputSchema:  inputSchemaForAnthropic(def),
 			CacheControl: toolCacheControl,
@@ -728,8 +631,69 @@ func (u *anthropicUsage) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
+	if v.InputTokens < 0 || v.OutputTokens < 0 || v.CacheReadInputTokens < 0 || v.CacheCreationInputTokens < 0 {
+		return errors.New("Anthropic usage contains negative tokens")
+	}
+	total := int64(0)
+	for _, n := range []int64{v.InputTokens, v.OutputTokens, v.CacheReadInputTokens, v.CacheCreationInputTokens} {
+		if n > math.MaxInt64-total {
+			return errors.New("Anthropic usage overflows")
+		}
+		total += n
+	}
 	*u = anthropicUsage(v)
 	value, ok := fields["input_tokens"]
 	u.inputReported = ok && string(value) != "null"
+	value, ok = fields["output_tokens"]
+	u.outputReported = ok && string(value) != "null"
+	value, ok = fields["cache_read_input_tokens"]
+	u.readReported = ok && string(value) != "null"
+	value, ok = fields["cache_creation_input_tokens"]
+	u.writeReported = ok && string(value) != "null"
+	return nil
+}
+
+// Required empty text/thinking fields must survive native round trips.
+func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
+	type plain anthropicContentBlock
+	raw, err := json.Marshal(plain(b))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	switch b.Type {
+	case "thinking":
+		fields["thinking"], _ = json.Marshal(b.Thinking)
+	case "text":
+		fields["text"], _ = json.Marshal(b.Text)
+	}
+	for key, value := range b.extra {
+		if _, ok := fields[key]; !ok {
+			fields[key] = value
+		}
+	}
+	return json.Marshal(fields)
+}
+
+func (b *anthropicContentBlock) UnmarshalJSON(raw []byte) error {
+	type plain anthropicContentBlock
+	var value plain
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	*b = anthropicContentBlock(value)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"type", "thinking", "signature", "data", "source", "citations", "text", "id", "name", "input", "tool_use_id", "content", "query", "cache_control"} {
+		delete(fields, key)
+	}
+	if len(fields) > 0 {
+		b.extra = fields
+	}
 	return nil
 }
