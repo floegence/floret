@@ -40,9 +40,22 @@ func sendNativeTurn(t *testing.T, service ThreadService, threadID identity.Threa
 	if err != nil {
 		t.Fatal(err)
 	}
-	return waitThreadView(t, service, threadID, func(view ThreadView) bool {
-		return view.TurnID == admitted.TurnID && view.Activity == ThreadActivityIdle && view.LastOutcome != nil
-	})
+	actor := service.(*threadRuntimeService).runtime(threadID)
+	actor.mu.Lock()
+	done := actor.state.executionDone
+	actor.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-t.Context().Done():
+			t.Fatal("native history execution did not settle")
+		}
+	}
+	view, err := service.View(t.Context(), threadID)
+	if err != nil || view.TurnID != admitted.TurnID || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+		t.Fatalf("settled native history view=%+v err=%v", view, err)
+	}
+	return view
 }
 
 func TestProviderNativeHistorySurvivesRuntimeStopAndRestart(t *testing.T) {
