@@ -55,6 +55,25 @@ func TestReturnedEffectUncertaintyContinuesAndRetryPreservesResult(t *testing.T)
 	}
 	host, svc := open()
 	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	settled := func(id identity.ThreadID) ThreadView {
+		t.Helper()
+		actor := svc.(*threadRuntimeService).runtime(id)
+		actor.mu.Lock()
+		done := actor.state.executionDone
+		actor.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-t.Context().Done():
+				t.Fatal("execution did not settle")
+			}
+		}
+		view, err := svc.View(t.Context(), id)
+		if err != nil || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+			t.Fatalf("settled view=%+v err=%v", view, err)
+		}
+		return view
+	}
 	created, err := svc.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +81,7 @@ func TestReturnedEffectUncertaintyContinuesAndRetryPreservesResult(t *testing.T)
 	if _, err := svc.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "click"}}); err != nil {
 		t.Fatal(err)
 	}
-	final := waitThreadView(t, svc, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	final := settled(created.ThreadID)
 	if final.Failure != nil || *final.LastOutcome != TurnOutcomeCompleted || len(final.Interactions) != 0 || calls.Load() != 1 {
 		t.Fatalf("unexpected settlement: %+v calls=%d", final, calls.Load())
 	}
@@ -93,10 +112,8 @@ func TestReturnedEffectUncertaintyContinuesAndRetryPreservesResult(t *testing.T)
 	if _, err := svc.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: final.TurnID, RequestKey: "retry"}); err != nil {
 		t.Fatal(err)
 	}
-	retried := waitThreadView(t, svc, created.ThreadID, func(v ThreadView) bool {
-		return v.Activity == ThreadActivityIdle && v.LastOutcome != nil && v.TurnID != final.TurnID
-	})
-	if retried.Failure != nil || calls.Load() != 1 {
+	retried := settled(created.ThreadID)
+	if retried.TurnID == final.TurnID || retried.Failure != nil || calls.Load() != 1 {
 		t.Fatalf("retry replayed uncertainty: %+v calls=%d", retried, calls.Load())
 	}
 	assertResult(3)
