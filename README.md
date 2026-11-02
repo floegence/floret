@@ -1776,6 +1776,13 @@ boundaries instead of chasing an advancing tail. This adds no storage schema.
 
 ### Native Responses history
 
+The zero-value provider.ResponsesOutput collects completed items for one request.
+Add rejects conflicting duplicate events. Complete preserves exact terminal
+bytes, allowing only the nonempty encrypted_content of a same-ID reasoning item
+to differ. Other fields remain strict; omitted snapshots use completed events.
+Output is ordered and bounded to 8 MiB. ResponsesOutputError exposes safe codes,
+conflict indexes and known field names, never provider values.
+
 `provider.PrepareResponsesHistory` owns native Responses replay for protocol
 adapters. `ResponsesHistory.Input` returns complete native history for estimation
 and stateless replay. `Continuation` returns a validated response ID and only

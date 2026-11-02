@@ -489,6 +489,17 @@ Evidence: [file transport tests](../../provider/deepseek_files_test.go),
 
 ## Native Responses history ownership
 
+The additive ResponsesOutput and ResponsesOutputError API moves completed-item
+reconciliation from Redeven into Floret. Add validates repeated done events
+strictly; Complete retains exact terminal bytes when matching reasoning items
+differ only in nonempty encrypted_content. This chooses opaque authority, not
+plaintext equivalence. Changed non-opaque fields, missing identity, incomplete
+snapshots and output over 8 MiB fail. Omitted snapshots retain ordered done
+events. Defensive copies and nonmutating completion preserve stream evidence.
+Errors expose known field names only; unknown names collapse to other. Redeven
+maps these facts into its existing durable failure details. See
+[reconciliation tests](../../provider/responses_output_test.go).
+
 The additive ResponsesHistoryOptions, PrepareResponsesHistory and immutable
 ResponsesHistory API own native Responses history for Redeven's API-key and
 ChatGPT adapters. Adapters map SDK items and canonical visible projections;

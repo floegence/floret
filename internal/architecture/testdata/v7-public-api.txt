@@ -553,6 +553,14 @@ type ResponsesHistoryOptions struct
 field ResponsesHistoryOptions.Kind string
 field ResponsesHistoryOptions.ID string
 field ResponsesHistoryOptions.FunctionNamespace string
+type ResponsesOutput struct
+method *ResponsesOutput.Add func(index int64, raw encoding/json.RawMessage) error
+method *ResponsesOutput.Complete func(snapshot []encoding/json.RawMessage) ([]encoding/json.RawMessage, error)
+type ResponsesOutputError struct
+field ResponsesOutputError.Code string
+field ResponsesOutputError.OutputIndex *int64
+field ResponsesOutputError.Fields []string
+method *ResponsesOutputError.Error func() string
 type RetryAdvice struct
 field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""
 field RetryAdvice.NotBefore time.Time tag="json:\"not_before,omitempty\""

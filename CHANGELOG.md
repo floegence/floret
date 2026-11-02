@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add provider-owned Responses output reconciliation with final ciphertext
+  authority, strict duplicate events and content validation, bounded output and
+  safe conflict field diagnostics. Preserve the existing history schema.
+
 - Unify Anthropic Messages preparation and streaming, apply effective ephemeral
   cache policy with bounded tail/bridge breakpoints, preserve signed native
   output through canonical state, and qualify request-bound usage conservatively.
