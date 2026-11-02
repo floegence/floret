@@ -9,6 +9,15 @@ defaults:
   provider_progress: attempt-fenced in-memory timing and character estimate; never billable usage
   argument_preview: bounded side-effect-free parser; errors discard preview only; actual results replace counts including zero
 methods:
+  - method: ThreadTurnFailure.ToolRepetition/RepetitionDetails.Validate
+    errors_is: []
+    errors_as: []
+    retryability: explicit thread retry preserves confirmed results and paired rejections
+    commit: diagnostic envelope in the existing terminal failure message; no schema migration
+    replay: exact diagnostic projection remains stable after restart
+    concurrency: detached diagnostic values are safe to validate independently
+    cancellation: no context accepted
+    closing: not applicable
   - method: ThreadGoalController.SetGoal/DeleteGoal
     errors_is: [ErrHostClosed, ErrThreadNotFound, ErrRequestConflict]
     errors_as: [RequestConflictError]

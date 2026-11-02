@@ -215,20 +215,41 @@ persistent lifecycle. New model execution remains fenced throughout Stop.
 
 # Repeat And Progress Metadata
 
-Local tools are protected by the engine's duplicate-call guard by default. A
-tool that represents idempotent polling may declare
-`tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling` in its definition
-annotations. The tool result must then include
-`tools.ResultMetadataProgressToken` in `Result.Metadata` whenever the repeated
-call made observable progress. The engine still fails repeated polling calls
-when the progress token does not change.
+The Engine counts individual consecutive local calls in model call order, with
+provider-hosted invocations as boundaries. A different tool or any different
+argument, including description, resets the sequence. Call IDs, results,
+streaming fragments and transport retries are not new calls. JSON object order
+and presentation whitespace are normalized without rounding numbers or changing
+string values. Alternating batches do not become identical-call sequences.
 
-Polling tools that accept presentation-only top-level arguments may declare
-those names through `tools.AnnotationRepeatIdentityIgnoredArguments`. Floret
-removes only those arguments when computing duplicate and progress identities;
-the original validated arguments still reach activity presentation, handlers,
-events, and provider-visible history. The ignored-argument declaration is valid
-only for polling tools and must name unique properties from the input schema.
+Idempotent polling may declare `tools.AnnotationRepeatPolicy:
+tools.RepeatPolicyPolling` and return `tools.ResultMetadataProgressToken` for
+confirmed state/output changes. Changed tokens and dispatcher-confirmed complete
+bounded waits reset stagnation. Admitted child events reset the sequence at the
+next logical request boundary; frozen retries never acquire new context.
+
+The default repeat limit is three repetitions after the first call. The fourth
+unchanged request is rejected before authorization/dispatch and receives a
+canonical, visible paired error explaining non-execution and the available
+choices. The model gets one subsequent decision opportunity. Continued unchanged
+repetition then fails; changed calls, completed waits and new facts allow normal
+work. Rejected siblings never suppress confirmed results of executed siblings.
+The rule does not establish that the entire task made no progress, police
+alternating cycles, or authorize repeating side effects. Independent budgets and
+effect authority remain in force. Hosted execution has already happened remotely;
+this guard prevents local dispatch only.
+
+`tools.AnnotationRepeatIdentityIgnoredArguments` is deprecated and retained for
+v7 source compatibility. Its declaration remains validated, but no argument is
+removed from strict repetition identity. Redeven was the known consumer and
+removes its description exclusion when adopting this release. Remove the
+annotation only in v8, after the required deprecation period.
+
+`tools.RepetitionDetails` exposes the tool/call identity, consecutive count,
+repeat limit, prior feedback and non-execution fact without argument values.
+`runtime.ThreadTurnFailure.ToolRepetition` projects the exact Engine-owned
+failure envelope, including after restart. Historical plain failures remain
+classified with no fabricated details; unknown/wrapped envelopes are not parsed.
 
 # Key Source Files
 

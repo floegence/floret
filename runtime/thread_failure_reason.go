@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func classifyThreadTurnFailureReason(code ThreadTurnFailureCode, message string) ThreadTurnFailureReason {
@@ -29,6 +30,9 @@ func classifyThreadTurnFailureReason(code ThreadTurnFailureCode, message string)
 	if code != ThreadTurnFailureEngineContract {
 		return ""
 	}
+	if engine.ParseToolRepetitionDetails(message) != nil {
+		return ThreadTurnFailureRepeatedToolCalls
+	}
 	switch message {
 	case engine.ErrDuplicateTools.Error():
 		return ThreadTurnFailureRepeatedToolCalls
@@ -41,4 +45,11 @@ func classifyThreadTurnFailureReason(code ThreadTurnFailureCode, message string)
 	default:
 		return ""
 	}
+}
+
+func threadToolRepetitionDetails(code ThreadTurnFailureCode, message string) *tools.RepetitionDetails {
+	if code != ThreadTurnFailureEngineContract {
+		return nil
+	}
+	return engine.ParseToolRepetitionDetails(message)
 }

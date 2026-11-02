@@ -1005,7 +1005,8 @@ const (
 )
 
 type ThreadTurnFailure struct {
-	Reason ThreadTurnFailureReason `json:"reason,omitempty"`
+	ToolRepetition *tools.RepetitionDetails `json:"tool_repetition,omitempty"`
+	Reason         ThreadTurnFailureReason  `json:"reason,omitempty"`
 
 	ProviderTimeout *publicprovider.RequestTimeoutDetails `json:"provider_timeout,omitempty"`
 	Code            ThreadTurnFailureCode                 `json:"code"`
@@ -1017,6 +1018,12 @@ func (f ThreadTurnFailure) Validate() error {
 		return errors.New("thread failure reason does not match canonical failure")
 	}
 
+	if f.ToolRepetition != nil {
+		expected := engine.ParseToolRepetitionDetails(f.Message)
+		if f.Code != ThreadTurnFailureEngineContract || expected == nil || *expected != *f.ToolRepetition {
+			return errors.New("tool repetition details do not match canonical failure")
+		}
+	}
 	if f.ProviderTimeout != nil {
 		if f.Code != ThreadTurnFailureProvider {
 			return errors.New("provider timeout requires provider failure")
@@ -1834,6 +1841,7 @@ func turnResult(in agentharness.TurnResult, threadID string, timeline observatio
 			Message: in.Err.Error(),
 		}
 		out.Failure.Reason = classifyThreadTurnFailureReason(out.Failure.Code, out.Failure.Message)
+		out.Failure.ToolRepetition = threadToolRepetitionDetails(out.Failure.Code, out.Failure.Message)
 		if out.Failure.Code == ThreadTurnFailureProvider {
 			out.Failure.ProviderTimeout = providerattempt.TimeoutDetails(in.Err)
 		}

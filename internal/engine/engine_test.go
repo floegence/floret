@@ -4657,6 +4657,7 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x2", Name: "missing", Args: `{"value":"same"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
+			harness.Step(harness.Tool("x3", "missing", "{\"value\":\"same\"}"), harness.DoneReason("tool_calls")),
 		)
 		e := newTestEngine(p, &event.Recorder{})
 		e.Options.DuplicateToolLimit = 1
@@ -4720,13 +4721,14 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same","description":"Check the latest build output again"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same","description":"Check the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same","description":"Take another look at the build output"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same","description":"Check the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
+			harness.Step(harness.Tool("poll-4", "poll", "{\"value\":\"same\",\"description\":\"Check the build output\"}"), harness.DoneReason("tool_calls")),
 		)
 		e := newTestEngine(p, &event.Recorder{})
 		e.Options.DuplicateToolLimit = 1

@@ -1706,3 +1706,30 @@ func TestPublishedDisplayPreparationDoesNotActivateExecution(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishedStrictRepetitionDiagnostics(t *testing.T) {
+	detail := &tools.RepetitionDetails{ToolName: "inspect", CallID: "call-5", ConsecutiveCalls: 5, RepeatLimit: 3, FeedbackGiven: true, NotExecuted: true}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := runtime.ThreadTurnFailure{Code: runtime.ThreadTurnFailureEngineContract, Reason: runtime.ThreadTurnFailureRepeatedToolCalls, Message: "agent loop repeated identical tool calls: " + string(raw), ToolRepetition: detail}
+	if err := failure.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored runtime.ThreadTurnFailure
+	if err := json.Unmarshal(serialized, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Validate(); err != nil || restored.ToolRepetition == nil || *restored.ToolRepetition != *detail {
+		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
+	restored.ToolRepetition.ConsecutiveCalls++
+	if restored.Validate() == nil {
+		t.Fatal("accepted invented repetition count")
+	}
+}

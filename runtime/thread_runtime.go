@@ -4871,6 +4871,7 @@ func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
 	}
 	cloned := *failure
 	cloned.Reason = classifyThreadTurnFailureReason(cloned.Code, cloned.Message)
+	cloned.ToolRepetition = threadToolRepetitionDetails(cloned.Code, cloned.Message)
 	cloned.ProviderTimeout = providerattempt.CloneTimeoutDetails(failure.ProviderTimeout)
 	return &cloned
 }

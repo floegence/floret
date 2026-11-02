@@ -9,6 +9,12 @@ The host application owns product UI, credentials, provider profiles, resource
 authorization, routing, read state, uploads before admission, and transport
 diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 
+Tool repetition is evaluated in model call order across local and hosted
+activity. Only consecutive calls with identical complete arguments count;
+descriptions are significant. The Engine rejects a repeated local call with
+paired feedback before allowing one decision to adjust or summarize. Hosts can
+inspect `runtime.ThreadTurnFailure.ToolRepetition` for safe exact diagnostics.
+
 Floret is not a graph workflow framework, a multi-agent orchestrator, or a
 product persistence layer.
 

@@ -378,6 +378,7 @@ type RunDecision struct {
 }
 
 type StepOutput struct {
+	toolOrder       []toolInvocationOrder
 	Sources         []citation.Source
 	Text            string
 	Reasoning       string
@@ -884,7 +885,7 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	lengthContinuations := 0
 	stopHookContinuations := 0
 	compactionFailures := 0
-	var repeats toolBatchRepeatGuard
+	var repeats toolRepeatGuard
 	started := time.Now()
 	metrics := RunMetrics{}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
@@ -962,7 +963,8 @@ steps:
 				if err := owner.clear(rootCtx); err != nil {
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
 				}
-				noProgress, repeats.duplicates, emptyRetries = 0, 0, 0
+				noProgress, emptyRetries = 0, 0
+				repeats = toolRepeatGuard{}
 			}
 		}
 		opts.PreviousProviderState = provider.CloneState(owner.state)
@@ -1002,9 +1004,13 @@ steps:
 				activeHistory = append(activeHistory, message)
 			}
 		}
+		beforeParentEvents := len(activeHistory)
 		activeHistory, err = e.admitParentEvents(ctx, opts, activeHistory)
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
+		if len(activeHistory) > beforeParentEvents {
+			repeats = toolRepeatGuard{}
 		}
 		activeHistory, err = e.admitModelContext(ctx, opts, activeHistory)
 		if err != nil {
@@ -1024,7 +1030,7 @@ steps:
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if compacted {
 			noProgress = 0
-			repeats.duplicates = 0
+			repeats = toolRepeatGuard{}
 		}
 		var stepOutput StepOutput
 		var providerLatency int64
@@ -1034,7 +1040,7 @@ steps:
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if overflowCompacted {
 			noProgress = 0
-			repeats.duplicates = 0
+			repeats = toolRepeatGuard{}
 		}
 		attemptMetadata := providerAttemptMetadata(req)
 		if err != nil {
@@ -1051,6 +1057,14 @@ steps:
 		}
 		stepText := stepOutput.Text
 		calls := stepOutput.Calls
+		if len(calls) == 0 {
+			for _, invocation := range stepOutput.toolOrder {
+				if invocation.hosted {
+					repeats = toolRepeatGuard{}
+					break
+				}
+			}
+		}
 		usage := stepOutput.Usage
 		metrics.AddUsage(usage)
 		normalizedUsage := usage.Normalized()
@@ -1332,16 +1346,26 @@ steps:
 				}
 			}
 		}
+		var repeatRejections map[string]*tools.RepetitionDetails
+		var repeatFailure *tools.RepetitionDetails
+		if len(validationErrors) > 0 {
+			repeats = toolRepeatGuard{}
+		} else {
+			repeatRejections, repeatFailure = repeats.prepare(activeToolRegistry, calls, stepOutput.toolOrder, opts.DuplicateToolLimit)
+		}
+		for id, detail := range repeatRejections {
+			projectedCallBatchMetadata[id] = mergeAnyMetadata(projectedCallBatchMetadata[id], map[string]any{"tool_repetition": detail, "not_executed": true})
+		}
 		callMessages := make([]session.Message, len(calls))
 		for index, call := range calls {
 			kind := session.MessageKindNormal
 			if validationErrors[call.ID] != nil {
 				kind = session.MessageKindToolValidationError
-			} else if opts.ControlSpec.isControlTool(call.Name) {
+			} else if opts.ControlSpec.isControlTool(call.Name) && repeatRejections[call.ID] == nil {
 				kind = session.MessageKindControlSignal
 			}
 			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: call.Reasoning, ReasoningSourceID: callReasoningSource(opts.RunID, req.AttemptID, call), ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
-			if projectedSignal != nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
+			if projectedSignal != nil && repeatRejections[call.ID] == nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
 				msg.ControlSignal = sessionControlSignalView(projectedSignal)
 			}
 			callMessages[index] = msg
@@ -1382,11 +1406,32 @@ steps:
 			}
 			continue
 		}
-		if len(validationErrors) > 0 {
-			repeats = toolBatchRepeatGuard{}
-		}
-		if len(validationErrors) == 0 && repeats.reject(activeToolRegistry, calls, opts.DuplicateToolLimit) {
-			return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
+		if len(classifiedCalls.Ordinary) == 0 && len(repeatRejections) > 0 {
+			for index, call := range calls {
+				msg := session.CloneMessage(callMessages[index])
+				e.emit(opts, event.Event{Type: event.ToolCall, Step: step, ToolID: call.ID, ToolName: call.Name, ToolKind: "control", ToolCallMessage: &msg, Args: call.Args, Metadata: mergeAnyMetadata(attemptMetadata, projectedCallBatchMetadata[call.ID])})
+			}
+			var feedbackResults []tools.Result
+			for index, call := range calls {
+				detail := repeatRejections[call.ID]
+				if detail == nil {
+					return e.end(state, opts, step, Failed, output, errors.New("invalid control repetition batch"), metrics, started, decision)
+				}
+				text := repetitionFeedback(detail)
+				msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Tool, Content: text, ToolCallID: call.ID, ToolName: call.Name, ToolResult: &session.ToolResultView{Status: "error"}})
+				if err := commitMessages(msg); err != nil {
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+				}
+				e.emit(opts, event.Event{Type: event.ToolResult, Step: step, ToolID: call.ID, ToolName: call.Name, ToolKind: "control", Result: text, Err: text, Metadata: mergeAnyMetadata(attemptMetadata, map[string]any{"batch_index": index, "batch_size": len(calls), "tool_repetition": detail, "not_executed": true, "tool_result_status": "error"})})
+				feedbackResults = append(feedbackResults, tools.ErrorResult(call.ID, call.Name, text))
+			}
+			repeats.settle(feedbackResults, repeatRejections)
+			decision.ContinuationReason = ContinueToolResults
+			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
+			if repeatFailure != nil {
+				return e.end(state, opts, step, Failed, output, &toolRepetitionError{detail: *repeatFailure}, metrics, started, decision)
+			}
+			continue
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
 			if projectedSignalErr != nil {
@@ -1471,6 +1516,9 @@ steps:
 					Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(projectedCallBatchMetadata[result.CallID], map[string]any{"tool_result_status": "error"}))})
 				toolMessageSet[i] = true
 				return applyMessages([]session.Message{msg})
+			}
+			if detail := repeatRejections[result.CallID]; detail != nil {
+				result = tools.ErrorResult(result.CallID, result.Name, repetitionFeedback(detail))
 			}
 			result = preparePendingToolResult(result)
 			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
@@ -1570,7 +1618,16 @@ steps:
 			toolMessageSet[i] = true
 			return applyMessages([]session.Message{toolMessages[i]})
 		}
-		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, validationErrors, processToolResult); err != nil {
+		preDispatchErrors := make(map[string]error, len(validationErrors)+len(repeatRejections))
+		for id, err := range validationErrors {
+			preDispatchErrors[id] = err
+		}
+		for id, detail := range repeatRejections {
+			if preDispatchErrors[id] == nil {
+				preDispatchErrors[id] = errors.New(repetitionFeedback(detail))
+			}
+		}
+		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, preDispatchErrors, processToolResult); err != nil {
 			if isContextCancellation(err) {
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
 					continue
@@ -1605,7 +1662,11 @@ steps:
 				return e.end(state, opts, step, Waiting, result.InputRequired.Summary, nil, metrics, started, decision)
 			}
 		}
-		repeats.results = toolResults
+		repeats.settle(toolResults, repeatRejections)
+		if repeatFailure != nil {
+			e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
+			return e.end(state, opts, step, Failed, output, &toolRepetitionError{detail: *repeatFailure}, metrics, started, decision)
+		}
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
@@ -4073,6 +4134,13 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	}
 	validator := provider.StreamValidator{}
 	streamedToolCallEnds := map[string]struct{}{}
+	orderedCalls := map[string]bool{}
+	observeCall := func(id string, hosted bool) {
+		if !orderedCalls[id] {
+			out.toolOrder = append(out.toolOrder, toolInvocationOrder{id: id, hosted: hosted})
+			orderedCalls[id] = true
+		}
+	}
 	attemptMetadata := map[string]any{"logical_request_id": req.LogicalRequestID, "attempt_id": req.AttemptID, "attempt_epoch": req.AttemptEpoch, "attempt": req.Attempt}
 	emitAttemptEvent := func(ev event.Event, parts ...*provider.OutputPart) {
 		ev.ProviderLastProgressAt = lastProgressAt
@@ -4154,6 +4222,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, OutputStartedAt: builder.output.Items[builder.open].StartedAt, OutputLastAt: builder.output.Items[builder.open].EndedAt, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
 				}
 			case provider.ToolCallStart:
+				observeCall(ev.ToolCallStream.ID, false)
 				previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name)
 				emitAttemptEvent(event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
 			case provider.ToolCallDelta:
@@ -4171,6 +4240,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 				for _, call := range ev.ToolCalls {
+					observeCall(call.ID, false)
 					pc := previewFor(call.ID, call.Name)
 					if pc.bytes == 0 && call.Args != "" {
 						estimate.append("tool:"+call.ID, call.Args)
@@ -4189,6 +4259,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					streamedToolCallEnds[call.ID] = struct{}{}
 				}
 			case provider.HostedToolCall:
+				observeCall(ev.ToolCall.ID, true)
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
@@ -4897,119 +4968,6 @@ func validateToolCalls(calls []provider.ToolCall) error {
 		seen[callID] = struct{}{}
 	}
 	return nil
-}
-
-func toolSignature(reg *tools.Registry, calls []provider.ToolCall) string {
-	s := ""
-	for _, c := range calls {
-		s += c.Name + "\x00" + toolIdentityArgs(reg, c) + "\x00"
-	}
-	return s
-}
-
-// toolBatchRepeatGuard is the single repeat owner. Every call in a repeated
-// batch must independently demonstrate a changed polling token or a complete
-// bounded wait; one observer cannot excuse another call's repeated effects.
-type toolBatchRepeatGuard struct {
-	signature  string
-	results    []tools.Result
-	tokens     []string
-	duplicates int
-}
-
-func (guard *toolBatchRepeatGuard) reject(reg *tools.Registry, calls []provider.ToolCall, limit int) bool {
-	signature := toolSignature(reg, calls)
-	if signature != guard.signature {
-		guard.signature = signature
-		guard.tokens = make([]string, len(calls))
-		guard.results = nil
-		guard.duplicates = 0
-		return false
-	}
-	repeatable := len(calls) > 0 && len(calls) == len(guard.results)
-	for i, call := range calls {
-		if i >= len(guard.results) {
-			repeatable = false
-			break
-		}
-		result := guard.results[i]
-		if result.CompletedBoundedWait() {
-			continue
-		}
-		token := toolResultProgressToken(result)
-		var def tools.Definition
-		var ok bool
-		if reg != nil {
-			def, ok = reg.Definition(call.Name)
-		}
-		polling := ok && strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) == tools.RepeatPolicyPolling
-		if !polling || result.IsError || result.DispatchErr != nil || token == "" || token == guard.tokens[i] {
-			repeatable = false
-		}
-		guard.tokens[i] = token
-	}
-	if repeatable {
-		guard.duplicates = 0
-	} else {
-		guard.duplicates++
-	}
-	return guard.duplicates >= limit
-}
-
-func toolIdentityArgs(reg *tools.Registry, call provider.ToolCall) string {
-	if reg == nil {
-		return call.Args
-	}
-	def, ok := reg.Definition(call.Name)
-	if !ok || strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) != tools.RepeatPolicyPolling {
-		return call.Args
-	}
-	ignored := repeatIdentityIgnoredArguments(def.Annotations[tools.AnnotationRepeatIdentityIgnoredArguments])
-	if len(ignored) == 0 {
-		return call.Args
-	}
-	args, err := tools.Validate(def.InputSchema, []byte(call.Args))
-	if err != nil {
-		return call.Args
-	}
-	for _, field := range ignored {
-		delete(args, field)
-	}
-	raw, err := cache.CanonicalJSON(args)
-	if err != nil {
-		return call.Args
-	}
-	return string(raw)
-}
-
-func repeatIdentityIgnoredArguments(raw any) []string {
-	values, ok := raw.([]any)
-	if !ok {
-		if typed, ok := raw.([]string); ok {
-			return append([]string(nil), typed...)
-		}
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for _, rawValue := range values {
-		value, ok := rawValue.(string)
-		if !ok || strings.TrimSpace(value) == "" {
-			return nil
-		}
-		out = append(out, strings.TrimSpace(value))
-	}
-	return out
-}
-
-func toolResultProgressToken(result tools.Result) string {
-	if len(result.Metadata) == 0 {
-		return ""
-	}
-	value, ok := result.Metadata[tools.ResultMetadataProgressToken]
-	if !ok || value == nil {
-		return ""
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func imageOccurrences(history []session.Message) int {

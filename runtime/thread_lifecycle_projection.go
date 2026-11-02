@@ -96,7 +96,7 @@ func (projection *threadLifecycleProjection) snapshot() (identity.TurnID, identi
 		if !code.Valid() {
 			code = ThreadTurnFailureLegacyUnclassified
 		}
-		failure = &ThreadTurnFailure{Code: code, Message: facts.failureMessage, Reason: classifyThreadTurnFailureReason(code, facts.failureMessage)}
+		failure = &ThreadTurnFailure{Code: code, Message: facts.failureMessage, Reason: classifyThreadTurnFailureReason(code, facts.failureMessage), ToolRepetition: threadToolRepetitionDetails(code, facts.failureMessage)}
 		if code == ThreadTurnFailureProvider {
 			failure.ProviderTimeout = providerattempt.CloneTimeoutDetails(facts.timeout)
 		}

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Count only consecutive individual tool calls with identical complete arguments,
+  including descriptions. Hosted calls and different calls break the sequence;
+  retain JSON precision, bounded waits and confirmed polling progress. Reject
+  unchanged repetitions with paired feedback before dispatch and allow one model
+  decision before terminal failure. Preserve reports, retry history and sibling
+  results. Add safe public repetition diagnostics; deprecate argument exclusions.
+
+
 - Retain completed hosted-search records when terminal source lists differ,
   preserving operation validation, native history and duplicate-event checks.
   Add bounded nested conflict diagnostics and accepted-selection observations

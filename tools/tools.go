@@ -22,7 +22,9 @@ var ErrEffectDispatcherRequired = errors.New("tool effect authority dispatcher i
 const ControlAskUser = "ask_user"
 
 const (
-	AnnotationRepeatPolicy                   = "repeat_policy"
+	AnnotationRepeatPolicy = "repeat_policy"
+	// Deprecated: strict repetition compares all arguments, including descriptions.
+	// Accepted for v7 source compatibility; it no longer changes call identity.
 	AnnotationRepeatIdentityIgnoredArguments = "repeat_identity_ignored_arguments"
 	RepeatPolicyPolling                      = "polling"
 	ResultMetadataProgressToken              = "progress_token"

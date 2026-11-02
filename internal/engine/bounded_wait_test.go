@@ -29,7 +29,7 @@ func TestBoundedWaitRepeatGuard(t *testing.T) {
 		{name: "fast return", timedOut: true},
 		{name: "finished target", elapsed: time.Second},
 		{name: "failed wait", elapsed: time.Second, timedOut: true, failed: true},
-		{name: "mixed side effect", elapsed: time.Second, timedOut: true, mixed: true},
+		{name: "alternating wait and write are not consecutive", elapsed: time.Second, timedOut: true, mixed: true, complete: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
