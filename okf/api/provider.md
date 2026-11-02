@@ -491,14 +491,25 @@ Evidence: [file transport tests](../../provider/deepseek_files_test.go),
 
 The additive ResponsesOutput and ResponsesOutputError API moves completed-item
 reconciliation from Redeven into Floret. Add validates repeated done events
-strictly; Complete retains exact terminal bytes when matching reasoning items
-differ only in nonempty encrypted_content. This chooses opaque authority, not
-plaintext equivalence. Changed non-opaque fields, missing identity, incomplete
+strictly; Complete retains completed reasoning ciphertext, filling absent, null
+or empty ciphertext from a matching terminal item. Different nonempty ciphertext
+is not a semantic conflict. This chooses an opaque source, not plaintext
+equivalence. Changed non-opaque fields, missing identity, incomplete
 snapshots and output over 8 MiB fail. Omitted snapshots retain ordered done
 events. Defensive copies and nonmutating completion preserve stream evidence.
 Errors expose known field names only; unknown names collapse to other. Redeven
 maps these facts into its existing durable failure details. See
 [reconciliation tests](../../provider/responses_output_test.go).
+
+Reference review on 2026-11-02: pi commit 3cec8e2b66fa explicitly tests preserving
+output_item.done ciphertext and terminal backfill when it is absent (packages/ai/
+test/azure-openai-responses-reasoning-replay.test.ts). OpenCode commit ef6dd07aab80
+retains completed reasoning metadata; its terminal recovery handles unfinished
+tools/compaction, not replacing completed reasoning (packages/ai/src/protocols/
+open-responses.ts). These sources support completed-item precedence, not global
+JSON equality or an assumption of deterministic encrypted bytes. Floret additionally
+keeps strict non-opaque conflicts and raw-byte/state limits required by its hosts.
+
 
 The additive ResponsesHistoryOptions, PrepareResponsesHistory and immutable
 ResponsesHistory API own native Responses history for Redeven's API-key and

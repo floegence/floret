@@ -9,7 +9,7 @@ import (
 	"github.com/floegence/floret/v7/provider"
 )
 
-func TestResponsesOutputTerminalReasoningAuthority(t *testing.T) {
+func TestResponsesOutputCompletedReasoningAuthority(t *testing.T) {
 	done := json.RawMessage("{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"first-cipher\"}")
 	terminal := json.RawMessage("{ \"type\":\"reasoning\", \"id\":\"rs_1\", \"summary\":[], \"encrypted_content\":\"final-cipher\" }")
 	var output provider.ResponsesOutput
@@ -20,8 +20,8 @@ func TestResponsesOutputTerminalReasoningAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got[0]) != string(terminal) {
-		t.Fatalf("terminal native bytes changed: %s", got[0])
+	if string(got[0]) != string(done) {
+		t.Fatalf("completed-item native bytes changed: %s", got[0])
 	}
 	got[0][0] = '!'
 	got, err = output.Complete(nil)
@@ -33,6 +33,70 @@ func TestResponsesOutputTerminalReasoningAuthority(t *testing.T) {
 	}
 }
 
+func TestResponsesOutputEqualReasoningKeepsCompletedBytes(t *testing.T) {
+	done := json.RawMessage(`{ "id": "r", "type": "reasoning", "encrypted_content": "same" }`)
+	terminal := json.RawMessage(`{"type":"reasoning","encrypted_content":"same","id":"r"}`)
+	var output provider.ResponsesOutput
+	if err := output.Add(0, done); err != nil {
+		t.Fatal(err)
+	}
+	got, err := output.Complete([]json.RawMessage{terminal})
+	if err != nil || string(got[0]) != string(done) {
+		t.Fatalf("completed reasoning bytes changed: %v", err)
+	}
+}
+
+func TestResponsesOutputReasoningCiphertextBackfill(t *testing.T) {
+	// pi preserves a done ciphertext and fills only absent ciphertext from the
+	// terminal snapshot. OpenCode likewise retains completed reasoning metadata.
+	for _, missing := range []any{nil, ""} {
+		for _, omit := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				first := map[string]any{"type": "reasoning", "id": "r", "summary": []any{}, "encrypted_content": missing}
+				if omit {
+					delete(first, "encrypted_content")
+				}
+				last := map[string]any{"type": "reasoning", "id": "r", "summary": []any{}, "encrypted_content": "available"}
+				a, _ := json.Marshal(first)
+				b, _ := json.Marshal(last)
+				want := b
+				if reverse {
+					a, b = b, a
+					want = a
+				}
+				var out provider.ResponsesOutput
+				if err := out.Add(0, a); err != nil {
+					t.Fatal(err)
+				}
+				got, err := out.Complete([]json.RawMessage{b})
+				if err != nil || string(got[0]) != string(want) {
+					t.Fatalf("ciphertext backfill/retention failed: omit=%v reverse=%v err=%v", omit, reverse, err)
+				}
+			}
+		}
+	}
+	var out provider.ResponsesOutput
+	malformed := json.RawMessage("{\"type\":\"reasoning\",\"id\":\"r\",\"encrypted_content\":123}")
+	valid := json.RawMessage("{\"type\":\"reasoning\",\"id\":\"r\",\"encrypted_content\":\"valid\"}")
+	_ = out.Add(0, malformed)
+	if _, err := out.Complete([]json.RawMessage{valid}); err == nil {
+		t.Fatal("malformed done ciphertext was silently repaired")
+	}
+}
+
+func TestResponsesOutputSelectedBytesRemainBounded(t *testing.T) {
+	var out provider.ResponsesOutput
+	large, _ := json.Marshal(map[string]any{"type": "reasoning", "id": "r", "encrypted_content": strings.Repeat("a", (8<<20)-100)})
+	small, _ := json.Marshal(map[string]any{"type": "reasoning", "id": "r", "encrypted_content": "b"})
+	extra, _ := json.Marshal(map[string]any{"type": "message", "content": strings.Repeat("c", 200)})
+	if err := out.Add(0, large); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.Complete([]json.RawMessage{small, extra}); err == nil {
+		t.Fatal("retained done bytes bypassed aggregate limit")
+	}
+}
+
 func TestResponsesOutputRejectsRealConflicts(t *testing.T) {
 	base := map[string]any{"id": "rs_1", "type": "reasoning", "summary": []any{}, "encrypted_content": "first"}
 	for _, tc := range []struct {
@@ -41,8 +105,7 @@ func TestResponsesOutputRejectsRealConflicts(t *testing.T) {
 		remove      bool
 	}{
 		{"identity", "id", "rs_2", false}, {"summary", "summary", []any{"private"}, false},
-		{"missing_cipher", "encrypted_content", nil, true}, {"empty_cipher", "encrypted_content", "", false},
-		{"null_cipher", "encrypted_content", nil, false}, {"wrong_cipher_type", "encrypted_content", 17, false},
+		{"wrong_cipher_type", "encrypted_content", 17, false},
 		{"unknown_field", "private-sk-secret", "private", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,7 +208,7 @@ func TestResponsesOutputBoundsAndOwnership(t *testing.T) {
 	}
 }
 
-func TestResponsesOutputFinalCipherSurvivesHistoryRestart(t *testing.T) {
+func TestResponsesOutputCompletedCipherSurvivesHistoryRestart(t *testing.T) {
 	input := []json.RawMessage{json.RawMessage("{\"role\":\"user\",\"content\":\"test\"}")}
 	options := provider.ResponsesHistoryOptions{Kind: "fixture", ID: "model"}
 	history, err := provider.PrepareResponsesHistory(options, input, nil)
@@ -180,8 +243,8 @@ func TestResponsesOutputFinalCipherSurvivesHistoryRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(prepared.Input())
-	if !strings.Contains(string(encoded), "final-cipher") || strings.Contains(string(encoded), "first-cipher") {
-		t.Fatal("terminal ciphertext did not survive persistence")
+	if !strings.Contains(string(encoded), "first-cipher") || strings.Contains(string(encoded), "final-cipher") {
+		t.Fatal("completed ciphertext did not survive persistence")
 	}
 	if id, delta := prepared.Continuation(); id != "resp_final" || len(delta) != 1 {
 		t.Fatal("continuation boundary changed")

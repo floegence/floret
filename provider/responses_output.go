@@ -11,8 +11,9 @@ import (
 // ResponsesOutput collects native response.output_item.done items for one
 // request. Its zero value is ready to use; it is not safe for concurrent use.
 // Add validates duplicate events strictly. Complete reconciles only a confirmed
-// terminal snapshot, which owns the final opaque reasoning bytes. The adapter
-// remains responsible for terminal success, usage, namespace and tool validation.
+// terminal snapshot, preserving completed reasoning and filling missing ciphertext.
+// The adapter remains responsible for terminal success, usage, namespace and
+// tool validation.
 type ResponsesOutput struct {
 	items map[int64]json.RawMessage
 	bytes int
@@ -64,9 +65,11 @@ func (c *ResponsesOutput) Add(index int64, raw json.RawMessage) error {
 // Complete returns defensive copies in output order without mutating the
 // collected events, including when validation fails. An omitted/empty snapshot
 // uses completed events. A nonempty snapshot must cover every collected index.
-// Its exact bytes are authoritative when items agree, or when matching reasoning
-// items differ only in nonempty encrypted_content strings. This is opaque value
-// reconciliation, not a claim that their encrypted plaintext is equivalent.
+// A completed reasoning item with nonempty encrypted_content keeps its original
+// bytes. If that ciphertext is absent, null or empty, the terminal item can
+// supply it. Matching identity and all non-opaque fields must agree; malformed
+// ciphertext is never repaired. This selects an opaque source, not plaintext
+// equivalence. Terminal-only items retain their exact bytes.
 func (c *ResponsesOutput) Complete(snapshot []json.RawMessage) ([]json.RawMessage, error) {
 	if len(snapshot) == 0 {
 		if len(c.items) == 0 {
@@ -95,6 +98,7 @@ func (c *ResponsesOutput) Complete(snapshot []json.RawMessage) ([]json.RawMessag
 		total += len(raw)
 	}
 	out := make([]json.RawMessage, len(snapshot))
+	selectedBytes := 0
 	for index, raw := range snapshot {
 		value, err := decodeResponsesOutput(raw)
 		if err != nil {
@@ -102,10 +106,18 @@ func (c *ResponsesOutput) Complete(snapshot []json.RawMessage) ([]json.RawMessag
 		}
 		if previous, ok := c.items[int64(index)]; ok {
 			old, _ := decodeResponsesOutput(previous)
-			if !reflect.DeepEqual(old, value) && !compatibleResponsesReasoning(old, value) {
+			compatible, keepCompleted := compatibleResponsesReasoning(old, value)
+			if !reflect.DeepEqual(old, value) && !compatible {
 				return nil, responsesOutputConflict(int64(index), old, value)
 			}
+			if keepCompleted {
+				raw = previous
+			}
 		}
+		if len(raw) > responsesHistoryMaxBytes-selectedBytes {
+			return nil, &ResponsesOutputError{Code: "response_output_limit_exceeded"}
+		}
+		selectedBytes += len(raw)
 		out[index] = bytes.Clone(raw)
 	}
 	return out, nil
@@ -122,18 +134,18 @@ func decodeResponsesOutput(raw json.RawMessage) (map[string]any, error) {
 	return value, nil
 }
 
-func compatibleResponsesReasoning(old, value map[string]any) bool {
-	if old["type"] != "reasoning" || value["type"] != "reasoning" || len(old) != len(value) {
-		return false
+func compatibleResponsesReasoning(old, value map[string]any) (compatible, keepCompleted bool) {
+	if old["type"] != "reasoning" || value["type"] != "reasoning" {
+		return false, false
 	}
 	id, ok := old["id"].(string)
 	if !ok || strings.TrimSpace(id) == "" || value["id"] != id {
-		return false
+		return false, false
 	}
-	before, beforeOK := old["encrypted_content"].(string)
-	after, afterOK := value["encrypted_content"].(string)
-	if !beforeOK || !afterOK || strings.TrimSpace(before) == "" || strings.TrimSpace(after) == "" {
-		return false
+	before, beforeOK := responsesReasoningCipher(old["encrypted_content"])
+	after, afterOK := responsesReasoningCipher(value["encrypted_content"])
+	if !beforeOK || !afterOK || (before == "" && after == "") {
+		return false, false
 	}
 	for key, before := range old {
 		if key == "encrypted_content" {
@@ -141,10 +153,29 @@ func compatibleResponsesReasoning(old, value map[string]any) bool {
 		}
 		after, exists := value[key]
 		if !exists || !reflect.DeepEqual(before, after) {
-			return false
+			return false, false
 		}
 	}
-	return true
+	for key := range value {
+		if key == "encrypted_content" {
+			continue
+		}
+		if _, exists := old[key]; !exists {
+			return false, false
+		}
+	}
+	return true, before != ""
+}
+
+func responsesReasoningCipher(value any) (string, bool) {
+	if value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	if !ok || (text != "" && strings.TrimSpace(text) == "") {
+		return "", false
+	}
+	return text, true
 }
 
 func responsesOutputConflict(index int64, old, value map[string]any) *ResponsesOutputError {
