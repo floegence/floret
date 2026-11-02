@@ -21,10 +21,16 @@ func sparseSourceKey(thread, category string, ordinal int) []byte {
 }
 func sparseSourceCategory(entry Entry) string {
 	switch entry.Type {
+	case EntryToolResult:
+		if entry.Message.ToolResult != nil && entry.Message.ToolResult.ObservedHostWork != "" {
+			return "host_work"
+		}
 	case EntryQueueAdded, EntryQueueDeleted, EntryQueuePromoted, EntryQueueReordered:
 		return "queue"
 	case EntryParentEvent, EntryParentEventsAdmitted:
 		return "parent"
+	case EntryHostWork, EntryHostWorkAdmitted:
+		return "host_work"
 	case EntryTurnMarker:
 		if entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
 			return "parent"
@@ -34,9 +40,10 @@ func sparseSourceCategory(entry Entry) string {
 }
 
 type sparseSourceCoverage struct {
-	Through int `json:"through"`
-	Queue   int `json:"queue"`
-	Parent  int `json:"parent"`
+	Through  int `json:"through"`
+	Queue    int `json:"queue"`
+	Parent   int `json:"parent"`
+	HostWork int `json:"host_work,omitempty"`
 }
 
 func (coverage *sparseSourceCoverage) add(entry Entry, delta int) {
@@ -45,6 +52,8 @@ func (coverage *sparseSourceCoverage) add(entry Entry, delta int) {
 		coverage.Queue += delta
 	case "parent":
 		coverage.Parent += delta
+	case "host_work":
+		coverage.HostWork += delta
 	}
 }
 
@@ -62,7 +71,7 @@ func readSparseCoverage(tx spi.ReadTx, thread string) (sparseSourceCoverage, err
 		return sparseSourceCoverage{}, err
 	}
 	var coverage sparseSourceCoverage
-	if err := decodeCanonicalBodyJSON(raw, &coverage); err != nil || coverage.Through < 0 || coverage.Queue < 0 || coverage.Parent < 0 || coverage.Queue > coverage.Through || coverage.Parent > coverage.Through-coverage.Queue {
+	if err := decodeCanonicalBodyJSON(raw, &coverage); err != nil || coverage.Through < 0 || coverage.Queue < 0 || coverage.Parent < 0 || coverage.HostWork < 0 || coverage.Queue > coverage.Through || coverage.Parent > coverage.Through-coverage.Queue || coverage.HostWork > coverage.Through-coverage.Queue-coverage.Parent {
 		return coverage, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return coverage, nil
@@ -238,6 +247,8 @@ func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category str
 	expected := coverage.Queue
 	if category == "parent" {
 		expected = coverage.Parent
+	} else if category == "host_work" {
+		expected = coverage.HostWork
 	} else if category != "queue" {
 		return ErrAuthorityCorrupt
 	}

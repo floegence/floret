@@ -418,7 +418,7 @@ func (mutation *backendDomainMutation) validateEntry(threadID string, entry Entr
 	}
 	if entry.TurnID != "" {
 		kind := entry.Metadata[TurnKindMetadataKey]
-		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation {
+		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation {
 			// Admission of a typed turn must validate every existing member.
 			for _, ordinal := range memory.turnEntryOrdinals[threadID][entry.TurnID] {
 				candidate := memory.entries[threadID][ordinal]

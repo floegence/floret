@@ -22,6 +22,7 @@ type MessageKind string
 const (
 	MessageKindNormal              MessageKind = ""
 	MessageKindParentEvents        MessageKind = "parent_events"
+	MessageKindHostWork            MessageKind = "host_work"
 	MessageKindModelContext        MessageKind = "model_context"
 	MessageKindToolValidationError MessageKind = "tool_validation_error"
 	MessageKindCompactionSummary   MessageKind = "compaction_summary"
@@ -29,18 +30,19 @@ const (
 )
 
 type ToolResultView struct {
-	EffectOutcome tools.EffectOutcome `json:"effect_outcome,omitempty"`
-	InputRequired *tools.InputRequest `json:"input_required,omitempty"`
-	Status        string              `json:"status,omitempty"`
-	Truncated     bool                `json:"truncated,omitempty"`
-	OriginalBytes int                 `json:"original_bytes,omitempty"`
-	VisibleBytes  int                 `json:"visible_bytes,omitempty"`
-	OriginalLines int                 `json:"original_lines,omitempty"`
-	VisibleLines  int                 `json:"visible_lines,omitempty"`
-	Strategy      string              `json:"strategy,omitempty"`
-	ContentSHA256 string              `json:"content_sha256,omitempty"`
-	FullOutput    *artifact.Ref       `json:"full_output,omitempty"`
-	Attachments   []MessageAttachment `json:"attachments,omitempty"`
+	ObservedHostWork string              `json:"observed_host_work,omitempty"`
+	EffectOutcome    tools.EffectOutcome `json:"effect_outcome,omitempty"`
+	InputRequired    *tools.InputRequest `json:"input_required,omitempty"`
+	Status           string              `json:"status,omitempty"`
+	Truncated        bool                `json:"truncated,omitempty"`
+	OriginalBytes    int                 `json:"original_bytes,omitempty"`
+	VisibleBytes     int                 `json:"visible_bytes,omitempty"`
+	OriginalLines    int                 `json:"original_lines,omitempty"`
+	VisibleLines     int                 `json:"visible_lines,omitempty"`
+	Strategy         string              `json:"strategy,omitempty"`
+	ContentSHA256    string              `json:"content_sha256,omitempty"`
+	FullOutput       *artifact.Ref       `json:"full_output,omitempty"`
+	Attachments      []MessageAttachment `json:"attachments,omitempty"`
 }
 
 type ActivityChip = tools.ActivityChip

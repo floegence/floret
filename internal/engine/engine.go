@@ -207,6 +207,7 @@ type Options struct {
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
 	AdmitParentEvents        func(context.Context) (session.Message, error)
+	AdmitHostWork            func(context.Context) (session.Message, error)
 	AdmitGoalContext         func(context.Context, []session.Message) (session.Message, error)
 	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
 	CommitMessages           func(context.Context, []session.Message) ([]session.Message, error)
@@ -1012,6 +1013,19 @@ steps:
 		if len(activeHistory) > beforeParentEvents {
 			repeats = toolRepeatGuard{}
 		}
+		if opts.AdmitHostWork != nil {
+			message, admitErr := opts.AdmitHostWork(ctx)
+			if admitErr != nil {
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(admitErr, FailureOriginStorage), metrics, started, RunDecision{})
+			}
+			if message.EntryID != "" {
+				if err := e.store.AppendTranscript(opts.RunID, message); err != nil {
+					return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+				}
+				activeHistory = append(activeHistory, message)
+				repeats = toolRepeatGuard{}
+			}
+		}
 		activeHistory, err = e.admitModelContext(ctx, opts, activeHistory)
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -1562,6 +1576,7 @@ steps:
 			resultView.InputRequired = tools.CloneInputRequest(result.InputRequired)
 			resultView.Status = resultStatus
 			resultView.EffectOutcome = result.EffectOutcome
+			resultView.ObservedHostWork = result.ObservedHostWork
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {

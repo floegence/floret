@@ -18,16 +18,20 @@ func migrateBackendDomainV12ToV13(ctx context.Context, memory *MemoryRepo) error
 }
 
 func validateTurnKindRecords(memory *MemoryRepo) error {
-	return validateTurnKindRecordsForSchema(memory, false)
+	return validateTurnKindRecordsForSchema(memory, false, false)
 }
 
 func validateCurrentTurnKindRecords(memory *MemoryRepo) error {
-	return validateTurnKindRecordsForSchema(memory, true)
+	return validateTurnKindRecordsForSchema(memory, true, true)
 }
 
-func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation bool) error {
+func validateHistoricalContinuationRecords(memory *MemoryRepo) error {
+	return validateTurnKindRecordsForSchema(memory, true, false)
+}
+
+func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation, hostWork bool) error {
 	for threadID, entries := range memory.entries {
-		if err := validateTurnKindEntries(threadID, entries, goalContinuation); err != nil {
+		if err := validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, hostWork); err != nil {
 			return err
 		}
 	}
@@ -35,8 +39,14 @@ func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation bool)
 }
 
 func validateTurnKindEntries(threadID string, entries []Entry, goalContinuation bool) error {
+	return validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, goalContinuation)
+}
+func validateTurnKindEntriesForSchema(threadID string, entries []Entry, goalContinuation, hostWork bool) error {
 	kinds := map[string]string{}
 	for _, entry := range entries {
+		if !hostWork && (entry.Type == EntryHostWork || entry.Type == EntryHostWorkAdmitted) {
+			return ErrAuthorityCorrupt
+		}
 		kind := entry.Metadata[TurnKindMetadataKey]
 		intent := entry.Metadata[ContinueGoalMetadataKey]
 		if intent != "" && (!goalContinuation || intent != "1" || kind == "") {
@@ -45,7 +55,7 @@ func validateTurnKindEntries(threadID string, entries []Entry, goalContinuation 
 		if kind == "" {
 			continue
 		}
-		if (kind != TurnKindContextCompaction && !(goalContinuation && kind == TurnKindGoalContinuation)) || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" {
+		if (kind != TurnKindContextCompaction && !(goalContinuation && kind == TurnKindGoalContinuation) && !(hostWork && kind == TurnKindHostWorkContinuation)) || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" {
 			return fmt.Errorf("invalid typed turn %q", entry.ID)
 		}
 		if kind == TurnKindGoalContinuation && intent != "1" && entry.Metadata[RetrySourceEntryIDMetadataKey] == "" {
@@ -57,7 +67,7 @@ func validateTurnKindEntries(threadID string, entries []Entry, goalContinuation 
 		kinds[entry.TurnID] = kind
 	}
 	for _, entry := range entries {
-		if kinds[entry.TurnID] == TurnKindGoalContinuation {
+		if kinds[entry.TurnID] == TurnKindGoalContinuation || kinds[entry.TurnID] == TurnKindHostWorkContinuation {
 			if entry.Type == EntryUserMessage {
 				return ErrAuthorityCorrupt
 			}

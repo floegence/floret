@@ -75,6 +75,9 @@ type EffectOutcome string
 const EffectOutcomeUncertain EffectOutcome = "uncertain"
 
 type Result struct {
+	// ObservedHostWork identifies a bound host-work result explicitly presented
+	// by this tool. Only its canonical commit suppresses a pending notice.
+	ObservedHostWork string
 	// Uncertainty is committed normally and lets the model inspect and continue.
 	EffectOutcome EffectOutcome
 

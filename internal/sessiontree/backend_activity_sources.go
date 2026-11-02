@@ -51,7 +51,7 @@ func HistoricalActivityPresentation(toolName, status string) *tools.ActivityPres
 // CanonicalToolStatus is shared by full presentation and source-backed range
 // metadata. A result replaces the previous status at its original item position.
 func CanonicalToolStatus(entry Entry) string {
-	if entry.Type != EntryToolResult {
+	if entry.Type != EntryToolResult && entry.Type != EntryHostWork {
 		return "running"
 	}
 	if entry.Message.ToolResult != nil {
@@ -100,7 +100,7 @@ func persistActivitySelection(tx spi.WriteTx, thread, source string, state store
 	return tx.Put(itemMembershipNamespace, activitySourcesKey(thread, source), raw)
 }
 func appendActivitySources(ctx context.Context, tx spi.WriteTx, member ItemMember, entry Entry, fresh bool) error {
-	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.ToolName == "goal" {
+	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
 		return nil
 	}
 	source, err := activeLocatedEntry(ctx, tx, ThreadMeta{ID: entry.ThreadID, LeafID: entry.ID}, entry.ID)
@@ -110,7 +110,7 @@ func appendActivitySources(ctx context.Context, tx spi.WriteTx, member ItemMembe
 	return appendActivitySourceMetadata(ctx, tx, member, source, fresh)
 }
 func appendActivitySourceMetadata(ctx context.Context, tx spi.WriteTx, member ItemMember, entry Entry, fresh bool) error {
-	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.ToolName == "goal" {
+	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
 		return nil
 	}
 	var previous storedActivitySources
@@ -193,7 +193,7 @@ func storeActivitySources(ctx context.Context, tx spi.WriteTx, entries []Entry) 
 		if err != nil {
 			return nil, err
 		}
-		if step.Main == nil || step.Skip || step.Main.Member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.ToolName == "goal" {
+		if step.Main == nil || step.Skip || step.Main.Member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
 			continue
 		}
 		key := step.Main.Member.SourceID
@@ -234,7 +234,7 @@ func effectiveStoredActivityFields(ctx context.Context, tx spi.ReadTx, meta Thre
 		if err != nil {
 			return Entry{}, err
 		}
-		if entry.RawHash != ref.Hash || entry.PathDepth != ref.Depth || entry.TurnID != member.TurnID || entry.RunID != member.RunID || entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.PathDepth < int64(member.CanonicalOrdinal) {
+		if entry.RawHash != ref.Hash || entry.PathDepth != ref.Depth || entry.TurnID != member.TurnID || entry.RunID != member.RunID || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.PathDepth < int64(member.CanonicalOrdinal) {
 			return Entry{}, fmt.Errorf("activity ref %q mismatches member %+v: %w", ref.ID, member, ErrAuthorityCorrupt)
 		}
 		entries[ref.ID] = entry
@@ -330,7 +330,7 @@ func itemActivityMember(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, id 
 	if err != nil || entry.RawHash != member.RawHash || uint64(entry.PathDepth) != member.CanonicalOrdinal || entry.TurnID != member.TurnID || entry.RunID != member.RunID {
 		return ItemMember{}, fmt.Errorf("item activity membership %q: %w", id, errors.Join(ErrAuthorityCorrupt, err))
 	}
-	if entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.ToolName == "goal" {
+	if entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
 		return ItemMember{}, ErrUnsupportedStoreCapability
 	}
 	if member.ActivityPending {

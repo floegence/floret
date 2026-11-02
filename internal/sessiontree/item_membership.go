@@ -165,6 +165,19 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 		if entry.Metadata[GoalCompletedMetadataKey] != "" {
 			step.Main = add(entry.ID+":goal", "goal", false)
 		}
+	case EntryHostWork:
+		if entry.Message.Activity == nil && entry.bodyFields["activity_json"].Bytes == 0 {
+			break
+		}
+		index, found := p.tools[key]
+		if !found {
+			return step, ErrAuthorityCorrupt
+		}
+		step.Main = previous(index)
+		member := &p.Members[index]
+		member.ActivityStatus = CanonicalToolStatus(entry)
+		member.ActivitySource = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+		step.Main.Member = *member
 	case EntryToolCall, EntryToolResult:
 		if entry.Type == EntryToolCall {
 			reasoning()

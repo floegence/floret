@@ -684,6 +684,7 @@ type AgentFactoryFunc func(context.Context, github.com/floegence/floret/v7/runti
 method AgentFactoryFunc.Agent func(ctx context.Context, request github.com/floegence/floret/v7/runtime.AgentRequest) (*github.com/floegence/floret/v7/runtime.Agent, error)
 type AgentOption struct
 type AgentRequest struct
+field AgentRequest.HostWorkSourceTurnID github.com/floegence/floret/v7/identity.TurnID
 field AgentRequest.TurnKind github.com/floegence/floret/v7/runtime.TurnKind
 field AgentRequest.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field AgentRequest.TurnID github.com/floegence/floret/v7/identity.TurnID
@@ -715,6 +716,13 @@ method *AuthorityBusyError.Is func(target error) bool
 type AuthorityBusyKind string
 const AuthorityBusyTurn github.com/floegence/floret/v7/runtime.AuthorityBusyKind = "turn"
 type AuthorizedEffect func(context.Context, github.com/floegence/floret/v7/runtime.EffectAuthorizationProof) (github.com/floegence/floret/v7/runtime.EffectDispatchResult, error)
+type BindHostWorkInput struct
+field BindHostWorkInput.EffectAttemptID string
+field BindHostWorkInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field BindHostWorkInput.TurnID github.com/floegence/floret/v7/identity.TurnID
+field BindHostWorkInput.RunID github.com/floegence/floret/v7/identity.RunID
+field BindHostWorkInput.ToolCallID string
+field BindHostWorkInput.WorkID string
 type CancelInput struct
 field CancelInput.IncludeDescendants bool tag="json:\"include_descendants,omitempty\""
 field CancelInput.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode,omitempty\""
@@ -741,6 +749,14 @@ type CompactContextInput struct
 field CompactContextInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field CompactContextInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 field CompactContextInput.ContinueGoal bool tag="json:\"continue_goal,omitempty\""
+type CompleteHostWorkInput struct
+field CompleteHostWorkInput.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation
+field CompleteHostWorkInput.Result encoding/json.RawMessage
+field CompleteHostWorkInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field CompleteHostWorkInput.WorkID string
+field CompleteHostWorkInput.Notice string
+field CompleteHostWorkInput.Notify bool
+field CompleteHostWorkInput.Output *string
 type ContractError struct
 field ContractError.Contract string
 field ContractError.Err error
@@ -929,6 +945,7 @@ field HistoryPage.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag=
 field HistoryPage.Before string tag="json:\"before,omitempty\""
 field HistoryPage.HasMore bool tag="json:\"has_more,omitempty\""
 type Host struct
+method *Host.SuspendExecution func(ctx context.Context) error
 method *Host.Activate func(ctx context.Context) error
 method *Host.Shutdown func(ctx context.Context) error
 method *Host.MediaInventory func(ctx context.Context) (github.com/floegence/floret/v7/runtime.MediaInventory, error)
@@ -939,6 +956,16 @@ method *Host.PrepareThread func(ctx context.Context, threadID github.com/floegen
 method *Host.PrepareDisplayThread func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) error
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
+type HostWork struct
+field HostWork.Result encoding/json.RawMessage tag="json:\"result,omitempty\""
+field HostWork.Inherited bool tag="json:\"inherited,omitempty\""
+field HostWork.WorkID string tag="json:\"work_id\""
+field HostWork.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field HostWork.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field HostWork.ToolCallID string tag="json:\"tool_call_id\""
+field HostWork.State string tag="json:\"state\""
+field HostWork.Notice string tag="json:\"notice,omitempty\""
+field HostWork.OutputAvailable bool tag="json:\"output_available\""
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
 type ImportPendingInputsInput struct
 field ImportPendingInputsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -1574,6 +1601,7 @@ field ThreadGoalChange.Actor string tag="json:\"actor\""
 field ThreadGoalChange.At time.Time tag="json:\"at\""
 type ThreadGoalController interface interface{DeleteGoal(context.Context, github.com/floegence/floret/v7/runtime.DeleteGoalInput) (github.com/floegence/floret/v7/runtime.GoalMutationResult, error); SetGoal(context.Context, github.com/floegence/floret/v7/runtime.SetGoalInput) (github.com/floegence/floret/v7/runtime.GoalMutationResult, error)}
 type ThreadGoalSubmitter interface interface{SubmitGoal(context.Context, github.com/floegence/floret/v7/runtime.SetGoalInput) (github.com/floegence/floret/v7/runtime.GoalSubmissionResult, error)}
+type ThreadHostWorkService interface interface{BindHostWork(context.Context, github.com/floegence/floret/v7/runtime.BindHostWorkInput) error; CompleteHostWork(context.Context, github.com/floegence/floret/v7/runtime.CompleteHostWorkInput) error; ListHostWork(context.Context, github.com/floegence/floret/v7/identity.ThreadID) ([]github.com/floegence/floret/v7/runtime.HostWork, error); ReadHostWorkOutput(context.Context, github.com/floegence/floret/v7/identity.ThreadID, string) (string, error)}
 type ThreadInteraction struct
 field ThreadInteraction.ID string tag="json:\"id\""
 field ThreadInteraction.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
@@ -2058,6 +2086,7 @@ method TurnInput.Validate func() error
 type TurnKind string
 const TurnKindContextCompaction github.com/floegence/floret/v7/runtime.TurnKind = "context_compaction"
 const TurnKindGoalContinuation github.com/floegence/floret/v7/runtime.TurnKind = "goal_continuation"
+const TurnKindHostWorkContinuation github.com/floegence/floret/v7/runtime.TurnKind = "host_work_continuation"
 type TurnLimits struct
 field TurnLimits.MaxInputTokens int64
 field TurnLimits.MaxTotalTokens int64
@@ -2676,6 +2705,7 @@ type ResourceRef struct
 field ResourceRef.Kind string
 field ResourceRef.Value string
 type Result struct
+field Result.ObservedHostWork string
 field Result.EffectOutcome github.com/floegence/floret/v7/tools.EffectOutcome
 field Result.BoundedWait *github.com/floegence/floret/v7/tools.BoundedWait
 field Result.CallID string
@@ -2767,6 +2797,9 @@ field SubAgentOperationTarget.TaskDescription string tag="json:\"task_descriptio
 field SubAgentOperationTarget.Status string tag="json:\"status,omitempty\""
 const SubAgentOperationWait github.com/floegence/floret/v7/tools.SubAgentOperationAction = "wait"
 type TerminalActivityPayload struct
+field TerminalActivityPayload.Observation string tag="json:\"observation,omitempty\""
+field TerminalActivityPayload.OutputAvailability string tag="json:\"output_availability,omitempty\""
+field TerminalActivityPayload.InvalidUTF8Replaced bool tag="json:\"invalid_utf8_replaced,omitempty\""
 field TerminalActivityPayload.Operation string tag="json:\"operation,omitempty\""
 field TerminalActivityPayload.Command string tag="json:\"command,omitempty\""
 field TerminalActivityPayload.Status string tag="json:\"status,omitempty\""

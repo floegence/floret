@@ -14,11 +14,33 @@ func (host *Host) requireExecution() error {
 	if host == nil {
 		return ErrHostClosed
 	}
+	if err := host.available(); err != nil {
+		return err
+	}
 	host.executionMu.RLock()
 	defer host.executionMu.RUnlock()
 	if host.executionDeferred {
 		return ErrExecutionDeferred
 	}
+	return nil
+}
+
+// SuspendExecution prevents new provider and tool executions while allowing
+// already dispatched host work to commit its observed result before Shutdown.
+// Existing executions retain their ordinary cancellation and settlement paths.
+func (host *Host) SuspendExecution(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("suspension context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := host.available(); err != nil {
+		return err
+	}
+	host.executionMu.Lock()
+	defer host.executionMu.Unlock()
+	host.executionDeferred = true
 	return nil
 }
 

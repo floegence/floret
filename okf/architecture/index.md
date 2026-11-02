@@ -6,3 +6,5 @@
 * [Runtime Layers](runtime-layers.md) - How public runtime capabilities, `AgentHarness`, and `Engine` divide responsibility.
 * [Tools and Permissions](tools-permissions.md) - Local tools, hosted tools, effects, resources, approvals, and pending results.
 * [Observation and Events](observation-events.md) - Sanitized event streams and host-facing observation DTOs.
+
+- [Canonical host work](host-work.md): asynchronous effect facts and completion delivery.

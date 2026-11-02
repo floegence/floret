@@ -61,6 +61,19 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	if activeTurnID, active := r.runtimeActiveTurnLocked(meta.ID); active && activeTurnID != req.TurnID {
 		return AcceptTurnResult{}, ErrActiveTurn
 	}
+	if req.TurnKind == TurnKindHostWorkContinuation && req.RetrySourceEntryID == "" {
+		path, err := r.canonicalPathLocked(context.Background(), meta.ID, meta.LeafID)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+		key, eligible, err := HostWorkContinuation(path)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+		if !eligible || key != req.LogicalRequestID {
+			return AcceptTurnResult{}, ErrStaleAuthority
+		}
+	}
 	baseLeafID := meta.LeafID
 	var promotion *Entry
 	now := canonicalTime(req.Now, r.now)
@@ -354,7 +367,7 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		}
 		return retryID, nil
 	}
-	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation {
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
 		return "", ErrAuthorityCorrupt
 	}
 	return base, nil

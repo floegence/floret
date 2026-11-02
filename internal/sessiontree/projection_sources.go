@@ -57,7 +57,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 		add("window_turn", entry.TurnID, "", entry.TurnID)
 	}
 	switch entry.Type {
-	case EntryToolCall, EntryToolResult:
+	case EntryHostWork, EntryToolCall, EntryToolResult:
 		add("tool", entry.TurnID, entry.RunID, entry.Message.ToolCallID)
 		add("invocation", entry.TurnID, "", entry.Message.ToolCallID)
 		if entry.Message.ToolName == "goal" {
@@ -146,7 +146,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 
 func projectionCandidate(entry Entry) bool {
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryGoal, EntrySteeringRequested, EntryInteractionAsked:
+	case EntryHostWork, EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryGoal, EntrySteeringRequested, EntryInteractionAsked:
 		return true
 	case EntryTurnMarker:
 		return entry.Metadata[GoalCompletedMetadataKey] != ""

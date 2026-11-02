@@ -351,7 +351,10 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				item.Activity.Presentation = tools.FinalizeActivityPresentation(item.Activity.Presentation, "canceled")
 			}
 			delete(projection.runningHosted, runKey)
-		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+		case sessiontree.EntryHostWork, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			if entry.Type == sessiontree.EntryHostWork && membership.Main == nil {
+				continue
+			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return identityErr

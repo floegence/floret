@@ -140,7 +140,7 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 
 func coldProjectionFields(source sessiontree.PathMetadata, contextSelected, controlResult bool) []string {
 	fields := make([]string, 0, len(source.Bodies))
-	localTool := source.Entry.Type == sessiontree.EntryToolCall || source.Entry.Type == sessiontree.EntryToolResult
+	localTool := source.Entry.Type == sessiontree.EntryToolCall || source.Entry.Type == sessiontree.EntryToolResult || source.Entry.Type == sessiontree.EntryHostWork
 	for _, body := range source.Bodies {
 		// Only ordinary local activity has an exact call/result reconstruction.
 		// Hosted tools and Goal keep their existing complete semantic reducer.

@@ -88,6 +88,11 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 	if err := validateCompletedToolInputEntries([]Entry{entry}, true); err != nil {
 		return err
 	}
+	if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.ObservedHostWork != "" {
+		if _, err := canonicalHostWorkPath(ctx, tx, meta); err != nil {
+			return err
+		}
+	}
 	validation := []Entry{entry}
 	if entry.Type == EntryEffectAttempt {
 		attempt, err := decodeEffectAttempt(entry)
@@ -109,7 +114,7 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 	}
 	if entry.TurnID != "" {
 		kind := entry.Metadata[TurnKindMetadataKey]
-		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation {
+		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation {
 			if err := visitCanonicalTurnEntries(ctx, tx, meta.ID, entry.TurnID, func(candidate Entry) error {
 				if candidate.ID == entry.ID {
 					return nil

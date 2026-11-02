@@ -863,6 +863,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.CommitMessages = projection.commitMessages
 	engineOptions.AdmitModelContext = projection.admitModelContext
 	engineOptions.AdmitParentEvents = projection.admitParentEvents
+	engineOptions.AdmitHostWork = projection.admitHostWork
 	if opts.Steering != nil {
 		control := *opts.Steering
 		control.Begin = func(ctx context.Context, _ func() error) (context.Context, []session.Message, error) {
@@ -918,7 +919,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			runInput.History = compact.Messages
 		}
 	}
-	if opts.TurnKind == "" || opts.TurnKind == sessiontree.TurnKindGoalContinuation && result.Err == nil {
+	if opts.TurnKind == "" || opts.TurnKind == sessiontree.TurnKindHostWorkContinuation || opts.TurnKind == sessiontree.TurnKindGoalContinuation && result.Err == nil {
 		result = eng.RunTurn(ctx, runInput)
 	}
 	result = normalizeCancelledEngineResult(ctx, result)

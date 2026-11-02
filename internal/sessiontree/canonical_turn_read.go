@@ -234,7 +234,7 @@ func (r canonicalTurnReader) latestCanonicalTurnIDLocked(threadID, leafID string
 			if err != nil {
 				return "", err
 			}
-			if _, admitted := userTurns[turnID]; admitted || retrySource != nil || entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+			if _, admitted := userTurns[turnID]; admitted || retrySource != nil || (entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || entry.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation) {
 				return turnID, nil
 			}
 		}
@@ -244,7 +244,7 @@ func (r canonicalTurnReader) latestCanonicalTurnIDLocked(threadID, leafID string
 }
 
 func (r canonicalTurnReader) canonicalTurnRetryEligibilityLocked(threadID string, turn CanonicalTurn) (bool, error) {
-	if turn.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+	if turn.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || turn.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation {
 		return true, nil
 	}
 	if turn.RetrySource != nil {

@@ -1828,3 +1828,13 @@ Responses native output reconciliation preserves completed hosted-search records
 when only valid terminal source lists differ. Operation conflicts remain errors.
 Hosts can use provider.ResponsesOutput.CompleteWithDiagnostics for bounded
 field paths, source counts and selection facts without logging provider values.
+
+### Asynchronous host work
+
+The optional `runtime.ThreadHostWorkService` keeps confirmed host-owned work
+facts in the canonical thread journal. Bind a stable work ID to an authorized
+local invocation before starting its effect; complete it with bounded result
+JSON, a short notice and optional retained output and final Activity. This is a
+host API, not an additional model tool. `tools.Result.ObservedHostWork` marks a
+result already presented by an explicit observation tool, preventing duplicate
+completion admission. See [host-work lifecycle](okf/architecture/host-work.md).

@@ -34,11 +34,20 @@ func projectForkPath(ctx context.Context, path []Entry, meta ThreadMeta, now tim
 		}
 		next := cloneEntry(entry)
 		next.ID = nextEntryID()
-		if entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted {
+		if entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted || entry.Type == EntryHostWork || entry.Type == EntryHostWorkAdmitted {
 			// Interaction IDs encode their call identity and are scoped to a thread.
 			next.ID = entry.ID
 		}
 		next.ThreadID = meta.ID
+		if entry.Type == EntryHostWork {
+			work, err := decodeHostWork(entry)
+			if err != nil {
+				return ThreadMeta{}, nil, nil, err
+			}
+			work.Inherited = true
+			work.Invocation.ThreadID = meta.ID
+			next.Payload, _ = json.Marshal(work)
+		}
 		if entry.Type == EntrySteeringApplied || entry.Type == EntrySteeringCancelled {
 			resolution, err := DecodeSteeringResolution(entry)
 			if err != nil {

@@ -74,7 +74,7 @@ func canonicalAdmissionBase(ctx context.Context, tx spi.ReadTx, started Entry) (
 		}
 		return retryID, nil
 	}
-	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation {
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
 		return "", ErrAuthorityCorrupt
 	}
 	return base, nil
@@ -220,6 +220,11 @@ func (repo *BackendRepo) AcceptTurn(ctx context.Context, req AcceptTurnRequest) 
 	if err := ValidateAcceptTurnRequest(req); err != nil {
 		return AcceptTurnResult{}, err
 	}
+	if req.TurnKind == TurnKindHostWorkContinuation {
+		if err := repo.prepareSparseSources(ctx, req.ThreadID); err != nil {
+			return AcceptTurnResult{}, err
+		}
+	}
 	for _, field := range []*string{&req.ThreadID, &req.TurnID, &req.RunID, &req.LogicalRequestID, &req.RequestFingerprint, &req.RetrySourceTurnID, &req.RetrySourceEntryID, &req.PromotedQueueID, &req.PromotionRequestKey, &req.PromotionRequestFingerprint, &req.InputRequestFingerprint} {
 		*field = strings.TrimSpace(*field)
 	}
@@ -280,6 +285,19 @@ func (mutation *canonicalJournalMutation) acceptTurn(req AcceptTurnRequest, resu
 	}
 	if running && active != req.TurnID {
 		return ErrActiveTurn
+	}
+	if req.TurnKind == TurnKindHostWorkContinuation && req.RetrySourceEntryID == "" {
+		path, err := hostWorkPath(mutation)
+		if err != nil {
+			return err
+		}
+		key, eligible, err := HostWorkContinuation(path)
+		if err != nil {
+			return err
+		}
+		if !eligible || key != req.LogicalRequestID {
+			return ErrStaleAuthority
+		}
 	}
 	now := canonicalTime(req.Now, mutation.repo.now)
 	if req.PromotedQueueID != "" {

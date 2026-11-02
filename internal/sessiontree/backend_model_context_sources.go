@@ -51,7 +51,7 @@ func modelContextSourceSnapshot(entry Entry, read func(string) (Entry, error)) (
 		}
 	}
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryGoalContext:
+	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryHostWorkAdmitted, EntryGoalContext:
 		if entry.Message.Role != "" {
 			return session.CloneModelContext(entry.Message.ModelContextSnapshot), nil
 		}

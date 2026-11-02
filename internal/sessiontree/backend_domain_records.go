@@ -90,6 +90,8 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 				envelope = "sessiontree-v33-manifest"
 			case backendDomainV34Version:
 				envelope = "sessiontree-v34-manifest"
+			case backendDomainV35Version:
+				envelope = "sessiontree-v35-manifest"
 			}
 		}
 	}
@@ -108,6 +110,12 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v34-manifest")
 			if err == nil {
 				manifestVersion = backendDomainV34Version
+			}
+		}
+		if err != nil {
+			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v35-manifest")
+			if err == nil {
+				manifestVersion = backendDomainV35Version
 			}
 		}
 	}
@@ -399,7 +407,11 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 	}
-	if err := format.validate(memory); err != nil {
+	validate := format.validate
+	if manifest.Version == backendDomainV35Version {
+		validate = validateBackendDomainV35Memory
+	}
+	if err := validate(memory); err != nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	wantRoots := backendDomainRootThreadIDs(memory)

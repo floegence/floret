@@ -295,7 +295,7 @@ func (append *canonicalMembershipAppend) load(ctx context.Context, tx spi.ReadTx
 // that item's original source, not every prior replacement result. Input
 // batches and control ownership continue through their complete reducers.
 func (append *canonicalMembershipAppend) loadOrdinaryResult(ctx context.Context, tx spi.ReadTx, entry Entry) (bool, error) {
-	if entry.Type != EntryToolResult || entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindToolValidationError || entry.Message.ControlSignal != nil || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+	if entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Type == EntryHostWork && entry.Message.Activity == nil && entry.bodyFields["activity_json"].Bytes == 0 || entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindToolValidationError || entry.Message.ControlSignal != nil || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 		return false, nil
 	}
 	m, found, err := readItemManifest(tx, entry.ThreadID)
@@ -337,7 +337,7 @@ func (append *canonicalMembershipAppend) loadOrdinaryResult(ctx context.Context,
 	if err != nil || source.RawHash != member.RawHash || uint64(source.PathDepth) != member.CanonicalOrdinal || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Message.ToolCallID != entry.Message.ToolCallID {
 		return false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	if source.Type != EntryToolCall && source.Type != EntryToolResult || source.Message.Kind == "control_signal" || source.Message.ControlSignal != nil {
+	if source.Type != EntryToolCall && source.Type != EntryToolResult && source.Type != EntryHostWork || source.Message.Kind == "control_signal" || source.Message.ControlSignal != nil {
 		return false, nil
 	}
 	current, err := activeLocatedEntry(ctx, tx, meta, entry.ID)

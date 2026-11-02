@@ -17,6 +17,7 @@ import (
 // Agent is an immutable assistant persona and execution-capability snapshot.
 // It contains no durable conversation identity or storage ownership.
 type Agent struct {
+	executionGate       func() error
 	goalsEnabled        bool
 	steering            *engine.SteeringControl
 	configuration       config.AgentConfig

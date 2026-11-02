@@ -15,6 +15,14 @@
   decision before terminal failure. Preserve reports, retry history and sibling
   results. Add safe public repetition diagnostics; deprecate argument exclusions.
 
+- Add an optional canonical host-work boundary for asynchronous local effects:
+  bind to the authorized invocation before dispatch, settle bounded immutable
+  result/output facts, admit completion once at provider preparation, and
+  continue a naturally idle thread. Stop, deletion, inherited forks and unknown
+  execution outcomes never authorize automatic replay or continuation.
+- Preserve final host-supplied Activity at the original tool item. Expose
+  explicit observed-work deduplication and execution suspension for graceful
+  shutdown. Schema 35 fences older writers and preserves all migration edges.
 
 - Retain completed hosted-search records when terminal source lists differ,
   preserving operation validation, native history and duplicate-event checks.

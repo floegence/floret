@@ -134,28 +134,31 @@ func (StructuredActivityPayload) activityRenderer() ActivityRenderer {
 // payloads (or payloads carrying a nonzero cursor) replace all cursor fields and
 // HasMore together, including zero/false values. Status-only updates preserve them.
 type TerminalActivityPayload struct {
-	Operation         string         `json:"operation,omitempty"`
-	Command           string         `json:"command,omitempty"`
-	Status            string         `json:"status,omitempty"`
-	ProcessID         string         `json:"process_id,omitempty"`
-	InputBytes        int64          `json:"input_bytes,omitempty"`
-	LatestOutput      string         `json:"latest_output,omitempty"`
-	Output            string         `json:"output,omitempty"`
-	Stdout            string         `json:"stdout,omitempty"`
-	Stderr            string         `json:"stderr,omitempty"`
-	ExitCode          *int           `json:"exit_code,omitempty"`
-	DurationMS        int64          `json:"duration_ms,omitempty"`
-	FirstSeq          int64          `json:"first_seq,omitempty"`
-	LastSeq           int64          `json:"last_seq,omitempty"`
-	LatestSeq         int64          `json:"latest_seq,omitempty"`
-	HasMore           bool           `json:"has_more,omitempty"`
-	TotalBytes        int64          `json:"total_bytes,omitempty"`
-	ExecutionLocation string         `json:"execution_location,omitempty"`
-	Truncated         bool           `json:"truncated,omitempty"`
-	PendingResult     string         `json:"pending_result,omitempty"`
-	Terminated        bool           `json:"terminated,omitempty"`
-	TimedOut          bool           `json:"timed_out,omitempty"`
-	Error             *ActivityError `json:"error,omitempty"`
+	Observation         string         `json:"observation,omitempty"`
+	OutputAvailability  string         `json:"output_availability,omitempty"`
+	InvalidUTF8Replaced bool           `json:"invalid_utf8_replaced,omitempty"`
+	Operation           string         `json:"operation,omitempty"`
+	Command             string         `json:"command,omitempty"`
+	Status              string         `json:"status,omitempty"`
+	ProcessID           string         `json:"process_id,omitempty"`
+	InputBytes          int64          `json:"input_bytes,omitempty"`
+	LatestOutput        string         `json:"latest_output,omitempty"`
+	Output              string         `json:"output,omitempty"`
+	Stdout              string         `json:"stdout,omitempty"`
+	Stderr              string         `json:"stderr,omitempty"`
+	ExitCode            *int           `json:"exit_code,omitempty"`
+	DurationMS          int64          `json:"duration_ms,omitempty"`
+	FirstSeq            int64          `json:"first_seq,omitempty"`
+	LastSeq             int64          `json:"last_seq,omitempty"`
+	LatestSeq           int64          `json:"latest_seq,omitempty"`
+	HasMore             bool           `json:"has_more,omitempty"`
+	TotalBytes          int64          `json:"total_bytes,omitempty"`
+	ExecutionLocation   string         `json:"execution_location,omitempty"`
+	Truncated           bool           `json:"truncated,omitempty"`
+	PendingResult       string         `json:"pending_result,omitempty"`
+	Terminated          bool           `json:"terminated,omitempty"`
+	TimedOut            bool           `json:"timed_out,omitempty"`
+	Error               *ActivityError `json:"error,omitempty"`
 }
 
 func (TerminalActivityPayload) activityRenderer() ActivityRenderer {

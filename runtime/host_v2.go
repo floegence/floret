@@ -119,6 +119,8 @@ func (progress StartupProgressFunc) OnStartupPhase(phase StartupPhase) {
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
+	workRecovery       *sync.Map
+	executorID         string
 	maintenanceMu      sync.Mutex
 	executionMu        sync.RWMutex
 	executionDeferred  bool
@@ -329,7 +331,14 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	if idSource == nil {
 		idSource = randomIDSource{}
 	}
+	executorID, err := randomIdentity("executor")
+	if err != nil {
+		startupCancel()
+		return nil, err
+	}
 	host := &Host{
+		executorID:         executorID,
+		workRecovery:       &sync.Map{},
 		enableParentEvents: options.EnableParentEvents, store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
 		threadPreparations: &threadPreparationState{threads: make(map[identity.ThreadID]*threadPreparation)},
 		startup:            startup, startupWorker: &storageStartupWorker{ctx: startupContext, cancel: startupCancel, options: options}, startupSchema: logicalState,
@@ -895,7 +904,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 			SystemPrompt:  agent.configuration.SystemPrompt,
 			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,
 		},
-		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
+		modelGateway:             agentGatewayAdapter{gateway: agent.gateway, executionGate: agent.executionGate},
 		modelGatewayIdentity:     modelGatewayIdentity(identity),
 		modelGatewayCapabilities: modelGatewayCapabilities{OutputControl: capabilities.OutputControl, PreparedRequests: prepares, Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
@@ -907,10 +916,16 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 }
 
 type agentGatewayAdapter struct {
-	gateway provider.Gateway
+	gateway       provider.Gateway
+	executionGate func() error
 }
 
 func (adapter agentGatewayAdapter) StreamModel(ctx context.Context, request modelRequest) (<-chan modelEvent, error) {
+	if adapter.executionGate != nil {
+		if err := adapter.executionGate(); err != nil {
+			return nil, err
+		}
+	}
 	stream, err := adapter.gateway.Stream(ctx, providerRequest(request))
 	if err != nil {
 		return nil, err
@@ -930,14 +945,20 @@ func (adapter agentGatewayAdapter) PrepareModelRequest(ctx context.Context, requ
 	if prepared == nil {
 		return nil, errors.New("provider gateway returned a nil prepared request")
 	}
-	return agentPreparedRequest{prepared: prepared}, nil
+	return agentPreparedRequest{prepared: prepared, executionGate: adapter.executionGate}, nil
 }
 
 type agentPreparedRequest struct {
-	prepared provider.PreparedRequest
+	prepared      provider.PreparedRequest
+	executionGate func() error
 }
 
 func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan modelEvent, error) {
+	if request.executionGate != nil {
+		if err := request.executionGate(); err != nil {
+			return nil, err
+		}
+	}
 	stream, err := request.prepared.Stream(ctx)
 	if err != nil {
 		return nil, err

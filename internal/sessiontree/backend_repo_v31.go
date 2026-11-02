@@ -37,7 +37,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err != nil {
 				return nil, err
 			}
-			if manifest.Version < backendDomainV34Version {
+			if manifest.Version < backendDomainV35Version {
 				if err := migrateCurrentManifest(ctx, tx, manifest); err != nil {
 					return nil, err
 				}

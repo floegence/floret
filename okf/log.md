@@ -1895,3 +1895,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-29: Document native Responses history ownership and explicit continuation selection.
 
 - 2026-10-29: Document aggregate image capacity recovery, complete ordered summary batching, protected current inputs, and schema 34 observation fencing.
+
+- 2026-11-02: document canonical host-work completion, shutdown and unknown-effect recovery.

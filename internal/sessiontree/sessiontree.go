@@ -1030,6 +1030,10 @@ func cloneOrdinalLists(source map[string][]int) map[string][]int {
 }
 
 func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
+	return r.appendFactLocked(ctx, entry, opts, false)
+}
+
+func (r *MemoryRepo) appendFactLocked(ctx context.Context, entry Entry, opts AppendOptions, allowHostWorkSettlement bool) (Entry, error) {
 	meta, ok := r.threads[entry.ThreadID]
 	if !ok {
 		return Entry{}, ErrThreadNotFound
@@ -1038,7 +1042,7 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 		return Entry{}, err
 	}
 	if turnID := strings.TrimSpace(entry.TurnID); turnID != "" {
-		if _, terminal := r.turnTerminalLocked(entry.ThreadID, turnID); terminal {
+		if _, terminal := r.turnTerminalLocked(entry.ThreadID, turnID); terminal && !(allowHostWorkSettlement && isCanonicalPostTerminalTurnEntry(entry)) {
 			return Entry{}, ErrStaleAuthority
 		}
 	}
@@ -1101,6 +1105,15 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	admitOutputSources(&entry)
 	if err := r.validateNewOutputSourcesLocked(entry); err != nil {
 		return Entry{}, err
+	}
+	if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.ObservedHostWork != "" {
+		path, err := r.canonicalPathLocked(ctx, entry.ThreadID, entry.ParentID)
+		if err != nil {
+			return Entry{}, err
+		}
+		if _, _, err := hostWorksFromPath(append(path, entry)); err != nil {
+			return Entry{}, err
+		}
 	}
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
@@ -1493,10 +1506,10 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 		return ErrRequestConflict
 	}
 	kind := entries[0].Metadata[TurnKindMetadataKey]
-	if kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation {
+	if kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
 		return ErrAuthorityCorrupt
 	}
-	if kind == TurnKindGoalContinuation && userEntries != 0 {
+	if (kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation) && userEntries != 0 {
 		return ErrAuthorityCorrupt
 	}
 	if kind == TurnKindContextCompaction && (userEntries != 0 || retrySource != nil) {
@@ -1509,6 +1522,12 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 }
 
 func isCanonicalPostTerminalTurnEntry(entry Entry) bool {
+	if entry.Type == EntryCancelRequested && entry.ID == "host-work-stop:"+StableHash(entry.TurnID)[:32] {
+		return entry.Metadata["cancellation_source"] == "user_stop" && entry.Metadata["cancellation_mode"] == "immediate"
+	}
+	if entry.Type == EntryHostWork {
+		return validateHostWorkEntry(entry) == nil
+	}
 	return entry.Type == EntryCustom &&
 		entry.Metadata[PendingToolSettlementKindKey] == PendingToolSettlementKind &&
 		strings.TrimSpace(entry.Metadata[PendingToolSettlementFingerprintKey]) != "" &&
@@ -2507,7 +2526,7 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryGoalContext:
+	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryHostWorkAdmitted, EntryGoalContext:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)
 			msg.EntryID = entry.ID
@@ -2932,6 +2951,9 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 }
 
 func ValidateEntryIntegrity(entry Entry) error {
+	if err := validateHostWorkEntry(entry); err != nil {
+		return err
+	}
 	if _, _, err := OutputTiming(entry); err != nil {
 		return err
 	}

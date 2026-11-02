@@ -19,6 +19,7 @@ const (
 	TurnKindMetadataKey           = "turn_kind"
 	TurnKindContextCompaction     = "context_compaction"
 	TurnKindGoalContinuation      = "goal_continuation"
+	TurnKindHostWorkContinuation  = "host_work_continuation"
 	ContinueGoalMetadataKey       = "continue_goal"
 	LogicalRequestIDMetadataKey   = "logical_request_id"
 	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
@@ -175,7 +176,7 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 	if err := ValidateAcceptTurnRequestEnvelope(req); err != nil {
 		return err
 	}
-	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation {
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation && req.TurnKind != TurnKindHostWorkContinuation {
 		return errors.New("unknown turn kind")
 	}
 	if req.ContinueGoal && req.TurnKind != TurnKindGoalContinuation {
