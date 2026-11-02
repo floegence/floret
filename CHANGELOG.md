@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Retain completed hosted-search records when terminal source lists differ,
+  preserving operation validation, native history and duplicate-event checks.
+  Add bounded nested conflict diagnostics and accepted-selection observations
+  without provider values; no source merging, tool replay or schema migration.
+
 - Correct Responses reasoning precedence after pi/OpenCode source review:
   preserve completed-item ciphertext and backfill only absent ciphertext from
   matching terminal output. Bound both received and selected bytes; retain

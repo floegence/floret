@@ -3,11 +3,51 @@ package provider_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/floegence/floret/v7/provider"
 )
+
+// Reduced from a local-provider capture: the terminal search adds four sources
+// to the forty completed sources, with all operation fields unchanged.
+func TestResponsesOutputHostedSearchCompletedAuthority(t *testing.T) {
+	sources := make([]any, 40)
+	for i := range sources {
+		sources[i] = map[string]any{"type": "url", "url": fmt.Sprintf("https://example.com/%d", i)}
+	}
+	action := map[string]any{"type": "search", "queries": []any{"synthetic search"}, "sources": sources}
+	item := map[string]any{"id": "search_fixture", "type": "web_search_call", "status": "completed", "action": action}
+	done, _ := json.Marshal(item)
+	for i := 40; i < 44; i++ {
+		sources = append(sources, map[string]any{"type": "url", "url": fmt.Sprintf("https://example.com/%d", i)})
+	}
+	action["sources"] = sources
+	terminal, _ := json.Marshal(item)
+	var output provider.ResponsesOutput
+	if err := output.Add(0, done); err != nil {
+		t.Fatal(err)
+	}
+	got, details, err := output.CompleteWithDiagnostics([]json.RawMessage{terminal})
+	if err != nil {
+		t.Fatalf("source enrichment rejected: %v", err)
+	}
+	if string(got[0]) != string(done) {
+		t.Fatal("completed native search record changed")
+	}
+	if len(details) != 1 || details[0].Difference != "sources_appended" || details[0].SourcesBefore == nil || *details[0].SourcesBefore != 40 || details[0].SourcesAfter == nil || *details[0].SourcesAfter != 44 {
+		t.Fatalf("missing source counts: %+v", details)
+	}
+	if err := output.Add(0, terminal); err == nil {
+		t.Fatal("conflicting duplicate done accepted")
+	}
+	got[0][0] = '!'
+	got, err = output.Complete(nil)
+	if err != nil || string(got[0]) != string(done) {
+		t.Fatal("completion changed original evidence")
+	}
+}
 
 func TestResponsesOutputCompletedReasoningAuthority(t *testing.T) {
 	done := json.RawMessage("{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"first-cipher\"}")
@@ -245,6 +285,167 @@ func TestResponsesOutputCompletedCipherSurvivesHistoryRestart(t *testing.T) {
 	encoded, _ := json.Marshal(prepared.Input())
 	if !strings.Contains(string(encoded), "first-cipher") || strings.Contains(string(encoded), "final-cipher") {
 		t.Fatal("completed ciphertext did not survive persistence")
+	}
+	if id, delta := prepared.Continuation(); id != "resp_final" || len(delta) != 1 {
+		t.Fatal("continuation boundary changed")
+	}
+}
+
+func TestResponsesOutputSearchSourceVariants(t *testing.T) {
+	source := func(n int) any { return map[string]any{"type": "url", "url": fmt.Sprintf("https://example.com/%d", n)} }
+	for _, tc := range []struct {
+		name    string
+		sources any
+		omit    bool
+		reject  bool
+	}{
+		{"reorder", []any{source(2), source(1)}, false, false},
+		{"reduce", []any{source(1)}, false, false},
+		{"empty", []any{}, false, false}, {"absent", nil, true, false},
+		{"replacement", []any{source(3)}, false, false},
+		{"null", nil, false, true}, {"object", map[string]any{}, false, true},
+		{"entry-type", []any{17}, false, true},
+		{"missing-url", []any{map[string]any{"type": "url"}}, false, true},
+		{"invalid-url", []any{map[string]any{"type": "url", "url": 17}}, false, true},
+		{"relative-url", []any{map[string]any{"type": "url", "url": "relative"}}, false, true},
+		{"unknown-source", []any{map[string]any{"type": "private"}}, false, true},
+		{"unknown-field", []any{map[string]any{"type": "url", "url": "https://example.com", "private-sk-secret": "private"}}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := map[string]any{"type": "search", "query": "fixture", "sources": []any{source(1), source(2)}}
+			item := map[string]any{"type": "web_search_call", "id": "s", "status": "completed", "action": a}
+			done, _ := json.Marshal(item)
+			a["sources"] = tc.sources
+			if tc.omit {
+				delete(a, "sources")
+			}
+			terminal, _ := json.Marshal(item)
+			for _, reverse := range []bool{false, true} {
+				first, last := done, terminal
+				if reverse {
+					first, last = last, first
+				}
+				var o provider.ResponsesOutput
+				if err := o.Add(0, first); err != nil {
+					t.Fatal(err)
+				}
+				got, details, err := o.CompleteWithDiagnostics([]json.RawMessage{last})
+				if tc.reject {
+					if err == nil {
+						t.Fatal("malformed source variation accepted")
+					}
+					continue
+				}
+				if err != nil || string(got[0]) != string(first) {
+					t.Fatalf("authority failed: %v", err)
+				}
+				if len(details) != 1 || details[0].Selected != "response.output_item.done" || strings.Join(details[0].Paths, ",") != "action.sources" {
+					t.Fatalf("diagnostic missing: %+v", details)
+				}
+			}
+		})
+	}
+}
+
+func TestResponsesOutputSearchOperationConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		section, key string
+		value        any
+	}{
+		{"item", "id", "changed"}, {"item", "type", "message"}, {"item", "status", "failed"},
+		{"item", "private-sk-secret", "private"}, {"action", "query", "changed"},
+		{"action", "queries", []any{"changed"}}, {"action", "type", "open_page"},
+		{"action", "url", "https://private.example"}, {"action", "pattern", "private"},
+		{"action", "private-sk-secret", "private"},
+	} {
+		t.Run(tc.section+"/"+tc.key, func(t *testing.T) {
+			action := map[string]any{"type": "search", "query": "fixture", "sources": []any{map[string]any{"type": "url", "url": "https://example.com"}}}
+			item := map[string]any{"type": "web_search_call", "id": "s", "status": "completed", "action": action}
+			done, _ := json.Marshal(item)
+			action["sources"] = []any{}
+			if tc.section == "item" {
+				item[tc.key] = tc.value
+			} else {
+				action[tc.key] = tc.value
+			}
+			terminal, _ := json.Marshal(item)
+			var o provider.ResponsesOutput
+			_ = o.Add(0, done)
+			_, err := o.Complete([]json.RawMessage{terminal})
+			var failure *provider.ResponsesOutputError
+			if !errors.As(err, &failure) || failure.Detail == nil {
+				t.Fatalf("conflict accepted or opaque: %v", err)
+			}
+			raw, _ := json.Marshal(failure)
+			if strings.Contains(string(raw), "private") {
+				t.Fatal("diagnostic leaked provider values or keys")
+			}
+			path := tc.key
+			if path == "private-sk-secret" {
+				path = "other"
+			}
+			if tc.section == "action" {
+				path = "action." + path
+			}
+			found := false
+			for _, p := range failure.Detail.Paths {
+				if p == path {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing path %s: %+v", path, failure.Detail)
+			}
+		})
+	}
+}
+
+func TestResponsesOutputSearchTerminalOnlyAndDiagnostics(t *testing.T) {
+	raw := json.RawMessage("{\"type\":\"web_search_call\",\"id\":\"s\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"sources\":[]}}")
+	var output provider.ResponsesOutput
+	got, details, err := output.CompleteWithDiagnostics([]json.RawMessage{raw})
+	if err != nil || len(details) != 0 || string(got[0]) != string(raw) {
+		t.Fatalf("terminal fallback: %v", err)
+	}
+}
+
+func TestResponsesOutputSearchSurvivesHistoryRestart(t *testing.T) {
+	input := []json.RawMessage{json.RawMessage("{\"role\":\"user\",\"content\":\"test\"}")}
+	options := provider.ResponsesHistoryOptions{Kind: "fixture", ID: "model"}
+	history, err := provider.PrepareResponsesHistory(options, input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var collected provider.ResponsesOutput
+	done := json.RawMessage("{\"type\":\"web_search_call\",\"id\":\"s\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"sources\":[{\"type\":\"url\",\"url\":\"https://example.com/completed\"}]}}")
+	final := json.RawMessage("{\"type\":\"web_search_call\",\"id\":\"s\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"sources\":[{\"type\":\"url\",\"url\":\"https://example.com/terminal\"}]}}")
+	visible := []json.RawMessage{json.RawMessage("{\"role\":\"assistant\",\"content\":\"done\"}")}
+	_ = collected.Add(0, done)
+	output, err := collected.Complete([]json.RawMessage{final})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := history.Commit("resp_final", visible, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored provider.State
+	if err = json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	next := append(append([]json.RawMessage{}, input...), visible...)
+	next = append(next, json.RawMessage("{\"role\":\"user\",\"content\":\"continue\"}"))
+	prepared, err := provider.PrepareResponsesHistory(options, next, &restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(prepared.Input())
+	if !strings.Contains(string(encoded), "https://example.com/completed") || strings.Contains(string(encoded), "https://example.com/terminal") {
+		t.Fatal("completed search did not survive persistence")
 	}
 	if id, delta := prepared.Continuation(); id != "resp_final" || len(delta) != 1 {
 		t.Fatal("continuation boundary changed")

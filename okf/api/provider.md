@@ -501,6 +501,31 @@ Errors expose known field names only; unknown names collapse to other. Redeven
 maps these facts into its existing durable failure details. See
 [reconciliation tests](../../provider/responses_output_test.go).
 
+Completed hosted search records also remain authoritative when only valid
+search action.sources differ in the terminal snapshot. Source additions,
+reordering, removal and omission never rewrite the done record. Matching IDs,
+completed status, operation fields and all other fields remain strict; unknown
+source shapes cannot use this exception. Equal native items retain their existing
+admission contract. The source contract accepts URL records with optional string
+titles; malformed changed lists fail. This preserves one record for native
+history and host Activity, without executing tools or merging observations.
+
+ResponsesOutput.CompleteWithDiagnostics is an additive API; Complete delegates
+to it without changing its signature. ResponsesOutputError.Detail carries the
+same bounded facts for rejected differences: allowlisted nested paths, item type,
+index, comparison boundary and optional source counts. Accepted source changes
+report the selected done authority. No provider values or unknown field names
+enter diagnostics. terminal_snapshot names the comparison boundary, not a claim
+that the provider reported success; terminal status remains adapter-owned.
+
+Reference review for hosted search: pi 9ee7586a95f5e653ae279c3b8f20938faf3639a1
+provides done-event lifecycle/reasoning precedent but no matching hosted search
+slot in its generic Responses parser. OpenCode
+67139d6827af3a337c80472c33f9cb7c6c2ce500 preserves hosted output_item.done as the
+native tool result and history record; terminal handling does not merge sources.
+Floret retains stricter operation conflict checks. Source selection does not
+change message annotations: answer citations remain independently preserved.
+
 Reference review on 2026-11-02: pi commit 3cec8e2b66fa explicitly tests preserving
 output_item.done ciphertext and terminal backfill when it is absent (packages/ai/
 test/azure-openai-responses-reasoning-replay.test.ts). OpenCode commit ef6dd07aab80

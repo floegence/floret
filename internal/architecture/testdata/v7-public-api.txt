@@ -556,10 +556,22 @@ field ResponsesHistoryOptions.FunctionNamespace string
 type ResponsesOutput struct
 method *ResponsesOutput.Add func(index int64, raw encoding/json.RawMessage) error
 method *ResponsesOutput.Complete func(snapshot []encoding/json.RawMessage) ([]encoding/json.RawMessage, error)
+method *ResponsesOutput.CompleteWithDiagnostics func(snapshot []encoding/json.RawMessage) ([]encoding/json.RawMessage, []github.com/floegence/floret/v7/provider.ResponsesOutputDiagnostic, error)
+type ResponsesOutputDiagnostic struct
+field ResponsesOutputDiagnostic.OutputIndex int64
+field ResponsesOutputDiagnostic.ItemType string
+field ResponsesOutputDiagnostic.PreviousEvent string
+field ResponsesOutputDiagnostic.CurrentEvent string
+field ResponsesOutputDiagnostic.Paths []string
+field ResponsesOutputDiagnostic.Difference string
+field ResponsesOutputDiagnostic.SourcesBefore *int
+field ResponsesOutputDiagnostic.SourcesAfter *int
+field ResponsesOutputDiagnostic.Selected string
 type ResponsesOutputError struct
 field ResponsesOutputError.Code string
 field ResponsesOutputError.OutputIndex *int64
 field ResponsesOutputError.Fields []string
+field ResponsesOutputError.Detail *github.com/floegence/floret/v7/provider.ResponsesOutputDiagnostic
 method *ResponsesOutputError.Error func() string
 type RetryAdvice struct
 field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""

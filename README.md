@@ -1808,3 +1808,8 @@ provider state. AnthropicOptions accepts an authorized attachment resolver,
 request-byte limit, temperature and top-p. Retries reuse the exact request and
 never reopen attachments. See [the provider contract](okf/api/provider.md#anthropic-native-messages-transport)
 for usage qualification, historical projection and lifecycle guarantees.
+
+Responses native output reconciliation preserves completed hosted-search records
+when only valid terminal source lists differ. Operation conflicts remain errors.
+Hosts can use provider.ResponsesOutput.CompleteWithDiagnostics for bounded
+field paths, source counts and selection facts without logging provider values.
