@@ -134,3 +134,10 @@ func TestHostWorkFinalPresentationWinsLateInitialResult(t *testing.T) {
 		t.Fatalf("late initial result replaced completion: %+v %v", step, err)
 	}
 }
+
+func TestHostWorkUnknownIsNotSuccessful(t *testing.T) {
+	entry := Entry{Type: EntryHostWork, Message: session.Message{ToolResult: &session.ToolResultView{Status: "unknown"}}}
+	if got := CanonicalToolStatus(entry); got != "unknown" {
+		t.Fatalf("unknown result reported as %q", got)
+	}
+}

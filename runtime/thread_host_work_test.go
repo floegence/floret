@@ -12,7 +12,7 @@ import (
 )
 
 func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
-	for _, mode := range []string{"unknown", "completed", "stopped"} {
+	for _, mode := range []string{"unknown", "completed", "stopped", "suspended"} {
 		complete := mode != "unknown"
 		t.Run(mode, func(t *testing.T) {
 			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "host-work", StateCompatibilityKey: "host-work"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
@@ -86,11 +86,11 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 			}
 			if complete {
 				output := "sealed UTF-8 output 中文"
-				in := CompleteHostWorkInput{ThreadID: created.ThreadID, WorkID: "process-1", Notice: "process-1 completed: 7319", Notify: true, Output: &output}
+				in := CompleteHostWorkInput{ThreadID: created.ThreadID, WorkID: "process-1", Notice: "process-1 completed: 7319", Notify: mode != "suspended", Output: &output}
 				if err := service.(ThreadHostWorkService).CompleteHostWork(t.Context(), in); err != nil {
 					t.Fatal(err)
 				}
-				if mode != "stopped" {
+				if mode != "stopped" && mode != "suspended" {
 					wait(3)
 				} else {
 					time.Sleep(30 * time.Millisecond)

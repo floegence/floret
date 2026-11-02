@@ -40,7 +40,8 @@ type CompleteHostWorkInput struct {
 	// Notice is complete UTF-8 text of at most 2048 bytes. The host provides a
 	// bounded status and read reference when output does not fit.
 	Notice string
-	// Notify admits the notice and permits continuation after natural completion.
+	// Notify permits automatic continuation after natural completion.
+	// Every unobserved final notice is admitted at the next provider preparation.
 	// Stop, deletion and unknown execution outcomes suppress continuation.
 	Notify bool
 	// Output is the final bounded snapshot, at most 8 MiB. Nil means unavailable.

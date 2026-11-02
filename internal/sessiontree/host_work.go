@@ -296,7 +296,7 @@ func hostWorkAdmission(path []Entry, threadID, turnID, runID string) (Entry, err
 	var ids []string
 	var text strings.Builder
 	for _, w := range works {
-		if w.State == "bound" || admitted[w.ID] || w.State == "completed" && !w.Notify {
+		if w.State == "bound" || admitted[w.ID] {
 			continue
 		}
 		notice := hostWorkNotice(w)

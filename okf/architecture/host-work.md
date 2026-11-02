@@ -52,3 +52,9 @@ rewrite Floret-owned records.
 - [Public boundary and tests](../../runtime/thread_host_work_test.go)
 - [Transactional settlement and fork](../../internal/sessiontree/host_work_test.go)
 - [Migration preservation and rollback](../../internal/sessiontree/backend_repo_v35_test.go)
+
+Notify controls automatic continuation only. Every unobserved final fact is
+admitted at the next provider preparation, including work stopped during host
+shutdown. A final synchronous tool result uses ObservedHostWork to avoid
+repeating that fact. Unknown work remains unknown in both item metadata and
+its final Activity; it must never be presented as success.

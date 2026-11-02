@@ -56,6 +56,10 @@ func CanonicalToolStatus(entry Entry) string {
 	}
 	if entry.Message.ToolResult != nil {
 		switch strings.ToLower(strings.TrimSpace(entry.Message.ToolResult.Status)) {
+		case "unknown":
+			if entry.Type == EntryHostWork {
+				return "unknown"
+			}
 		case "error":
 			return "error"
 		case "declined":
