@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -52,7 +51,7 @@ type responsesHistoryRecord struct {
 // before supplying or retaining state, especially for supplemental secrets.
 func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.RawMessage, previous *State) (*ResponsesHistory, error) {
 	if strings.TrimSpace(options.Kind) == "" || strings.TrimSpace(options.ID) == "" {
-		return nil, errors.New("missing Responses history identity")
+		return nil, &ResponsesHistoryError{Code: "missing_identity"}
 	}
 	normalized, err := normalizeResponsesItems(canonical)
 	if err != nil {
@@ -62,44 +61,46 @@ func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.R
 	records := []responsesHistoryRecord{}
 	if previous != nil {
 		if previous.Kind != options.Kind || previous.ID != options.ID {
-			return nil, errors.New("incompatible Responses history identity")
+			return nil, &ResponsesHistoryError{Code: "incompatible_identity"}
 		}
 		if previous.ReusePolicy != StateReuseExactSurface && previous.ReusePolicy != StateReuseCanonicalHistory {
-			return nil, errors.New("unsupported Responses history reuse policy")
+			return nil, &ResponsesHistoryError{Code: "unsupported_policy"}
 		}
 		for key := range previous.Attributes {
 			if key != "native_output" && key != "response_id" {
-				return nil, errors.New("unsupported Responses history attribute")
+				return nil, &ResponsesHistoryError{Code: "unsupported_attribute"}
 			}
 		}
 		raw := previous.Attributes["native_output"]
 		if len(raw) > responsesHistoryMaxBytes {
-			return nil, errors.New("Responses history exceeds state limit")
+			return nil, &ResponsesHistoryError{Code: "state_limit"}
 		}
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if err = decoder.Decode(&records); err != nil || records == nil {
-			return nil, errors.New("invalid Responses history records")
+			return nil, &ResponsesHistoryError{Code: "invalid_records"}
 		}
 		if decoder.Decode(new(any)) != io.EOF {
-			return nil, errors.New("trailing Responses history data")
+			return nil, &ResponsesHistoryError{Code: "trailing_data"}
 		}
 		if id, ok := previous.Attributes["response_id"]; ok {
 			if !validResponsesResponseID(id) {
-				return nil, errors.New("invalid Responses response identity")
+				return nil, &ResponsesHistoryError{Code: "invalid_response_id"}
 			}
 			h.responseID = id
 		}
 	}
 	cursor, previousEnd := 0, 0
 	pruned := false
-	for _, record := range records {
+	originalPrefix := []json.RawMessage{}
+	originalCursor := 0
+	for recordIndex, record := range records {
 		if record.Start < previousEnd || record.Start < 0 || len(record.Prefix) != 64 || len(record.Output) == 0 {
-			return nil, errors.New("invalid Responses history record")
+			return nil, &ResponsesHistoryError{Code: "invalid_record"}
 		}
 		// Bound arithmetic independently of untrusted integer values.
 		if record.Start > int(^uint(0)>>1)-len(record.Visible) {
-			return nil, errors.New("invalid Responses history boundary")
+			return nil, &ResponsesHistoryError{Code: "invalid_boundary"}
 		}
 		previousEnd = record.Start + len(record.Visible)
 		if err = validateResponsesOutput(record.Output, options.FunctionNamespace); err != nil {
@@ -109,16 +110,30 @@ func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.R
 		if normalizeErr != nil {
 			return nil, normalizeErr
 		}
-		record.Visible = visible
-		if pruned || record.Start > len(normalized) || responsesFingerprint(normalized[:record.Start]) != record.Prefix {
+		// Published split bindings use the original canonical coordinates. Rebuild
+		// only already-proven segments when validating a later prefix; never scan
+		// for a matching answer elsewhere in the conversation.
+		start := record.Start - originalCursor + cursor
+		if pruned || start > len(normalized) {
 			pruned = true
 			continue
 		}
-		end := record.Start + len(visible)
-		if end > len(normalized) || responsesFingerprint(normalized[record.Start:end]) != responsesFingerprint(visible) {
-			return nil, errors.New("Responses native output does not match canonical history")
+		originalPrefix = append(originalPrefix, normalized[cursor:start]...)
+		if responsesFingerprint(originalPrefix) != record.Prefix {
+			pruned = true
+			continue
 		}
-		h.input = append(h.input, normalized[cursor:record.Start]...)
+		matched, ok := matchResponsesVisible(normalized[start:], visible, record.Output)
+		if !ok {
+			available := len(normalized) - start
+			expected := len(visible)
+			return nil, &ResponsesHistoryError{Code: "visible_mismatch", RecordIndex: &recordIndex, CanonicalIndex: &start, ExpectedItems: &expected, AvailableItems: &available, Fields: responsesVisibleConflictFields(visible, normalized[start:])}
+		}
+		end := start + len(matched)
+		originalPrefix = append(originalPrefix, visible...)
+		originalCursor = record.Start + len(visible)
+		record.Start, record.Prefix, record.Visible = start, responsesFingerprint(normalized[:start]), matched
+		h.input = append(h.input, normalized[cursor:start]...)
 		h.input = append(h.input, record.Output...)
 		h.records = append(h.records, record)
 		cursor = end
@@ -155,10 +170,10 @@ func (h *ResponsesHistory) Continuation() (string, []json.RawMessage) {
 // and canonical publication. Neither h nor inputs mutate.
 func (h *ResponsesHistory) Commit(responseID string, visible, output []json.RawMessage) (*State, error) {
 	if responseID != "" && !validResponsesResponseID(responseID) {
-		return nil, errors.New("invalid Responses response identity")
+		return nil, &ResponsesHistoryError{Code: "invalid_response_id"}
 	}
 	if len(output) == 0 {
-		return nil, errors.New("missing native Responses output")
+		return nil, &ResponsesHistoryError{Code: "missing_output"}
 	}
 	if err := validateResponsesOutput(output, h.options.FunctionNamespace); err != nil {
 		return nil, err
@@ -174,7 +189,7 @@ func (h *ResponsesHistory) Commit(responseID string, visible, output []json.RawM
 		return nil, err
 	}
 	if len(raw) > responsesHistoryMaxBytes {
-		return nil, errors.New("Responses history exceeds state limit")
+		return nil, &ResponsesHistoryError{Code: "state_limit"}
 	}
 	attrs := map[string]string{"native_output": string(raw)}
 	if responseID != "" {
@@ -202,7 +217,7 @@ func normalizeResponsesItems(items []json.RawMessage) ([]json.RawMessage, error)
 	for _, raw := range items {
 		var item map[string]json.RawMessage
 		if json.Unmarshal(raw, &item) != nil || item == nil {
-			return nil, errors.New("invalid Responses item")
+			return nil, &ResponsesHistoryError{Code: "invalid_item"}
 		}
 		encoded, err := json.Marshal(item)
 		if err != nil {
@@ -219,16 +234,16 @@ func validateResponsesOutput(items []json.RawMessage, namespace string) error {
 			Namespace string `json:"namespace"`
 		}
 		if json.Unmarshal(raw, &item) != nil {
-			return errors.New("invalid native Responses output")
+			return &ResponsesHistoryError{Code: "invalid_output"}
 		}
 		switch item.Type {
 		case "reasoning", "message", "web_search_call":
 		case "function_call":
 			if item.Namespace != namespace {
-				return errors.New("unexpected Responses function namespace")
+				return &ResponsesHistoryError{Code: "unexpected_namespace"}
 			}
 		default:
-			return fmt.Errorf("unsupported native Responses output %q", item.Type)
+			return &ResponsesHistoryError{Code: "unsupported_output"}
 		}
 	}
 	return nil

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Unify runtime Responses assistant bindings through CommitAssistant, retaining
+  original native output and reading published split-message bindings with exact
+  content/order checks. Preserve saved state and rebase proven coordinates only
+  on successful continuation. Add safe typed history errors; never reset history
+  or replay tools on validation failure.
+
 - Count only consecutive individual tool calls with identical complete arguments,
   including descriptions. Hosted calls and different calls break the sequence;
   retain JSON precision, bounded waits and confirmed polling progress. Reject

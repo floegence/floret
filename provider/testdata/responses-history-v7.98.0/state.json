@@ -1,0 +1,9 @@
+{
+  "reuse_policy": "canonical_history",
+  "kind": "openai_responses_native_v1",
+  "id": "fixture-model",
+  "attributes": {
+    "native_output": "[{\"start\":1,\"prefix\":\"72c5b4dadf6781f23b3e20c6a6e787eb5fea7186abb699530416b1d44f87fe45\",\"visible\":[{\"content\":\"Checking.\",\"role\":\"assistant\"},{\"content\":\"Verified.\",\"role\":\"assistant\"}],\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking.\\n\\n\"}]},{\"type\":\"web_search_call\",\"id\":\"fixture-search\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"synthetic\",\"sources\":[{\"type\":\"url\",\"url\":\"https://example.invalid/fixture\"}]}},{\"type\":\"reasoning\",\"encrypted_content\":\"synthetic-reasoning\"},{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Verified.\"}]}]}]",
+    "response_id": "fixture-response"
+  }
+}

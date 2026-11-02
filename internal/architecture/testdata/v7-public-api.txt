@@ -549,6 +549,15 @@ type ResponsesHistory struct
 method *ResponsesHistory.Input func() []encoding/json.RawMessage
 method *ResponsesHistory.Continuation func() (string, []encoding/json.RawMessage)
 method *ResponsesHistory.Commit func(responseID string, visible []encoding/json.RawMessage, output []encoding/json.RawMessage) (*github.com/floegence/floret/v7/provider.State, error)
+method *ResponsesHistory.CommitAssistant func(responseID string, text string, calls []encoding/json.RawMessage, output []encoding/json.RawMessage) (*github.com/floegence/floret/v7/provider.State, error)
+type ResponsesHistoryError struct
+field ResponsesHistoryError.Code string
+field ResponsesHistoryError.RecordIndex *int
+field ResponsesHistoryError.CanonicalIndex *int
+field ResponsesHistoryError.ExpectedItems *int
+field ResponsesHistoryError.AvailableItems *int
+field ResponsesHistoryError.Fields []string
+method *ResponsesHistoryError.Error func() string
 type ResponsesHistoryOptions struct
 field ResponsesHistoryOptions.Kind string
 field ResponsesHistoryOptions.ID string

@@ -620,3 +620,30 @@ measurement. Protocol retries remain Engine-owned.
 Evidence: [public wire tests](../../provider/anthropic_protocol_test.go),
 [native history and bridge tests](../../internal/provider/adapters/anthropic_history_test.go),
 and [runtime restart/fork/length test](../../runtime/anthropic_history_test.go).
+
+## Responses assistant binding
+
+ResponsesHistory.CommitAssistant is the authoritative binding path for runtime
+Responses adapters. It binds the complete emitted assistant text followed by
+ordered canonical function calls, matching runtimeModelMessages grouping. Hosts
+pass text and SDK-mapped calls, not presentation-fragment message lists. The
+native output remains unchanged, including phases, encrypted reasoning, searches
+and call identity. Commit remains supported for exact caller-owned projections.
+
+Redeven v7.92.2–v7.98.0-era writers are the identified consumer of the published
+split-assistant binding reader. PrepareResponsesHistory accepts regrouping only
+at the exact saved prefix: adjacent plain assistant strings may concatenate with
+identical role/type shape and unchanged following calls. Native message bytes
+may prove spacing removed by those writers' per-fragment trimming; content/order
+changes, phases, unknown fields, arrays and tool changes remain strict. Proven
+old coordinates rebase into the prepared result; saved input state is immutable.
+The next successful Commit publishes the corrected coordinates atomically with
+canonical output. This reader remains throughout v7; removal requires a
+future-major migration of every affected native-output record. No conversation
+reset, heuristic search, additional transport retry or tool execution occurs.
+
+ResponsesHistoryError is an additive public API for safe preparation/commit
+failures. It supplies a fixed reason code, optional zero-based record/canonical
+positions, item counts and known field names, never text or native values. Hosts
+must distinguish pre-network local history failures from transport rejection.
+The API preserves existing error meaning and does not grant retry advice.

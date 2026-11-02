@@ -1,0 +1,10 @@
+{
+  "writer": "github.com/floegence/floret/v7",
+  "version": "v7.98.0",
+  "commit": "aa524f0ff6443bb60f22f2a5a4fed02f9b66a11d",
+  "synthetic": true,
+  "sha256": {
+    "producer.go": "457ac117f89f17a04cd262a356e6d1ada9b204debfdf64379a0173fa360fb405",
+    "state.json": "9b1c3d60331532a8a4afe539052f0a62c28f6520b1cc45df407181614df2613e"
+  }
+}

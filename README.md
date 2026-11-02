@@ -1805,6 +1805,15 @@ Changed canonical prefixes prune stale native suffixes and server IDs; visible
 output drift, malformed state, unsupported items and history above 8 MiB fail
 explicitly. Search evidence is never reconstructed from UI activity.
 
+Runtime Responses adapters use CommitAssistant with complete emitted text and
+ordered canonical function calls, sharing the runtime's assistant grouping.
+Presentation fragments do not define history boundaries. Published split text
+bindings remain readable when exact concatenation (or native-proven spacing)
+validates; native output remains unchanged and real content/tool drift fails.
+ResponsesHistoryError exposes safe reason codes, record positions, counts and
+known field names without conversation content. Preparation never retries a
+request or executes tools.
+
 ### Anthropic Messages
 
 The public provider.NewAnthropic gateway prepares and streams one frozen native
