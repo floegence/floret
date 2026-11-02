@@ -56,7 +56,32 @@ func TestStrictRepetitionFeedbackSurvivesRestartAndRetry(t *testing.T) {
 	if _, err = s.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "Inspect child"}}); err != nil {
 		t.Fatal(err)
 	}
-	failed := waitThreadView(t, s, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	awaitIdle := func(service ThreadService, differentTurn string) ThreadView {
+		t.Helper()
+		// SQLite plus race instrumentation can take longer than the generic
+		// three-second fixture deadline. Wait for the persisted outcome itself.
+		deadline := time.NewTimer(15 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			view, err := service.View(t.Context(), created.ThreadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Activity == ThreadActivityIdle && view.LastOutcome != nil && string(view.TurnID) != differentTurn {
+				return view
+			}
+			select {
+			case <-tick.C:
+			case <-deadline.C:
+				t.Fatalf("persisted repetition outcome did not settle: %+v", view.Failure)
+			case <-t.Context().Done():
+				t.Fatal(t.Context().Err())
+			}
+		}
+	}
+	failed := awaitIdle(s, "")
 	assert := func(v ThreadView) {
 		t.Helper()
 		if v.Failure == nil || v.Failure.Reason != ThreadTurnFailureRepeatedToolCalls || v.Failure.ToolRepetition == nil {
@@ -99,9 +124,7 @@ func TestStrictRepetitionFeedbackSurvivesRestartAndRetry(t *testing.T) {
 	if _, err = s.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: restored.TurnID, RequestKey: "retry"}); err != nil {
 		t.Fatal(err)
 	}
-	done := waitThreadView(t, s, created.ThreadID, func(v ThreadView) bool {
-		return v.Activity == ThreadActivityIdle && v.TurnID != restored.TurnID && v.LastOutcome != nil
-	})
+	done := awaitIdle(s, string(restored.TurnID))
 	if done.Failure != nil || *done.LastOutcome != TurnOutcomeCompleted || dispatched.Load() != 3 {
 		t.Fatalf("retry=%+v executions=%d", done.Failure, dispatched.Load())
 	}
