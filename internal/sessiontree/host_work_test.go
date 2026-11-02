@@ -110,3 +110,27 @@ func TestHostWorkRejectsUnboundObservedResultWithoutMutation(t *testing.T) {
 		t.Fatalf("unbound observation published: %v", err)
 	}
 }
+
+func TestHostWorkFinalPresentationWinsLateInitialResult(t *testing.T) {
+	var membership ItemMembership
+	call := Entry{ID: "call", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{ToolCallID: "tool", ToolName: "shell"}}
+	if _, err := membership.Observe(call, 1); err != nil {
+		t.Fatal(err)
+	}
+	final := call
+	final.ID = "final"
+	final.Type = EntryHostWork
+	final.Message.Activity = &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "error"}}
+	final.Message.ToolResult = &session.ToolResultView{Status: "error"}
+	if _, err := membership.Observe(final, 2); err != nil {
+		t.Fatal(err)
+	}
+	result := call
+	result.ID = "result"
+	result.Type = EntryToolResult
+	result.Message.ToolResult = &session.ToolResultView{Status: "success"}
+	step, err := membership.Observe(result, 3)
+	if err != nil || step.Main.Member.ActivitySource.ID != "final" || step.Main.Member.ActivityStatus != "error" {
+		t.Fatalf("late initial result replaced completion: %+v %v", step, err)
+	}
+}

@@ -110,6 +110,9 @@ func appendActivitySources(ctx context.Context, tx spi.WriteTx, member ItemMembe
 	return appendActivitySourceMetadata(ctx, tx, member, source, fresh)
 }
 func appendActivitySourceMetadata(ctx context.Context, tx spi.WriteTx, member ItemMember, entry Entry, fresh bool) error {
+	if member.HostWorkFinal && entry.Type == EntryToolResult {
+		return nil
+	}
 	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
 		return nil
 	}

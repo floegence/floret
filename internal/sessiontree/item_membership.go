@@ -22,6 +22,7 @@ type ItemMember struct {
 	RangeFacts         ItemRangeFacts
 	ActivityPending    bool
 	AssistantResponse  bool
+	HostWorkFinal      bool
 	ActivityStatus     string
 	ActivitySource     contextSourceRef
 	InteractionSource  contextSourceRef
@@ -175,6 +176,7 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 		}
 		step.Main = previous(index)
 		member := &p.Members[index]
+		member.HostWorkFinal = true
 		member.ActivityStatus = CanonicalToolStatus(entry)
 		member.ActivitySource = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
 		step.Main.Member = *member
@@ -208,7 +210,9 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 		}
 		if step.Main != nil {
 			member := &p.Members[step.Main.Member.Slot]
-			member.ActivityStatus = CanonicalToolStatus(entry)
+			if !member.HostWorkFinal {
+				member.ActivityStatus = CanonicalToolStatus(entry)
+			}
 			member.ToolName = entry.Message.ToolName
 			if source, ok := p.approvals[key]; ok {
 				member.RangeFacts |= ItemRangeApproval
@@ -218,7 +222,9 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			if entry.Message.ToolName == "ask_user" || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 				member.RangeFacts |= ItemRangeInput
 			}
-			member.ActivitySource = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+			if !member.HostWorkFinal {
+				member.ActivitySource = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+			}
 			step.Main.Member = *member
 		}
 		if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {

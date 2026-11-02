@@ -395,6 +395,9 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				}
 				continue
 			}
+			if entry.Type == sessiontree.EntryToolResult && membership.Main.Member.HostWorkFinal {
+				continue
+			}
 			activity := activityItemFromCanonicalEntry(entry, occurredAt)
 			if entry.Message.ToolName == "goal" {
 				key := threadToolKey(turnID, runID, entry.Message.ToolCallID)
