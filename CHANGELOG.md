@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve unknown host-work status in durable item counts, settled ranges and
+  canonical source validation after executor loss.
+
 - Unify runtime Responses assistant bindings through CommitAssistant, retaining
   original native output and reading published split-message bindings with exact
   content/order checks. Preserve saved state and rebase proven coordinates only

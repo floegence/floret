@@ -27,7 +27,7 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				if err := service.(ThreadHostWorkService).BindHostWork(ctx, binding); err != nil {
 					return tools.Result{}, err
 				}
-				return tools.Result{Text: "running process-1"}, nil
+				return tools.Result{Text: "running process-1", Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "running", Summary: "command running"}}}, nil
 			})
 			agent, err := testAgent(gateway, WithAgentTools(tool), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				binding = BindHostWorkInput{EffectAttemptID: req.EffectAttemptID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID}
@@ -116,6 +116,24 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 			}
 			if len(works) != 1 || works[0].State != want {
 				t.Fatalf("work=%+v", works)
+			}
+			if !complete {
+				v, err := service.View(t.Context(), created.ThreadID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, item := range v.Items {
+					if item.Activity != nil {
+						status, _ := tools.ActivityStatus(item.Activity.Presentation)
+						if status == "unknown" {
+							found = true
+						}
+					}
+				}
+				if !found {
+					t.Fatalf("recovered original activity did not retain unknown status: %+v", v.Items)
+				}
 			}
 			if complete {
 				out, err := service.(ThreadHostWorkService).ReadHostWorkOutput(t.Context(), created.ThreadID, "process-1")

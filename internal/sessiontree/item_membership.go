@@ -167,7 +167,7 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			step.Main = add(entry.ID+":goal", "goal", false)
 		}
 	case EntryHostWork:
-		if entry.Message.Activity == nil && entry.bodyFields["activity_json"].Bytes == 0 {
+		if entry.Message.Activity == nil && entry.bodyFields["activity_json"].Bytes == 0 && (entry.Message.ToolResult == nil || entry.Message.ToolResult.Status == "") {
 			break
 		}
 		index, found := p.tools[key]

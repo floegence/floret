@@ -117,7 +117,7 @@ func itemActivityCount(member ItemMember) (ItemActivityCounts, error) {
 		c.Declined = 1
 	case "canceled":
 		c.Canceled = 1
-	case "":
+	case "", "unknown":
 		c.Unknown = 1
 	default:
 		return c, ErrAuthorityCorrupt
@@ -458,7 +458,7 @@ func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []E
 		}
 	}
 	settled := func(m ItemMember) bool {
-		return !input.SettledActivities || m.Kind != "tool" || m.ActivityStatus == "success" || m.ActivityStatus == "error" || m.ActivityStatus == "declined" || m.ActivityStatus == "canceled"
+		return !input.SettledActivities || m.Kind != "tool" || m.ActivityStatus == "success" || m.ActivityStatus == "error" || m.ActivityStatus == "declined" || m.ActivityStatus == "canceled" || m.ActivityStatus == "unknown"
 	}
 	assistantAllowed := func(m ItemMember) bool {
 		return !input.IntermediateAssistant || m.Kind != "assistant" || segmented && m.AssistantResponse && m.CanonicalOrdinal < boundary
@@ -519,7 +519,7 @@ func validateItemActivitySource(ctx context.Context, tx spi.ReadTx, meta ThreadM
 	}
 	ref := member.ActivitySource
 	source, err := activeLocatedEntry(ctx, tx, meta, ref.ID)
-	if err != nil || source.RawHash != ref.Hash || source.PathDepth != ref.Depth || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Type != EntryToolCall && source.Type != EntryToolResult || CanonicalToolStatus(source) != member.ActivityStatus || "tool:"+source.TurnID+":"+strings.TrimSpace(source.Message.ToolCallID) != member.ID {
+	if err != nil || source.RawHash != ref.Hash || source.PathDepth != ref.Depth || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Type != EntryToolCall && source.Type != EntryToolResult && source.Type != EntryHostWork || CanonicalToolStatus(source) != member.ActivityStatus || "tool:"+source.TurnID+":"+strings.TrimSpace(source.Message.ToolCallID) != member.ID {
 		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return nil
@@ -623,7 +623,7 @@ func readItemMembershipRange(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 				return err
 			}
 		}
-		if input.SettledActivities && member.Kind == "tool" && member.ActivityStatus != "success" && member.ActivityStatus != "error" && member.ActivityStatus != "declined" && member.ActivityStatus != "canceled" || !kinds[member.Kind] || member.RangeFacts&input.Exclude != 0 || input.IntermediateAssistant && member.Kind == "assistant" && (!member.AssistantResponse || slot >= assistantEnd) {
+		if input.SettledActivities && member.Kind == "tool" && member.ActivityStatus != "success" && member.ActivityStatus != "error" && member.ActivityStatus != "declined" && member.ActivityStatus != "canceled" && member.ActivityStatus != "unknown" || !kinds[member.Kind] || member.RangeFacts&input.Exclude != 0 || input.IntermediateAssistant && member.Kind == "assistant" && (!member.AssistantResponse || slot >= assistantEnd) {
 			return spi.ErrInvalidArgument
 		}
 		matches := func(s itemRangeSummary) bool {
