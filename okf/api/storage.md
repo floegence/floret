@@ -113,6 +113,13 @@ additions in one transaction. Ordinary mutations do not encode unrelated threads
 diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
 exists only in the v5 -> v6 migration reader and is deleted after migration.
 
+Canonical turn reads walk backward from the last validated active member rather
+than testing every entry from the leaf. Off-path members never advance that
+descendant. Within one frozen read, the current/latest turn shares validated
+source work but returns independent values; located entries materialize their
+exact bodies once. Branch membership, source integrity and cancellation remain
+checked, and no cross-transaction cache or extended finalization deadline is used.
+
 Ordinary session-tree writes stage only changed keys and affected journal indexes.
 They validate new canonical entries and their exact thread, turn, and artifact
 dependencies, rather than cloning or revalidating unrelated history. The repository

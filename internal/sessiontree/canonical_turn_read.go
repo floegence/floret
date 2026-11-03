@@ -89,9 +89,20 @@ func (r canonicalTurnReader) read(threadID, turnID, leafID string) (CanonicalTur
 	if err != nil {
 		return CanonicalTurnRead{}, err
 	}
-	latestTurn, err := r.readCanonicalTurnLocked(threadID, latestTurnID, leafID)
-	if err != nil {
-		return CanonicalTurnRead{}, err
+	// Both reads share one frozen source. Reuse the already validated turn,
+	// while keeping the two returned values independently mutable.
+	latestTurn := turn
+	if latestTurnID == turnID {
+		latestTurn.RetrySource = cloneCanonicalTurnRetrySource(turn.RetrySource)
+		latestTurn.Entries = make([]CanonicalTurnPathEntry, len(turn.Entries))
+		for i, item := range turn.Entries {
+			latestTurn.Entries[i] = CanonicalTurnPathEntry{Entry: cloneEntry(item.Entry), Ordinal: item.Ordinal}
+		}
+	} else {
+		latestTurn, err = r.readCanonicalTurnLocked(threadID, latestTurnID, leafID)
+		if err != nil {
+			return CanonicalTurnRead{}, err
+		}
 	}
 	_, through, err := r.entry(threadID, leafID)
 	if err != nil {
@@ -147,14 +158,23 @@ func (r canonicalTurnReader) readCanonicalTurnLocked(threadID, turnID, leafID st
 		return CanonicalTurn{}, ErrCanonicalTurnNotFound
 	}
 	pathEntries := make([]CanonicalTurnPathEntry, 0, len(all))
-	for _, item := range all {
-		onPath, err := r.canonicalTurnActiveAncestorLocked(threadID, leafID, item.Entry.ID)
+	// Journal order is append order. Walk backward from the last proven
+	// active member rather than restarting at the leaf for every entry.
+	// Off-path branches never advance the proven descendant.
+	descendantID := leafID
+	for i := len(all) - 1; i >= 0; i-- {
+		item := all[i]
+		onPath, err := r.canonicalTurnActiveAncestorLocked(threadID, descendantID, item.Entry.ID)
 		if err != nil {
 			return CanonicalTurn{}, err
 		}
 		if onPath {
 			pathEntries = append(pathEntries, item)
+			descendantID = item.Entry.ID
 		}
+	}
+	for left, right := 0, len(pathEntries)-1; left < right; left, right = left+1, right-1 {
+		pathEntries[left], pathEntries[right] = pathEntries[right], pathEntries[left]
 	}
 	pathEntries = canonicalTurnPathEntriesForRead(pathEntries)
 	retrySource, err := CanonicalTurnRetrySourceForStartedEntry(started)

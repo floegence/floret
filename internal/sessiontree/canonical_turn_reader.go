@@ -63,8 +63,13 @@ func newCanonicalTurnReader(ctx context.Context, tx spi.ReadTx) canonicalTurnRea
 	reader.turn = func(threadID, turnID string) ([]Entry, error) {
 		var entries []Entry
 		err := visitCanonicalTurnEntries(ctx, tx, threadID, turnID, func(metadata Entry) error {
-			entry, _, err := reader.entry(threadID, metadata.ID)
+			// The visitor already validated this locator and decoded its source.
+			// Materialize its exact body without rereading the same metadata.
+			entry, err := completeLocatedEntry(ctx, tx, metadata)
 			if err != nil {
+				return err
+			}
+			if err := ValidateEntryIntegrity(entry); err != nil {
 				return err
 			}
 			entries = append(entries, entry)

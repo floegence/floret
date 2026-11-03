@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-03: Document linear current-turn ancestry and same-read validated
+  source reuse in [storage](api/storage.md).
+
 - 2026-11-03: Complete the public unknown Activity outcome contract, attention
   and range semantics; qualify executor-restart projections without source rewrites.
 

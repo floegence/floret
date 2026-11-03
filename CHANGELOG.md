@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep canonical current-turn reads linear along the active path. Reuse the
+  same validated turn and located source within one read, preserving branch,
+  body, cancellation and retry validation without a durable cache or a longer
+  finalization timeout.
+
 - Reuse exact offline token counts for repeated immutable history with a bounded
   digest-only cache per vocabulary. Preserve full attribution, error behavior
   and model-context budgeting without retaining source text.
