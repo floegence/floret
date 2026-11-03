@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 )
@@ -54,7 +56,16 @@ func TestProviderOriginalFailureSurvivesRestart(t *testing.T) {
 	if _, err = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "fixture"}}); err != nil {
 		t.Fatal(err)
 	}
-	first := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	// Await the canonical terminal transition instead of repeatedly materializing
+	// a large failure view inside the general three-second polling helper.
+	settled, err := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute})
+	if err != nil || settled.Reason != ThreadWaitCompleted {
+		t.Fatalf("failure did not settle: reason=%s err=%v", settled.Reason, err)
+	}
+	first, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	check := func(v ThreadView) {
 		t.Helper()
 		if v.Failure == nil {
