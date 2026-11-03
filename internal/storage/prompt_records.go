@@ -148,6 +148,9 @@ func writePromptBatch(tx spi.WriteTx, batch promptBatch) error {
 				return err
 			}
 		}
+		if err := updatePromptLookup(tx, record); err != nil {
+			return err
+		}
 		counters[record.ScopeID] = counter
 	}
 	for scope, counter := range counters {
@@ -318,6 +321,9 @@ func (kernel *BackendKernel) pendingScopes() []string {
 }
 
 func deletePromptScope(tx spi.WriteTx, scope string) error {
+	if err := deletePromptLookups(tx, scope); err != nil {
+		return err
+	}
 	if err := deleteContextRequestLocators(tx, scope); err != nil {
 		return err
 	}

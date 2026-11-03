@@ -1097,13 +1097,13 @@ func InitialTurnSurface(ctx context.Context, store Store, promptScopeID, turnID 
 		return TurnSurfaceSnapshot{}, false, nil
 	}
 	facts, err := readTurnRequestFacts(ctx, store, promptScopeID, turnID)
-	if err != nil || !facts.surfaceFound {
+	if err != nil || !facts.SurfaceFound {
 		return TurnSurfaceSnapshot{}, false, err
 	}
-	if strings.TrimSpace(facts.surface.Hash) == "" {
+	if strings.TrimSpace(facts.Surface.Hash) == "" {
 		return TurnSurfaceSnapshot{}, false, errors.New("turn provider checkpoint is missing its execution surface")
 	}
-	frozen, err := normalizeTurnSurface(facts.surface)
+	frozen, err := normalizeTurnSurface(facts.Surface)
 	return frozen, err == nil, err
 }
 
@@ -1146,7 +1146,7 @@ func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, 
 	if err != nil {
 		return err
 	}
-	if facts.modelFound && (facts.modelDrift || facts.provider != providerName || facts.model != model) {
+	if facts.ModelFound && (facts.ModelDrift || facts.Provider != providerName || facts.Model != model) {
 		return ErrTurnModelDrift
 	}
 	return nil

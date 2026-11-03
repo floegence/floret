@@ -284,23 +284,7 @@ func (kernel *BackendKernel) Segments(ctx context.Context, scope, provider, mode
 }
 
 func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scope, provider, model string) (cache.ToolsetSnapshot, bool, error) {
-	kernel.promptMu.Lock()
-	defer kernel.promptMu.Unlock()
-	batch, err := kernel.readPromptCategory(ctx, scope, promptToolset)
-	if err != nil {
-		return cache.ToolsetSnapshot{}, false, err
-	}
-	values, err := decodePromptBatch[cache.ToolsetSnapshot](batch)
-	if err != nil {
-		return cache.ToolsetSnapshot{}, false, err
-	}
-	for index := len(values) - 1; index >= 0; index-- {
-		value := values[index]
-		if value.Provider == provider && value.Model == model {
-			return value, true, nil
-		}
-	}
-	return cache.ToolsetSnapshot{}, false, nil
+	return kernel.lookupActiveToolset(ctx, scope, provider, model)
 }
 
 func (kernel *BackendKernel) ProviderRequests(ctx context.Context, scope string) ([]cache.ProviderRequestRecord, error) {
@@ -324,17 +308,7 @@ func (kernel *BackendKernel) ProviderResponses(ctx context.Context, scope string
 }
 
 func (kernel *BackendKernel) LatestPressureAnchor(ctx context.Context, scope, provider, model string) (cache.PressureAnchorState, bool, error) {
-	values, err := kernel.ProviderResponses(ctx, scope)
-	if err != nil {
-		return cache.PressureAnchorState{}, false, err
-	}
-	for index := len(values) - 1; index >= 0; index-- {
-		anchor := values[index].PressureAnchor
-		if (anchor.WindowInputTokens > 0 || anchor.WindowInputTokens == 0 && anchor.InputMeasurementQualified) && (scope == "" || anchor.PromptScopeID == scope) && (provider == "" || anchor.Provider == provider) && (model == "" || anchor.Model == model) {
-			return anchor, true, nil
-		}
-	}
-	return cache.PressureAnchorState{}, false, nil
+	return kernel.lookupPressureAnchor(ctx, scope, provider, model)
 }
 
 // Candidate facts stay local until the dispatch checkpoint commits. Existing

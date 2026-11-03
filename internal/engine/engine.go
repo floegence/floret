@@ -944,6 +944,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	pressureTracker := NewContextPressureTracker(opts.PromptScopeID)
 	if !supplementalTurn {
 		if err := e.restorePressureAnchor(ctx, pressureTracker, opts); err != nil {
+			if isExecutionCancellation(ctx, err) {
+				return Result{Status: Cancelled, FailureOrigin: FailureOriginCancelled, Err: err}
+			}
 			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 		}
 	}
@@ -1719,6 +1722,9 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	}
 	tracker := NewContextPressureTracker(opts.PromptScopeID)
 	if err := e.restorePressureAnchor(ctx, tracker, opts); err != nil {
+		if isExecutionCancellation(ctx, err) {
+			return ContextCompactionResult{Status: Cancelled, FailureOrigin: FailureOriginCancelled, Err: err, Messages: activeHistory}
+		}
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
 

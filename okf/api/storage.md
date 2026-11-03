@@ -481,6 +481,23 @@ the final snapshot removal and source-version reset commit together.
 
 ## Bounded canonical maintenance reads
 
+Provider preparation uses disposable source ordinals for the first Turn surface,
+first model and conflicting model, latest matching toolset, pressure response,
+and matching request/attempt. The source append and contiguous lookup coverage
+commit together. Readers decode and validate the exact referenced canonical
+records; the Engine retains measurement validation. One execution memoizes its
+Turn facts and advances them only after successful request publication.
+
+Released stores without these locators prepare on first demand, at most 16
+records or 256 KiB per transaction (one indivisible record may exceed the byte
+target). The owner releases its mutex between pages. Failed writes, cancellation
+and panic publish neither partial coverage nor canonical changes; restart
+resumes the covered prefix. Current prepared stores avoid historical scans.
+This trades small metadata writes and one-time preparation for bounded steady
+reads. A point read validates its sources, not every unrelated historical record;
+explicit inspection keeps its full integrity boundary. Browsing windows do not
+depend on these execution lookups. See [regressions](../../internal/storage/prompt_lookup_test.go).
+
 Current-schema media retention scans immutable journals in bounded
 transactions, including archived threads, inactive paths, queued attachments,
 and turn markers. It streams canonical body and entry checksum verification,

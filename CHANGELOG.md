@@ -15,6 +15,12 @@
   persistence across restart. Preserve DeepSeek failed/error details instead of
   collapsing them to a generic failure; keep safe host summaries separate.
 
+- Bound Turn preparation, active toolset and pressure-evidence reads with
+  transactionally maintained source locators. Reuse exact request facts during
+  execution, preserve original surface/model conflicts and attempt identity,
+  and prepare older stores in cancellable pages without rewriting canonical
+  history. Report cancellation during preparation as cancellation.
+
 - Preserve unknown host-work status in durable item counts, settled ranges and
   canonical source validation after executor loss.
 

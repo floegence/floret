@@ -12,78 +12,78 @@ type executionStore struct {
 	Store
 	scope, turn string
 	loaded      bool
-	facts       turnRequestFacts
+	facts       TurnRequestFacts
 }
 
 func NewExecutionStore(base Store, scope, turn string) Store {
 	return &executionStore{Store: base, scope: scope, turn: turn}
 }
 
-type turnRequestFacts struct {
-	surface                TurnSurfaceSnapshot
-	surfaceFound           bool
-	provider, model        string
-	modelFound, modelDrift bool
+type TurnRequestFacts struct {
+	Surface                TurnSurfaceSnapshot
+	SurfaceFound           bool
+	Provider, Model        string
+	ModelFound, ModelDrift bool
 }
 
-func (facts *turnRequestFacts) observe(request ProviderRequestRecord, turn string) {
+func (facts *TurnRequestFacts) observe(request ProviderRequestRecord, turn string) {
 	surfaceID := strings.TrimSpace(request.TurnID)
 	if surfaceID == "" {
 		surfaceID = strings.TrimSpace(request.RunID)
 	}
-	if !facts.surfaceFound && surfaceID == turn {
-		facts.surface, facts.surfaceFound = cloneTurnSurface(request.TurnSurface), true
+	if !facts.SurfaceFound && surfaceID == turn {
+		facts.Surface, facts.SurfaceFound = cloneTurnSurface(request.TurnSurface), true
 	}
 	if request.TurnID == turn {
-		if facts.modelFound && (facts.provider != request.Provider || facts.model != request.Model) {
-			facts.modelDrift = true
+		if facts.ModelFound && (facts.Provider != request.Provider || facts.Model != request.Model) {
+			facts.ModelDrift = true
 		}
-		if !facts.modelFound {
-			facts.provider, facts.model, facts.modelFound = request.Provider, request.Model, true
+		if !facts.ModelFound {
+			facts.Provider, facts.Model, facts.ModelFound = request.Provider, request.Model, true
 		}
 	}
 }
 
-type turnRequestReader interface {
-	turnRequestFacts(context.Context, string, string) (turnRequestFacts, error)
+type TurnRequestReader interface {
+	ReadTurnRequestFacts(context.Context, string, string) (TurnRequestFacts, error)
 }
 
-func readTurnRequestFacts(ctx context.Context, store Store, scope, turn string) (turnRequestFacts, error) {
+func readTurnRequestFacts(ctx context.Context, store Store, scope, turn string) (TurnRequestFacts, error) {
 	if err := ctx.Err(); err != nil {
-		return turnRequestFacts{}, err
+		return TurnRequestFacts{}, err
 	}
-	if reader, ok := store.(turnRequestReader); ok {
-		return reader.turnRequestFacts(ctx, scope, turn)
+	if reader, ok := store.(TurnRequestReader); ok {
+		return reader.ReadTurnRequestFacts(ctx, scope, turn)
 	}
 	requests, err := store.ProviderRequests(ctx, scope)
 	if err != nil {
-		return turnRequestFacts{}, err
+		return TurnRequestFacts{}, err
 	}
-	var facts turnRequestFacts
+	var facts TurnRequestFacts
 	for _, request := range requests {
 		if err := ctx.Err(); err != nil {
-			return turnRequestFacts{}, err
+			return TurnRequestFacts{}, err
 		}
 		facts.observe(request, turn)
 	}
 	return facts, nil
 }
 
-func (s *executionStore) turnRequestFacts(ctx context.Context, scope, turn string) (turnRequestFacts, error) {
+func (s *executionStore) ReadTurnRequestFacts(ctx context.Context, scope, turn string) (TurnRequestFacts, error) {
 	if scope != s.scope || turn != s.turn {
 		return readTurnRequestFacts(ctx, s.Store, scope, turn)
 	}
 	if !s.loaded {
 		facts, err := readTurnRequestFacts(ctx, s.Store, scope, turn)
 		if err != nil {
-			return turnRequestFacts{}, err
+			return TurnRequestFacts{}, err
 		}
 		s.facts, s.loaded = facts, true
 	}
 	return s.facts, nil
 }
 
-func (s *PreparedStore) turnRequestFacts(ctx context.Context, scope, turn string) (turnRequestFacts, error) {
+func (s *PreparedStore) ReadTurnRequestFacts(ctx context.Context, scope, turn string) (TurnRequestFacts, error) {
 	return readTurnRequestFacts(ctx, s.base, scope, turn)
 }
 
@@ -124,7 +124,7 @@ func (s *executionStore) DeletePromptScopes(ctx context.Context, scopes ...strin
 	}
 	for _, scope := range scopes {
 		if strings.TrimSpace(scope) == s.scope {
-			s.loaded, s.facts = false, turnRequestFacts{}
+			s.loaded, s.facts = false, TurnRequestFacts{}
 		}
 	}
 	return nil

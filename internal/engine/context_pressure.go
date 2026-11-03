@@ -186,40 +186,14 @@ func pressureAnchorInvalidReason(anchor PressureAnchorState, previous cache.Prov
 }
 
 func (e *Engine) restorePressureAnchor(ctx context.Context, tracker *ContextPressureTracker, opts Options) error {
-	anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model)
-	if err != nil || !ok {
+	evidence, found, err := cache.ReadPressureEvidence(ctx, e.prompt, opts.PromptScopeID, opts.ProviderName, opts.Model)
+	if err != nil || !found {
 		return err
 	}
-	requests, err := e.prompt.ProviderRequests(ctx, opts.PromptScopeID)
-	if err != nil {
-		return err
+	if evidence.Response != nil && !validStoredMeasurement(evidence.Anchor, evidence.Request, *evidence.Response) {
+		return nil
 	}
-	var response *cache.ProviderResponseRecord
-	if anchor.MeasurementPrefix != (requestmeasure.Prefix{}) {
-		responses, err := e.prompt.ProviderResponses(ctx, opts.PromptScopeID)
-		if err != nil {
-			return err
-		}
-		for i := len(responses) - 1; i >= 0; i-- {
-			if responses[i].PressureAnchor == anchor {
-				response = &responses[i]
-				break
-			}
-		}
-		if response == nil {
-			return nil
-		}
-	}
-	for i := len(requests) - 1; i >= 0; i-- {
-		if requests[i].ID != anchor.RequestID || response != nil && requests[i].AttemptID != response.AttemptID {
-			continue
-		}
-		if response != nil && !validStoredMeasurement(anchor, requests[i], *response) {
-			return nil
-		}
-		tracker.SetAnchor(anchor, requests[i])
-		break
-	}
+	tracker.SetAnchor(evidence.Anchor, evidence.Request)
 	return nil
 }
 
