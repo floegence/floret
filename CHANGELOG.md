@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve optional typed Activity error codes through validation, sanitization,
+  cloning and canonical replay. Hosts can distinguish display conditions without
+  parsing error messages; execution status and retry authority remain unchanged.
+
 - Add complete original provider failure evidence with typed cause/retry
   preservation, lossless HTTP/SSE payloads, partial-read reporting, and canonical
   persistence across restart. Preserve DeepSeek failed/error details instead of

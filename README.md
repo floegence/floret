@@ -276,7 +276,10 @@ compaction does not advance it. No preceding ordinary turn means the field is
 omitted. Forks retain inherited ownership and original recipient identity.
 List, full read, pagination and restart derive the same field without changing
 historical bytes or admission. This projection does not change the domain schema.
-Hosts own presentation.
+Hosts own presentation. The optional ActivityError.Code retains a stable
+diagnostic identifier (up to 128 ASCII letters, digits, underscores, dots or
+hyphens), separate from its readable message. Hosts may use it to localize
+presentation; it never changes the recorded tool outcome or authorizes retries.
 
 ## Install
 

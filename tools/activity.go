@@ -67,6 +67,8 @@ type ActivityPayload interface {
 
 type ActivityError struct {
 	Message string `json:"message"`
+	// Code is a stable host-authored diagnostic identifier, never retry authority.
+	Code string `json:"code,omitempty"`
 }
 
 // StructuredActivityRowFormat describes how a structured activity row's
@@ -1247,6 +1249,11 @@ func validatePayloadTextAndError(values []string, activityError *ActivityError) 
 		}
 	}
 	if activityError != nil {
+		if len(activityError.Code) > 128 || strings.IndexFunc(activityError.Code, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.')
+		}) >= 0 {
+			return errors.New("error code must be a bounded diagnostic identifier")
+		}
 		if strings.TrimSpace(activityError.Message) == "" {
 			return errors.New("error message is required")
 		}

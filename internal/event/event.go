@@ -406,7 +406,7 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation b
 		if message == "" {
 			return nil
 		}
-		return &tools.ActivityError{Message: message}
+		return &tools.ActivityError{Message: message, Code: in.Code}
 	}
 	sanitizeText := func(value string) string { return safeActivityText(value, 8_000) }
 	switch payload := in.(type) {

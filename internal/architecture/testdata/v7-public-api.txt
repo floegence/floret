@@ -2382,6 +2382,7 @@ field ActivityChip.Tone string tag="json:\"tone,omitempty\""
 func ActivityDurationMS func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) int64
 type ActivityError struct
 field ActivityError.Message string tag="json:\"message\""
+field ActivityError.Code string tag="json:\"code,omitempty\""
 func ActivityHasPending func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) bool
 type ActivityPayload interface interface{activityRenderer() github.com/floegence/floret/v7/tools.ActivityRenderer}
 type ActivityPresentation struct

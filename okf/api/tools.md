@@ -44,6 +44,15 @@ continuation leave the episode unchanged. New Runs begin at zero. Ordinary
 business errors retain normal tool semantics. Existing no-progress, repeated-call,
 budget and cancellation controls retain their separate responsibilities.
 
+# Activity diagnostics
+
+ActivityError.Code is an optional stable diagnostic identifier preserved by
+validation, cloning, event sanitization and canonical replay. It contains at
+most 128 ASCII letters, digits, underscores, dots or hyphens. Message remains
+the readable detail. Hosts own localization and severity presentation; neither
+field changes execution status, permission or retry authority. Older records
+without a code remain valid and do not acquire a guessed classification.
+
 # Permission Model
 
 `ActivityTargetRef.ResourceRef` carries an opaque host-owned media identifier

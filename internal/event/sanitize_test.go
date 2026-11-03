@@ -325,3 +325,22 @@ func TestSanitizeWebSearchPreservesURLOnlySources(t *testing.T) {
 		t.Fatalf("provider facts lost or fabricated: %+v", payload)
 	}
 }
+
+func TestActivityErrorCodeSurvivesSanitizationAndReplay(t *testing.T) {
+	value := Event{Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "error", Error: &tools.ActivityError{Message: "Read interrupted", Code: "OBSERVATION_UNAVAILABLE"}}}}
+	for range 2 {
+		value = Sanitize(value)
+		if value.Activity == nil || value.Activity.Payload.(tools.StructuredActivityPayload).Error.Code != "OBSERVATION_UNAVAILABLE" {
+			t.Fatalf("lost diagnosis: %+v", value.Activity)
+		}
+		raw, err := json.Marshal(value.Activity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded tools.ActivityPresentation
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		value.Activity = &decoded
+	}
+}
