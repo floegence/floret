@@ -1,0 +1,13 @@
+{
+  "writer_version": "v7.102.0",
+  "writer_commit": "6d9513bafeacf38de40cb43c02be5a73c616d4c7",
+  "go_version": "go version go1.27.3 darwin/arm64",
+  "scenarios": [
+    "unknown_executor_restart",
+    "continued_history"
+  ],
+  "files": {
+    "history.sqlite": "c140f172c5642e610e986ff596877807cc1f54c31b0176c876a9a1a7a17bb3f6",
+    "producer_test.go.txt": "4fd498488e6662b44f9f07c8fdd85b9c2a7541ae644a661a3b88c03767b1c060"
+  }
+}

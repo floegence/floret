@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Complete the public unknown Activity status, attention reason and count contract.
+  Preserve terminal uncertainty through reducer, canonical replay and summary;
+  expose unknown range facts from released metadata without rewriting history.
+
 - Preserve optional typed Activity error codes through validation, sanitization,
   cloning and canonical replay. Hosts can distinguish display conditions without
   parsing error messages; execution status and retry authority remain unchanged.

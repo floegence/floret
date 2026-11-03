@@ -39,7 +39,8 @@ type ThreadItemRangeInput struct {
 
 // ThreadWindowRange selects product-neutral canonical facts for one seek.
 type ThreadWindowRange struct {
-	// SettledActivities excludes pending, running, waiting and unknown tools.
+	// SettledActivities excludes pending, running and waiting tools. Unknown
+	// outcomes are terminal observations, not successful or replayable effects.
 	SettledActivities     bool                `json:"settled_activities,omitempty"`
 	Kinds                 []ThreadItemKind    `json:"kinds"`
 	Exclude               ThreadItemRangeFact `json:"exclude,omitempty"`

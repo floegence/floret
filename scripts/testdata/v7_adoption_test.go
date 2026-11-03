@@ -1733,3 +1733,16 @@ func TestPublishedStrictRepetitionDiagnostics(t *testing.T) {
 		t.Fatal("accepted invented repetition count")
 	}
 }
+
+func TestPublishedUnknownActivityContract(t *testing.T) {
+	timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{}, []observation.Event{
+		{Type: observation.EventTypeToolResult, ToolID: "work", Metadata: map[string]any{"tool_result_status": "unknown"}},
+		{Type: observation.EventTypeRunEnd, Message: "success"},
+	}, 1000)
+	if err := observation.ValidateActivityTimeline(timeline); err != nil {
+		t.Fatal(err)
+	}
+	if timeline.Summary.Status != observation.ActivityStatusUnknown || timeline.Summary.Counts.Unknown != 1 || !timeline.Summary.NeedsAttention || timeline.Items[0].AttentionReasons[0] != observation.ActivityAttentionUnknown {
+		t.Fatalf("unknown outcome lost: %+v", timeline)
+	}
+}

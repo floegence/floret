@@ -692,3 +692,40 @@ func TestResponseRangePreparationUpgradesOnlyDerivedMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Released v8 metadata retained the canonical status/count without the bit.
+func TestReleasedUnknownRangeMetadataNeedsNoRewrite(t *testing.T) {
+	backend := newMigrationTestBackend()
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		member := storedItemMember{ItemMember: ItemMember{ID: "work", Kind: "tool", SourceID: "source", CanonicalOrdinal: 1, ActivityStatus: "unknown"}, RawHash: "source-hash"}
+		if err := putItemJSON(tx, itemSlotKey("thread", 0), member); err != nil {
+			return err
+		}
+		return putItemRangeSummary(tx, "thread", 0, 0, itemRangeSummary{Counts: ItemKindCounts{Tool: 1}, Activity: ItemActivityCounts{Unknown: 1}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		member, err := readItemSlot(tx, "thread", 0)
+		if err != nil {
+			return err
+		}
+		summary, err := readItemRangeSummary(tx, "thread", 0, 0)
+		if err != nil {
+			return err
+		}
+		if member.RangeFacts&ItemRangeUnknownActivity == 0 || summary.Facts&ItemRangeUnknownActivity == 0 || summary.Activity.Unknown != 1 {
+			t.Fatalf("member=%+v summary=%+v", member, summary)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, backend.records) {
+		t.Fatal("read rewrote released metadata")
+	}
+	if activityRangeFacts(ActivityFacts{}, "unknown")&ItemRangeUnknownActivity == 0 {
+		t.Fatal("new metadata lost unknown discriminator")
+	}
+}

@@ -2992,6 +2992,7 @@ const ActivityAttentionApproval github.com/floegence/floret/v7/observation.Activ
 const ActivityAttentionError github.com/floegence/floret/v7/observation.ActivityAttentionReason = "error"
 type ActivityAttentionReason string
 const ActivityAttentionRunning github.com/floegence/floret/v7/observation.ActivityAttentionReason = "running"
+const ActivityAttentionUnknown github.com/floegence/floret/v7/observation.ActivityAttentionReason = "unknown"
 const ActivityAttentionWaiting github.com/floegence/floret/v7/observation.ActivityAttentionReason = "waiting"
 type ActivityCounts struct
 field ActivityCounts.Pending int tag="json:\"pending,omitempty\""
@@ -3002,6 +3003,7 @@ field ActivityCounts.Error int tag="json:\"error,omitempty\""
 field ActivityCounts.Declined int tag="json:\"declined,omitempty\""
 field ActivityCounts.Canceled int tag="json:\"canceled,omitempty\""
 field ActivityCounts.Approval int tag="json:\"approval,omitempty\""
+field ActivityCounts.Unknown int tag="json:\"unknown,omitempty\""
 type ActivityItem struct
 field ActivityItem.ItemID string tag="json:\"item_id\""
 field ActivityItem.ToolID string tag="json:\"tool_id,omitempty\""
@@ -3045,6 +3047,7 @@ const ActivityStatusError github.com/floegence/floret/v7/observation.ActivitySta
 const ActivityStatusPending github.com/floegence/floret/v7/observation.ActivityStatus = "pending"
 const ActivityStatusRunning github.com/floegence/floret/v7/observation.ActivityStatus = "running"
 const ActivityStatusSuccess github.com/floegence/floret/v7/observation.ActivityStatus = "success"
+const ActivityStatusUnknown github.com/floegence/floret/v7/observation.ActivityStatus = "unknown"
 const ActivityStatusWaiting github.com/floegence/floret/v7/observation.ActivityStatus = "waiting"
 type ActivitySummary struct
 field ActivitySummary.Status github.com/floegence/floret/v7/observation.ActivityStatus tag="json:\"status\""

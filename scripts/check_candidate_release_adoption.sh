@@ -56,6 +56,8 @@ sed 's/package provider_test/package adoption_test/' "${repository_root}/provide
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/media_capacity_test.go" > media_capacity_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/failure_details_test.go" > failure_details_test.go
 cp "${repository_root}/scripts/testdata/historical_compaction_test.go" historical_compaction_test.go
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_host_work_test.go" > historical_host_work_test.go
+cp -R "${repository_root}/internal/sessiontree/testdata/host-work-v7.102.0" historical-host-work
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_correction_test.go" > historical_correction_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/tool-correction-v7.69.1" historical-correction
 mkdir historical-compaction

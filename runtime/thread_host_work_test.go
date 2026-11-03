@@ -3,8 +3,11 @@ package runtime
 import (
 	"context"
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 	"strings"
 	"testing"
@@ -128,6 +131,41 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 						status, _ := tools.ActivityStatus(item.Activity.Presentation)
 						if status == "unknown" {
 							found = true
+							scope := threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{created.ThreadID}}
+							span, err := service.(ThreadItemRangeReader).ItemRange(t.Context(), scope, ThreadItemRangeInput{ThreadID: created.ThreadID, AnchorID: item.ID, Kinds: []ThreadItemKind{ThreadItemTool}})
+							if err != nil || span.Activity.Unknown != 1 || span.Facts&ThreadItemRangeUnknownActivity == 0 {
+								t.Fatalf("unknown range=%+v err=%v", span, err)
+							}
+							for _, fields := range []bool{false, true} {
+								sub, err := service.(ThreadWindowSource).SubscribeWindowUpdates(t.Context(), scope)
+								if err != nil {
+									t.Fatal(err)
+								}
+								if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: created.ThreadID, ItemIDs: []string{item.ID}, ActivityFields: fields}); err != nil {
+									t.Fatal(err)
+								}
+								for {
+									update := nextUpdate(t, sub)
+									if update.Window == nil {
+										continue
+									}
+									items := update.Window.Value.Items
+									if len(items) != 1 || items[0].Activity.Status != observation.ActivityStatusUnknown || !items[0].Activity.NeedsAttention {
+										t.Fatalf("window fields=%t items=%+v", fields, items)
+									}
+									break
+								}
+								sub.Close()
+							}
+
+							timeline := observation.ActivityTimeline{SchemaVersion: observation.ActivityTimelineSchemaVersion, Items: []observation.ActivityItem{*item.Activity}}
+							timeline.Summary = observation.RebuildActivitySummary(timeline)
+							if err := observation.ValidateActivityTimeline(timeline); err != nil {
+								t.Fatalf("public recovered activity: %v", err)
+							}
+							if item.Activity.Status != observation.ActivityStatus("unknown") || !item.Activity.NeedsAttention || timeline.Summary.Status != observation.ActivityStatus("unknown") {
+								t.Fatalf("unknown public activity=%+v summary=%+v", item.Activity, timeline.Summary)
+							}
 						}
 					}
 				}

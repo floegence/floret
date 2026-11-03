@@ -58,3 +58,23 @@ admitted at the next provider preparation, including work stopped during host
 shutdown. A final synchronous tool result uses ObservedHostWork to avoid
 repeating that fact. Unknown work remains unknown in both item metadata and
 its final Activity; it must never be presented as success.
+
+# Public Activity outcome contract
+
+The additive public API decision exposes the already persisted unknown outcome
+through `ActivityStatusUnknown`, `ActivityAttentionUnknown` and
+`ActivityCounts.Unknown`. Redeven/Flower and other observation consumers must
+render it as a terminal warning requiring attention. Successful run completion
+cannot turn an unknown tool outcome into success; late dispatch/approval events
+cannot reactivate it. Unknown does not authorize replay or claim effect failure.
+Canonical full and window projections use the same status/attention facts.
+
+Settled ranges include unknown observations. Their exclusion discriminator is
+derived from the existing canonical status and range counts, including metadata
+written before this correction. Reads do not rewrite current stores, introduce
+a second lifecycle, or require a canonical schema migration.
+
+Regression coverage includes the public validator after executor restart,
+summary/counts, released metadata reads without mutation, and blank-module
+adoption. Producer success and API symbol compatibility alone are insufficient;
+consumers must qualify the final public DTO and rendered state.

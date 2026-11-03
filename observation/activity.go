@@ -36,6 +36,9 @@ const (
 	ActivityStatusError    ActivityStatus = "error"
 	ActivityStatusDeclined ActivityStatus = "declined"
 	ActivityStatusCanceled ActivityStatus = "canceled"
+	// ActivityStatusUnknown is terminal observation with an unconfirmed outcome.
+	// It does not authorize replay or imply that the effect failed.
+	ActivityStatusUnknown ActivityStatus = "unknown"
 )
 
 type ActivitySeverity string
@@ -55,6 +58,7 @@ const (
 	ActivityAttentionWaiting  ActivityAttentionReason = "waiting"
 	ActivityAttentionApproval ActivityAttentionReason = "approval"
 	ActivityAttentionError    ActivityAttentionReason = "error"
+	ActivityAttentionUnknown  ActivityAttentionReason = "unknown"
 )
 
 type ActivityRunMeta struct {
@@ -90,6 +94,7 @@ type ActivityCounts struct {
 	Declined int `json:"declined,omitempty"`
 	Canceled int `json:"canceled,omitempty"`
 	Approval int `json:"approval,omitempty"`
+	Unknown  int `json:"unknown,omitempty"`
 }
 
 type ActivitySummary struct {
@@ -356,6 +361,9 @@ func (reducer *ActivityReducer) Apply(ev Event, nowUnixMS int64) {
 			state.item.Severity = ActivitySeverityQuiet
 			state.item.RequiresApproval = false
 			state.item.ApprovalState = "rejected"
+		} else if resultStatus == string(ActivityStatusUnknown) {
+			state.item.Status = ActivityStatusUnknown
+			state.item.Severity = ActivitySeverityWarning
 		} else if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
 			state.item.Status = ActivityStatusError
 			state.item.Severity = ActivitySeverityError
@@ -737,7 +745,7 @@ func activityToolKind(ev Event) ActivityKind {
 
 func activityStatusIsTerminal(status ActivityStatus) bool {
 	switch status {
-	case ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled:
+	case ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled, ActivityStatusUnknown:
 		return true
 	default:
 		return false
@@ -1075,6 +1083,7 @@ func activityNormalizeMetadataValue(key string, value any) string {
 			"error":    {},
 			"declined": {},
 			"canceled": {},
+			"unknown":  {},
 		})
 	default:
 		return ""
@@ -1295,6 +1304,8 @@ func activityItemAttentionReasons(item ActivityItem) []ActivityAttentionReason {
 		reasons = append(reasons, ActivityAttentionWaiting)
 	case ActivityStatusError:
 		reasons = append(reasons, ActivityAttentionError)
+	case ActivityStatusUnknown:
+		reasons = append(reasons, ActivityAttentionUnknown)
 	}
 	if item.RequiresApproval && item.Status == ActivityStatusWaiting {
 		reasons = append(reasons, ActivityAttentionApproval)
@@ -1316,7 +1327,7 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 				summary.Severity = maxActivitySeverity(summary.Severity, severity)
 				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
 			case ActivityStatusSuccess:
-				if summary.TotalItems == 0 || summary.Counts.Error == 0 && !activitySummaryHasActiveItems(summary) {
+				if summary.TotalItems == 0 || summary.Counts.Error == 0 && summary.Counts.Unknown == 0 && !activitySummaryHasActiveItems(summary) {
 					summary.Status = ActivityStatusSuccess
 					summary.Severity = maxActivitySeverity(summary.Severity, severity)
 				}
@@ -1372,6 +1383,9 @@ func activityItemSummary(items []ActivityItem) ActivitySummary {
 			summary.Counts.Declined++
 		case ActivityStatusCanceled:
 			summary.Counts.Canceled++
+		case ActivityStatusUnknown:
+			summary.Counts.Unknown++
+			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityWarning)
 		}
 		if item.RequiresApproval {
 			summary.Counts.Approval++
@@ -1388,6 +1402,8 @@ func activityItemSummary(items []ActivityItem) ActivitySummary {
 		summary.Status = ActivityStatusRunning
 	case summary.Counts.Pending > 0:
 		summary.Status = ActivityStatusPending
+	case summary.Counts.Unknown > 0:
+		summary.Status = ActivityStatusUnknown
 	case summary.Counts.Canceled > 0 && summary.Counts.Success == 0:
 		summary.Status = ActivityStatusCanceled
 	case summary.Counts.Declined > 0 && summary.Counts.Success == 0:
@@ -1496,7 +1512,7 @@ func firstNonEmptyActivityKind(left, right ActivityKind) ActivityKind {
 
 func validateActivityStatus(status ActivityStatus) error {
 	switch status {
-	case ActivityStatusPending, ActivityStatusRunning, ActivityStatusWaiting, ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled:
+	case ActivityStatusPending, ActivityStatusRunning, ActivityStatusWaiting, ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled, ActivityStatusUnknown:
 		return nil
 	default:
 		return errors.New("unknown activity status")
@@ -1523,7 +1539,7 @@ func validateActivitySeverity(severity ActivitySeverity) error {
 
 func validateActivityAttentionReason(reason ActivityAttentionReason) error {
 	switch reason {
-	case ActivityAttentionRunning, ActivityAttentionWaiting, ActivityAttentionApproval, ActivityAttentionError:
+	case ActivityAttentionRunning, ActivityAttentionWaiting, ActivityAttentionApproval, ActivityAttentionError, ActivityAttentionUnknown:
 		return nil
 	default:
 		return errors.New("unknown activity attention reason")

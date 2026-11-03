@@ -152,7 +152,7 @@ func activityRangeFacts(f ActivityFacts, status string) ItemRangeFacts {
 			out |= ItemRangeErrorWithoutFailure
 		}
 	}
-	if status == "" {
+	if status == "" || status == "unknown" {
 		out |= ItemRangeUnknownActivity
 	}
 	if status == "declined" {
@@ -212,6 +212,11 @@ func readItemRangeSummary(tx spi.ReadTx, thread string, level, block int) (itemR
 	a := result.Activity
 	if a.Pending < 0 || a.Running < 0 || a.Waiting < 0 || a.Success < 0 || a.Error < 0 || a.Declined < 0 || a.Canceled < 0 || a.Unknown < 0 || a.total() != result.Counts.Tool {
 		return result, ErrAuthorityCorrupt
+	}
+	// Unknown counts already exist in released metadata. Derive the discriminator
+	// on read so current stores need neither a history scan nor a rewrite.
+	if a.Unknown > 0 {
+		result.Facts |= ItemRangeUnknownActivity
 	}
 	c := result.Counts
 	if c.User < 0 || c.Assistant < 0 || c.Thinking < 0 || c.Tool < 0 || c.Interaction < 0 || c.Goal < 0 || c.Steering < 0 || c.total() > 1<<level || result.Mixed && (result.Turn != "" || result.Run != "") {

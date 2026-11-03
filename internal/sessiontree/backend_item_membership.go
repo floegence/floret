@@ -85,6 +85,11 @@ func readItemSlot(tx spi.ReadTx, thread string, slot int) (storedItemMember, err
 	if err != nil || member.Slot != slot || member.SourceID == "" || member.RawHash == "" || member.CanonicalOrdinal == 0 {
 		return member, errors.Join(ErrAuthorityCorrupt, err)
 	}
+	// Released membership already retains the canonical outcome. The range
+	// discriminator follows that outcome without rewriting source or metadata.
+	if member.Kind == "tool" && member.ActivityStatus == "unknown" {
+		member.RangeFacts |= ItemRangeUnknownActivity
+	}
 	return member, nil
 }
 

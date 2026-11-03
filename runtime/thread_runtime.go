@@ -4778,7 +4778,13 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry, occurredAt time.Tim
 	if presentation == nil {
 		presentation = historicalActivityPresentation(entry.Message.ToolName, status)
 	}
-	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation, EndedAtUnixMS: endedAt}
+	item := observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation, EndedAtUnixMS: endedAt}
+	if status == observation.ActivityStatusUnknown {
+		item.Severity = observation.ActivitySeverityWarning
+		item.NeedsAttention = true
+		item.AttentionReasons = []observation.ActivityAttentionReason{observation.ActivityAttentionUnknown}
+	}
+	return item
 }
 
 func threadToolSegmentID(turnID identity.TurnID, toolCallID string) string {

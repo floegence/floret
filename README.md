@@ -1853,3 +1853,10 @@ JSON, a short notice and optional retained output and final Activity. This is a
 host API, not an additional model tool. `tools.Result.ObservedHostWork` marks a
 result already presented by an explicit observation tool, preventing duplicate
 completion admission. See [host-work lifecycle](okf/architecture/host-work.md).
+
+A terminal observation whose effect outcome cannot be confirmed uses
+`observation.ActivityStatusUnknown`. It is a warning requiring attention,
+counted by `ActivityCounts.Unknown` and `ActivityAttentionUnknown`; it is not
+success, active work, failure evidence, or permission to replay. Consumers must
+support `unknown` in item and summary statuses and attention reasons. Range
+queries expose it through `ThreadItemRangeUnknownActivity` and unknown counts.

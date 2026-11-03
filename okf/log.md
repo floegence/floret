@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-03: Complete the public unknown Activity outcome contract, attention
+  and range semantics; qualify executor-restart projections without source rewrites.
+
 - 2026-11-03: Document the additive v7.101 original provider failure evidence
   contract, authorized host presentation and unchanged retry/storage ownership.
 
