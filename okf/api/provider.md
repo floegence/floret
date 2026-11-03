@@ -201,6 +201,12 @@ canonical-prefix calibration remain the pressure authority. See the
 [estimator source and limits](../../scripts/openai-tokenizer/README.md) and
 [public implementation](../../provider/request_estimate.go).
 
+Repeated plain-text token counts reuse a bounded in-process cache per vocabulary
+(8,192 SHA-256 digests and exact integer counts). It retains no request text,
+never caches errors, and does not change tokenization or attribution. Full
+`CountParts` attribution still tokenizes the complete ordered spans. Cache
+eviction affects only preparation cost; counts and pressure rules are unchanged.
+
 # Ollama Thinking Metadata
 
 `ParseOllamaReasoningCapability` reads the `thinking` object from `/api/show`

@@ -40,6 +40,39 @@ func TestBoundedLongSpans(t *testing.T) {
 	}
 }
 
+func TestRepeatedHistoryCountAvoidsRetokenizing(t *testing.T) {
+	for _, encoding := range []string{"cl100k_base", "o200k_base"} {
+		text := strings.Repeat("Unchanged historical output with Unicode 中文 🌸. ", 64)
+		want, err := Count(encoding, text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allocations := testing.AllocsPerRun(10, func() {
+			got, err := Count(encoding, text)
+			if err != nil || got != want {
+				t.Fatalf("repeated count = %d, %v; want %d", got, err, want)
+			}
+		})
+		if allocations > 2 {
+			t.Errorf("%s repeated immutable text allocates %.0f objects", encoding, allocations)
+		}
+	}
+}
+
+func BenchmarkRepeatedHistoryCount(b *testing.B) {
+	text := strings.Repeat("Unchanged historical output with Unicode 中文 🌸. ", 64)
+	if _, err := Count("o200k_base", text); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := Count("o200k_base", text); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestOfficialVocabularyDigests(t *testing.T) {
 	for _, tc := range []struct {
 		data   []byte

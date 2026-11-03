@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reuse exact offline token counts for repeated immutable history with a bounded
+  digest-only cache per vocabulary. Preserve full attribution, error behavior
+  and model-context budgeting without retaining source text.
+
 - Complete the public unknown Activity status, attention reason and count contract.
   Preserve terminal uncertainty through reducer, canonical replay and summary;
   expose unknown range facts from released metadata without rewriting history.

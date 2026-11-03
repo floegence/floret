@@ -2,9 +2,12 @@
 package bpetokenizer
 
 import (
+	"container/list"
+	"crypto/sha256"
 	"errors"
 	"github.com/dlclark/regexp2"
 	tiktoken "github.com/pkoukk/tiktoken-go"
+	"sync"
 	"time"
 )
 
@@ -28,10 +31,53 @@ func New(ranks map[string]int, patterns []string) (*Counter, error) {
 type Counter struct {
 	bpe      *tiktoken.Tiktoken
 	patterns []*regexp2.Regexp
+	mu       sync.Mutex
+	counts   map[[sha256.Size]byte]*list.Element
+	recent   list.List
+}
+
+const maxCachedCounts = 8192
+
+type countedText struct {
+	digest [sha256.Size]byte
+	tokens int64
 }
 
 // Count splits unusually long spans to bound work on untrusted model input.
-func (c *Counter) Count(text string) (int64, error) { return c.count([]rune(text), 0, nil) }
+func (c *Counter) Count(text string) (int64, error) {
+	// Provider preparation repeatedly estimates the same immutable history.
+	// Retain only digests and exact counts, bounded per vocabulary; never text
+	// or errors. Attribution still tokenizes its complete ordered spans.
+	digest := sha256.Sum256([]byte(text))
+	c.mu.Lock()
+	if entry := c.counts[digest]; entry != nil {
+		c.recent.MoveToFront(entry)
+		value := entry.Value.(countedText).tokens
+		c.mu.Unlock()
+		return value, nil
+	}
+	c.mu.Unlock()
+	n, err := c.count([]rune(text), 0, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.counts[digest]; entry != nil {
+		c.recent.MoveToFront(entry)
+		return n, nil
+	}
+	if c.counts == nil {
+		c.counts = make(map[[sha256.Size]byte]*list.Element)
+	}
+	if c.recent.Len() == maxCachedCounts {
+		old := c.recent.Back()
+		delete(c.counts, old.Value.(countedText).digest)
+		c.recent.Remove(old)
+	}
+	c.counts[digest] = c.recent.PushFront(countedText{digest, n})
+	return n, nil
+}
 
 func (c *Counter) count(text []rune, stage int, emit func([]int)) (int64, error) {
 	if len(text) == 0 {
