@@ -708,6 +708,18 @@ additive diagnostic contract; schema 17 and all historical migrations remain
 unchanged. `ProviderRequestProgress.LastProgressAt` lets hosts display stalled
 output using their own presentation clock without inventing lifecycle timers.
 
+Provider failure evidence is available through `provider.FailureDetailsForError`.
+`FailureDetails` preserves the complete original message, wrapped cause texts,
+HTTP status, request/response identifiers, and failed HTTP body or SSE data
+payload. Bytes use base64 in JSON, including non-UTF-8 responses. A failed read
+retains all received bytes and marks `BodyComplete` false. `WithFailureDetails`
+keeps error identities and retry advice and persists a versioned envelope through
+canonical failure messages. Hosts must render evidence as authorized literal
+text and derive separate sanitized summaries for banners and logs; original
+errors are untrusted data and may contain private provider content. Historical
+failures without retained evidence cannot be reconstructed. Evidence never
+permits replay or changes retry decisions.
+
 Gateways expose structured `provider.RetryAdvice` through `RetryAdviser` and
 `WithRetryAdvice`, preserving the original error cause. `HTTPRetryAdvice`
 parses response-time server deadlines, exact machine codes and HTTP status.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add complete original provider failure evidence with typed cause/retry
+  preservation, lossless HTTP/SSE payloads, partial-read reporting, and canonical
+  persistence across restart. Preserve DeepSeek failed/error details instead of
+  collapsing them to a generic failure; keep safe host summaries separate.
+
 - Preserve unknown host-work status in durable item counts, settled ranges and
   canonical source validation after executor loss.
 

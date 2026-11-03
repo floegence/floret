@@ -340,6 +340,20 @@ const EventTransport github.com/floegence/floret/v7/provider.EventType = "transp
 const EventTruncated github.com/floegence/floret/v7/provider.EventType = "truncated"
 type EventType string
 const EventUsage github.com/floegence/floret/v7/provider.EventType = "usage"
+type FailureDetails struct
+field FailureDetails.Provider string tag="json:\"provider,omitempty\""
+field FailureDetails.Phase string tag="json:\"phase,omitempty\""
+field FailureDetails.HTTPStatus int tag="json:\"http_status,omitempty\""
+field FailureDetails.RequestID string tag="json:\"request_id,omitempty\""
+field FailureDetails.ResponseID string tag="json:\"response_id,omitempty\""
+field FailureDetails.Event string tag="json:\"event,omitempty\""
+field FailureDetails.Code string tag="json:\"code,omitempty\""
+field FailureDetails.Message string tag="json:\"message,omitempty\""
+field FailureDetails.Cause string tag="json:\"cause,omitempty\""
+field FailureDetails.Causes []string tag="json:\"causes,omitempty\""
+field FailureDetails.Body []byte tag="json:\"body,omitempty\""
+field FailureDetails.BodyComplete bool tag="json:\"body_complete\""
+func FailureDetailsForError func(err error) *github.com/floegence/floret/v7/provider.FailureDetails
 type Gateway interface interface{Capabilities() github.com/floegence/floret/v7/provider.Capabilities; Identity() github.com/floegence/floret/v7/provider.Identity; Stream(context.Context, github.com/floegence/floret/v7/provider.Request) (<-chan github.com/floegence/floret/v7/provider.Event, error)}
 func HTTPRetryAdvice func(status int, code string, headers net/http.Header, receivedAt time.Time) github.com/floegence/floret/v7/provider.RetryAdvice
 type HostedToolDefinition struct
@@ -672,6 +686,7 @@ field Usage.Available bool tag="json:\"available,omitempty\""
 field Usage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
 method Usage.Normalized func() github.com/floegence/floret/v7/provider.Usage
 method Usage.HasInputUsage func() bool
+func WithFailureDetails func(cause error, details github.com/floegence/floret/v7/provider.FailureDetails) error
 func WithRetryAdvice func(cause error, advice github.com/floegence/floret/v7/provider.RetryAdvice) error
 
 package github.com/floegence/floret/v7/runtime

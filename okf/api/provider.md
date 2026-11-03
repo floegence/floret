@@ -647,3 +647,24 @@ failures. It supplies a fixed reason code, optional zero-based record/canonical
 positions, item counts and known field names, never text or native values. Hosts
 must distinguish pre-network local history failures from transport rejection.
 The API preserves existing error meaning and does not grant retry advice.
+
+## Original failure evidence
+
+The additive v7.101 API decision exposes `FailureDetails`, `WithFailureDetails`,
+and `FailureDetailsForError` for downstream hosts including Redeven. The provider
+adapter owns received error evidence; hosts own authorized display and a
+separate sanitized logging/presentation projection. Preserve complete error
+messages, hidden wrapped cause texts, status, identifiers and failed HTTP/SSE
+bytes. JSON base64 retains binary bodies. Partial reads retain received bytes
+and explicitly mark incompleteness. No request headers or prompts are collected.
+Evidence is untrusted literal data, never instructions or retry policy. The
+wrapper preserves `errors.Is`/`errors.As` and explicit retry advice.
+
+The versioned error envelope survives existing canonical failure storage without
+a schema change. Historical errors without original evidence remain readable;
+missing evidence is not fabricated. Strict decoding rejects malformed envelopes.
+DeepSeek failed/error events retain their returned reason; local decode,
+validation and missing-terminal failures retain their actual cause. Existing
+HTTP overflow and stream retry classification remain authoritative. Tests cover
+large, multiline and binary evidence, partial reads, typed causes, retry advice,
+and persisted failure after restart.

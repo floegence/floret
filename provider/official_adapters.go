@@ -503,9 +503,14 @@ func officialPreparationError(err error) error {
 		name, status, code, message := wire.ProviderHTTPDetails()
 		mapped := WithRetryAdvice(&ProviderHTTPError{Provider: name, StatusCode: status, Code: code, Message: message}, RetryAdviceForError(publicRetryError(err)))
 		if errors.Is(err, internalprovider.ErrContextOverflow) {
-			return errors.Join(ErrContextOverflow, mapped)
+			mapped = errors.Join(ErrContextOverflow, mapped)
 		}
-		return mapped
+		details := FailureDetails{Provider: name, Phase: "response", HTTPStatus: status, Code: code, Message: message}
+		var evidence interface{ ProviderFailureResponse() ([]byte, string, bool) }
+		if errors.As(err, &evidence) {
+			details.Body, details.RequestID, details.BodyComplete = evidence.ProviderFailureResponse()
+		}
+		return WithFailureDetails(WithRetryAdvice(errors.Join(mapped, err), RetryAdviceForError(mapped)), details)
 	}
 	var size interface{ RequestByteLimit() (int64, int64) }
 	if errors.As(err, &size) {

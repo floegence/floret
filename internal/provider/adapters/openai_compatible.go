@@ -221,15 +221,17 @@ func (p OpenAICompatibleProvider) streamRendered(ctx context.Context, body []byt
 		return p.streamResponse(httpResp)
 	}
 	defer httpResp.Body.Close()
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		body, readErr := io.ReadAll(httpResp.Body)
+		failure := protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, body, receivedAt, readErr)
+		if httpResp.StatusCode == http.StatusRequestEntityTooLarge || httpResp.StatusCode == http.StatusBadRequest && looksLikeContextOverflow(body) {
+			failure = errors.Join(provider.ErrContextOverflow, failure)
+		}
+		return nil, failure
+	}
 	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 8<<20))
 	if err != nil {
 		return nil, err
-	}
-	if httpResp.StatusCode == http.StatusRequestEntityTooLarge || httpResp.StatusCode == http.StatusBadRequest && looksLikeContextOverflow(respBody) {
-		return nil, provider.ErrContextOverflow
-	}
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
 	}
 	var parsed chatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -580,11 +582,11 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 	receivedAt := time.Now()
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		defer httpResp.Body.Close()
-		respBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
+		respBody, readErr := io.ReadAll(httpResp.Body)
 		if httpResp.StatusCode == http.StatusRequestEntityTooLarge || httpResp.StatusCode == http.StatusBadRequest && looksLikeContextOverflow(respBody) {
-			return nil, provider.ErrContextOverflow
+			return nil, errors.Join(provider.ErrContextOverflow, protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, respBody, receivedAt, readErr))
 		}
-		return nil, protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
+		return nil, protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, respBody, receivedAt, readErr)
 	}
 	ch := make(chan provider.StreamEvent, 16)
 	go func() {
@@ -620,9 +622,9 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 				return
 			}
 			if parsed.Error != nil {
-				err := protocolFailure("openai-compatible", httpResp.StatusCode, nil, []byte(payload), time.Now())
+				err := protocolFailure("openai-compatible", httpResp.StatusCode, httpResp.Header, []byte(payload), time.Now())
 				if looksLikeContextOverflow([]byte(parsed.Error.Message + " " + parsed.Error.Type)) {
-					err = provider.ErrContextOverflow
+					err = errors.Join(provider.ErrContextOverflow, err)
 				}
 				ch <- provider.StreamEvent{Type: provider.Error, Reason: parsed.Error.Message, Err: err}
 				return

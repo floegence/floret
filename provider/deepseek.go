@@ -411,11 +411,11 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 	response, err := g.client.Do(request)
 	receivedAt := time.Now()
 	if err != nil {
-		return nil, err
+		return nil, WithFailureDetails(err, FailureDetails{Provider: "deepseek", Phase: "connect"})
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		defer response.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		raw, readErr := io.ReadAll(response.Body)
 		lower := strings.ToLower(string(raw))
 		overflow := response.StatusCode == 413 || response.StatusCode == 400 && (strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context window") || strings.Contains(lower, "maximum context length"))
 		var envelope struct {
@@ -431,24 +431,26 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 			Code:       sanitizeProviderErrorText(envelope.Error.Code),
 			Message:    sanitizeProviderErrorText(envelope.Error.Message),
 		}
+		details := FailureDetails{Provider: "deepseek", Phase: "response", HTTPStatus: response.StatusCode, RequestID: response.Header.Get("x-request-id"), Code: envelope.Error.Code, Message: envelope.Error.Message, Body: raw, BodyComplete: readErr == nil}
+		wrap := func(cause error) error { return WithFailureDetails(errors.Join(cause, readErr), details) }
 		if g.imageFiles != nil && (response.StatusCode == 400 || response.StatusCode == 404 || response.StatusCode == 410) && (envelope.Error.Code == "file_not_found" || envelope.Error.Code == "file_expired") {
 			if err := g.imageFiles.invalidateBody(ctx, body); err != nil {
-				return nil, err
+				return nil, wrap(errors.Join(err, failure))
 			}
-			return nil, &RequestPreparationError{Cause: failure}
+			return nil, wrap(&RequestPreparationError{Cause: failure})
 		}
 		if overflow {
 			// Preserve the established recovery classification while exposing
 			// whether the server rejected transport bytes (413) or model context.
-			return nil, errors.Join(failure, ErrContextOverflow)
+			return nil, wrap(errors.Join(failure, ErrContextOverflow))
 		}
-		return nil, WithRetryAdvice(failure, HTTPRetryAdvice(response.StatusCode, envelope.Error.Code, response.Header, receivedAt))
+		return nil, wrap(WithRetryAdvice(failure, HTTPRetryAdvice(response.StatusCode, envelope.Error.Code, response.Header, receivedAt)))
 	}
 	out := make(chan Event, 32)
 	go func() {
 		defer close(out)
 		defer response.Body.Close()
-		g.readStream(ctx, response.Body, history, out, stateAllowed)
+		g.readStream(ctx, response, history, out, stateAllowed)
 	}()
 	return out, nil
 }
@@ -519,7 +521,7 @@ type deepSeekResponse struct {
 	} `json:"usage"`
 }
 
-func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, history deepSeekHistory, out chan<- Event, stateAllowed bool) {
+func (g *deepSeekGateway) readStream(ctx context.Context, response *http.Response, history deepSeekHistory, out chan<- Event, stateAllowed bool) {
 	emit := func(event Event) bool {
 		select {
 		case <-ctx.Done():
@@ -529,7 +531,8 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		}
 	}
 	directEmit := emit
-	fail := func(err error) { directEmit(Event{Type: EventError, Err: err}) }
+	details := FailureDetails{Provider: "deepseek", Phase: "receive", HTTPStatus: response.StatusCode, RequestID: response.Header.Get("x-request-id")}
+	fail := func(err error) { directEmit(Event{Type: EventError, Err: WithFailureDetails(err, details)}) }
 	var text, reasoning strings.Builder
 	nativeChannels := map[EventType]bool{}
 	anonymousChannels := map[EventType]bool{}
@@ -634,12 +637,22 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		}
 		return nil
 	}
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 4096), 8<<20)
+	reader := bufio.NewReader(response.Body)
 	var data []string
 	dispatch := func(payload string) bool {
+		details.Body, details.BodyComplete = []byte(payload), true
+		defer func() {
+			details.Body, details.Event, details.Code, details.Message = nil, "", "", ""
+			details.BodyComplete = false
+		}()
 		var event struct {
-			Type         string           `json:"type"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Error   *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
 			OutputIndex  *int             `json:"output_index"`
 			ContentIndex int              `json:"content_index"`
 			Delta        string           `json:"delta"`
@@ -650,6 +663,10 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			fail(fmt.Errorf("decode DeepSeek SSE: %w", err))
 			return true
+		}
+		details.Event = event.Type
+		if event.Response.ID != "" {
+			details.ResponseID = event.Response.ID
 		}
 		var part *OutputPart
 		itemID := event.ItemID
@@ -719,10 +736,19 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		case "response.web_search_call.in_progress", "response.web_search_call.searching":
 			search(deepSeekOutput{ID: event.ItemID})
 		case "response.failed", "error":
-			if event.Response.Error != nil && event.Response.Error.Code == "context_length_exceeded" {
-				fail(errors.Join(&ProviderHTTPError{Provider: "DeepSeek", StatusCode: 200, Code: event.Response.Error.Code, Message: sanitizeProviderErrorText(event.Response.Error.Message)}, ErrContextOverflow))
+			details.Code, details.Message = event.Code, event.Message
+			if event.Error != nil {
+				details.Code, details.Message = event.Error.Code, event.Error.Message
+			}
+			if event.Response.Error != nil {
+				details.Code, details.Message = event.Response.Error.Code, event.Response.Error.Message
+			}
+			failure := &ProviderHTTPError{Provider: "DeepSeek", StatusCode: response.StatusCode, Code: details.Code, Message: details.Message}
+			if details.Code == "context_length_exceeded" {
+				fail(errors.Join(failure, ErrContextOverflow))
 			} else {
-				fail(errors.New("DeepSeek response failed"))
+				// Retaining evidence does not change the established retry decision.
+				fail(WithRetryAdvice(failure, RetryAdvice{}))
 			}
 			return true
 		case "response.completed", "response.incomplete":
@@ -957,30 +983,32 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		}
 		return ctx.Err() != nil
 	}
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if line == "" {
-			if len(data) > 0 {
-				if dispatch(strings.Join(data, "\n")) {
-					return
-				}
-				data = nil
+	for {
+		line, readErr := reader.ReadString('\n')
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		if line == "" && len(data) > 0 {
+			if dispatch(strings.Join(data, "\n")) {
+				return
 			}
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
+			data = nil
+		} else if strings.HasPrefix(line, "data:") {
 			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 		}
-	}
-	if len(data) > 0 && dispatch(strings.Join(data, "\n")) {
+		if readErr == nil {
+			continue
+		}
+		if readErr == io.EOF && len(data) > 0 && dispatch(strings.Join(data, "\n")) {
+			return
+		}
+		if readErr != io.EOF {
+			details.Body = []byte(strings.Join(data, "\n"))
+			fail(fmt.Errorf("read DeepSeek SSE: %w", readErr))
+		} else if ctx.Err() != nil {
+			fail(ctx.Err())
+		} else {
+			fail(errors.New("DeepSeek stream closed without a terminal response"))
+		}
 		return
-	}
-	if err := scanner.Err(); err != nil {
-		fail(fmt.Errorf("read DeepSeek SSE: %w", err))
-	} else if ctx.Err() != nil {
-		fail(ctx.Err())
-	} else {
-		fail(errors.New("DeepSeek stream closed without a terminal response"))
 	}
 }
 

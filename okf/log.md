@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-03: Document the additive v7.101 original provider failure evidence
+  contract, authorized host presentation and unchanged retry/storage ownership.
+
 - 2026-10-30: Document Anthropic native Messages ownership, bounded caching,
   signed history and request-bound usage in [provider](api/provider.md).
 

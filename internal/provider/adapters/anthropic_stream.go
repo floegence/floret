@@ -36,11 +36,11 @@ func (p AnthropicProvider) streamAnthropic(ctx context.Context, prepared *anthro
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		defer response.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		raw, readErr := io.ReadAll(response.Body)
 		if response.StatusCode == http.StatusRequestEntityTooLarge || response.StatusCode == 400 && looksLikeContextOverflow(raw) {
-			return nil, errors.Join(provider.ErrContextOverflow, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now()))
+			return nil, errors.Join(provider.ErrContextOverflow, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now(), readErr))
 		}
-		return nil, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now())
+		return nil, protocolFailure("anthropic", response.StatusCode, response.Header, raw, time.Now(), readErr)
 	}
 	out := make(chan provider.StreamEvent)
 	go func() {
