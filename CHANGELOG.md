@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Share bounded transaction-local window source and Activity field reads across
+  nested projection helpers. Preserve physical body-read batching, exact source
+  validation and output without new schema, durable state or navigation changes.
+
 - Preserve authorized Activity source text and whitespace without heuristic path
   rewriting. Keep restricted diagnostics separate and credential protection
   intact; add explicit structured-row redaction and invalid-UTF-8 facts.
