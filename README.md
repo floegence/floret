@@ -9,6 +9,12 @@ The host application owns product UI, credentials, provider profiles, resource
 authorization, routing, read state, uploads before admission, and transport
 diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 
+Hosts can use `provider.ParseOpenAIModelMetadata` to read explicit serving facts
+from OpenAI-compatible model inventories. Missing limits and capabilities remain
+unknown; conflicting declarations fail. `config.ReasoningLevelUltra` is available
+only when the selected gateway explicitly advertises that effort. Discovery,
+selection, protocol routing and user overrides remain host-owned.
+
 Tool repetition is evaluated in model call order across local and hosted
 activity. Only consecutive calls with identical complete arguments count;
 descriptions are significant. The Engine rejects a repeated local call with

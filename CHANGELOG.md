@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add provider.ParseOpenAIModelMetadata for explicit gateway serving limits,
+  modalities, tool support and reasoning efforts. Preserve unknown facts and
+  independent input/context limits; reject contradictory declarations. Add the
+  capability-gated config.ReasoningLevelUltra without changing existing defaults.
+
 - Preserve window mutation membership across reading-interest replacement.
   Retire resident and deferred detail consistently, keep explicit baselines and
   semantic components ordered, and cancel obsolete reads within existing budgets.

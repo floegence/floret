@@ -674,3 +674,15 @@ validation and missing-terminal failures retain their actual cause. Existing
 HTTP overflow and stream retry classification remain authoritative. Tests cover
 large, multiline and binary evidence, partial reads, typed causes, retry advice,
 and persisted failure after restart.
+
+## Compatible gateway inventories
+
+`provider.ParseOpenAIModelMetadata` parses one inventory object without network
+access, model-family inference, routing or selection. ID-only objects remain
+valid. Zero limits and nil facts are unknown. `context_window`/`context_length`
+must agree; `max_input_tokens` stays independent. Explicit input modalities,
+`tool_call`/`supported_parameters` and effort declarations are validated before
+publication. A reasoning boolean alone never invents controls.
+`config.ReasoningLevelUltra` is valid only when advertised by the selected
+capability, and is never mapped to another effort. Hosts own endpoint discovery,
+reviewed-default merging, user overrides, and display of unknown capabilities.

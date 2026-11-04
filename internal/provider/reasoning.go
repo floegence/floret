@@ -18,6 +18,7 @@ const (
 	ReasoningLevelHigh    ReasoningLevel = "high"
 	ReasoningLevelXHigh   ReasoningLevel = "xhigh"
 	ReasoningLevelMax     ReasoningLevel = "max"
+	ReasoningLevelUltra   ReasoningLevel = "ultra"
 )
 
 const (

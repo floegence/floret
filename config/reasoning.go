@@ -21,6 +21,7 @@ const (
 	ReasoningLevelHigh    ReasoningLevel = "high"
 	ReasoningLevelXHigh   ReasoningLevel = "xhigh"
 	ReasoningLevelMax     ReasoningLevel = "max"
+	ReasoningLevelUltra   ReasoningLevel = "ultra"
 )
 
 const (
@@ -139,7 +140,7 @@ func NormalizeReasoningSelection(s ReasoningSelection) ReasoningSelection {
 
 func ValidateReasoningLevel(level ReasoningLevel) bool {
 	switch NormalizeReasoningSelection(ReasoningSelection{Level: level}).Level {
-	case "", ReasoningLevelDefault, ReasoningLevelOff, ReasoningLevelOn, ReasoningLevelMinimal, ReasoningLevelLow, ReasoningLevelMedium, ReasoningLevelHigh, ReasoningLevelXHigh, ReasoningLevelMax:
+	case "", ReasoningLevelDefault, ReasoningLevelOff, ReasoningLevelOn, ReasoningLevelMinimal, ReasoningLevelLow, ReasoningLevelMedium, ReasoningLevelHigh, ReasoningLevelXHigh, ReasoningLevelMax, ReasoningLevelUltra:
 		return true
 	default:
 		return false
