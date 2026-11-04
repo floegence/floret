@@ -1860,3 +1860,8 @@ counted by `ActivityCounts.Unknown` and `ActivityAttentionUnknown`; it is not
 success, active work, failure evidence, or permission to replay. Consumers must
 support `unknown` in item and summary statuses and attention reasons. Range
 queries expose it through `ThreadItemRangeUnknownActivity` and unknown counts.
+
+Resource extractors may return tools.PreparationError with a safe Code and
+Message (and an optional wrapped Cause). The result retains structured error
+facts and execution:{phase:"resource_extraction",started:false} before effect
+authorization. Activity keeps the typed code; this is not retry authority.

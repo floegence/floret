@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional tools.PreparationError for host-sanitized resource-extraction
+  failures. Preserve typed model and Activity error facts with an explicit
+  pre-execution boundary; never authorize, dispatch or retry failed preparation.
+
 - Keep canonical current-turn reads linear along the active path. Reuse the
   same validated turn and located source within one read, preserving branch,
   body, cancellation and retry validation without a durable cache or a longer

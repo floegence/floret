@@ -2681,6 +2681,12 @@ type PermissionResolver func(github.com/floegence/floret/v7/tools.PermissionRequ
 type PermissionSpec struct
 field PermissionSpec.Mode github.com/floegence/floret/v7/tools.PermissionMode
 field PermissionSpec.ResourceKinds []string
+type PreparationError struct
+field PreparationError.Code string
+field PreparationError.Message string
+field PreparationError.Cause error
+method *PreparationError.Error func() string
+method *PreparationError.Unwrap func() error
 type QuestionActivityAnswer struct
 field QuestionActivityAnswer.QuestionID string tag="json:\"question_id\""
 field QuestionActivityAnswer.Values []string tag="json:\"values,omitempty\""

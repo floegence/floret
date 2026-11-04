@@ -63,3 +63,10 @@ existing canonical attachment projection/search semantics. The consumer is
 Redeven Flower image rereading. Complete descriptor identity belongs to Floret;
 resource resolution and product permissions remain host-owned. No media schema,
 caption store, lifecycle or host-owned membership index is introduced.
+
+The preparation-facts addition exposes tools.PreparationError only at the
+resource-extraction boundary. Hosts supply sanitized Code/Message and optional
+Cause; wrapped errors retain classification. Registry owns the unstarted
+execution fact and never invokes authorization or the handler on failure.
+Untyped errors retain their published text result. No new stored schema,
+recovery policy, callback framework or host-specific dependency is introduced.

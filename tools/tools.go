@@ -746,7 +746,7 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 	}
 	resources, err := t.resources(inv)
 	if err != nil {
-		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q resource extraction failed: %v", call.Name, err)), false
+		return preparedDispatch{}, resourcePreparationFailure(call, t.Definition, inv, err), false
 	}
 	permission, err := invocationPermission(t.Definition, inv)
 	if err != nil {
