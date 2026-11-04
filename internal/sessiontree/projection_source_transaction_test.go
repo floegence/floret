@@ -248,3 +248,40 @@ func TestProjectionSourceKeepsBodyPrefetchBatched(t *testing.T) {
 		t.Fatalf("batch hid missing source block: %v", err)
 	}
 }
+
+func TestProjectionLocatorMemoDetachesAndRevalidatesNextTransaction(t *testing.T) {
+	backend := newMigrationTestBackend()
+	key := entryLocatorKey("thread", "entry")
+	raw, _ := json.Marshal(entryLocator{ID: "entry", Ordinal: 0, Depth: 1, TurnPrevious: &turnEntryLocator{Started: "original"}})
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return tx.Put(backendEntryIndexNamespace, key, raw) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.View(t.Context(), func(raw spi.ReadTx) error {
+		counted := &windowCostTx{ReadTx: raw}
+		tx := newProjectionSourceTx(counted)
+		first, err := readEntryLocator(tx, "thread", "entry")
+		if err != nil {
+			return err
+		}
+		first.TurnPrevious.Started = "caller mutation"
+		second, err := readEntryLocator(tx, "thread", "entry")
+		if err != nil {
+			return err
+		}
+		if counted.gets != 1 || second.TurnPrevious.Started != "original" || len(tx.locators) != 1 {
+			t.Fatal("locator memo lost validation or detached ownership")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return tx.Put(backendEntryIndexNamespace, key, []byte("corrupt")) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		_, err := readEntryLocator(newProjectionSourceTx(tx), "thread", "entry")
+		return err
+	}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("memo hid changed authority: %v", err)
+	}
+}

@@ -7,15 +7,16 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-const projectionSourceReadBytes = 2 << 20
+const projectionSourceReadBytes = 4 << 20
 
 // The dependency closure reaches the same immutable source via several exact
 // identities. Share successful reads only within its existing read transaction;
 // no data or authority survives a branch change or the end of that transaction.
 type projectionSourceTx struct {
 	spi.ReadTx
-	values map[projectionReadKey][]byte
-	bytes  int
+	values   map[projectionReadKey][]byte
+	locators map[projectionReadKey]entryLocator
+	bytes    int
 }
 type projectionReadKey struct{ namespace, key string }
 
@@ -23,7 +24,23 @@ func newProjectionSourceTx(tx spi.ReadTx) *projectionSourceTx {
 	if current, ok := tx.(*projectionSourceTx); ok {
 		return current
 	}
-	return &projectionSourceTx{ReadTx: tx, values: map[projectionReadKey][]byte{}}
+	return &projectionSourceTx{ReadTx: tx, values: map[projectionReadKey][]byte{}, locators: map[projectionReadKey]entryLocator{}}
+}
+
+func cloneEntryLocator(locator entryLocator) entryLocator {
+	if locator.TurnPrevious != nil {
+		previous := *locator.TurnPrevious
+		locator.TurnPrevious = &previous
+	}
+	return locator
+}
+
+func (tx *projectionSourceTx) rememberLocator(identity projectionReadKey, locator entryLocator, rawBytes int) {
+	cost := len(identity.namespace) + len(identity.key) + rawBytes + 128
+	if cost <= projectionSourceReadBytes-tx.bytes {
+		tx.locators[identity] = cloneEntryLocator(locator)
+		tx.bytes += cost
+	}
 }
 
 func (tx *projectionSourceTx) Get(namespace string, key []byte) ([]byte, error) {

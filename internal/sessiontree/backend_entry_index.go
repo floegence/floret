@@ -53,7 +53,15 @@ func entrySourceIDs(entry Entry) []string {
 }
 
 func readEntryLocator(tx spi.ReadTx, threadID, entryID string) (entryLocator, error) {
-	raw, err := tx.Get(backendEntryIndexNamespace, entryLocatorKey(threadID, entryID))
+	key := entryLocatorKey(threadID, entryID)
+	identity := projectionReadKey{backendEntryIndexNamespace, string(key)}
+	memo, _ := tx.(*projectionSourceTx)
+	if memo != nil {
+		if locator, found := memo.locators[identity]; found {
+			return cloneEntryLocator(locator), nil
+		}
+	}
+	raw, err := tx.Get(backendEntryIndexNamespace, key)
 	if errors.Is(err, spi.ErrNotFound) {
 		return entryLocator{}, ErrEntryNotFound
 	}
@@ -63,6 +71,9 @@ func readEntryLocator(tx spi.ReadTx, threadID, entryID string) (entryLocator, er
 	var locator entryLocator
 	if err := decodeCanonicalBodyJSON(raw, &locator); err != nil || locator.ID != entryID || locator.Ordinal < 0 || locator.Depth < 1 || (locator.Depth == 1) != (locator.Parent == "") {
 		return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if memo != nil {
+		memo.rememberLocator(identity, locator, len(raw))
 	}
 	return locator, nil
 }
