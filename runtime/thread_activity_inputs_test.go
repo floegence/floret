@@ -13,7 +13,7 @@ import (
 )
 
 func TestStructuredActivityInputsSurviveLiveHistoryAndRestart(t *testing.T) {
-	source := "  // inspect\n" + strings.Repeat("log('page');\n", 1200)
+	source := "  // inspect\n" + strings.Repeat("log('page');\n", 1200) + "text.replace(/\\s+/g, ' ');\n<div>2026/11/03</div>"
 	release := make(chan struct{})
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "script", StateCompatibilityKey: "script:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "inspect-1", Name: "inspect", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},

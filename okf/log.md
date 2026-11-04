@@ -1912,3 +1912,6 @@ Document optional Goal management, same-context reflection, request-bound update
 
 - 2026-11-03: document bounded digest-only reuse of exact plain-text token counts
   during repeated provider preparation, preserving complete attribution.
+
+- 2026-11-03: Clarify authorized Activity source fidelity and explicit row
+  transformations separately from restricted diagnostic path projections.

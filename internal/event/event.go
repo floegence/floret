@@ -363,7 +363,8 @@ func safeSourceURL(value string) string {
 }
 
 // NormalizeActivityPresentation detaches and validates canonical presentation
-// while sanitizing display text. Explicit navigation paths and URIs retain
+// while protecting credentials without guessing paths in source text.
+// Explicit navigation paths and URIs retain
 // their exact spelling; they are resource facts, never authorization evidence.
 // Use Sanitize for diagnostic output instead.
 func NormalizeActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
@@ -376,10 +377,10 @@ func normalizeActivityPresentation(in *tools.ActivityPresentation, preserveNavig
 	}
 	in = tools.CloneActivityPresentation(in)
 	out := &tools.ActivityPresentation{
-		Label:       safeActivityText(in.Label, 200),
-		Description: safeActivityText(in.Description, 500),
+		Label:       activityDisplayText(in.Label, 200, preserveNavigation),
+		Description: activityDisplayText(in.Description, 500, preserveNavigation),
 		Renderer:    in.Renderer,
-		Chips:       sanitizeActivityChips(in.Chips),
+		Chips:       sanitizeActivityChips(in.Chips, preserveNavigation),
 		TargetRefs:  sanitizeActivityTargetRefs(in.TargetRefs, preserveNavigation),
 		Payload:     sanitizeTypedActivityPayload(in.Payload, preserveNavigation),
 	}
@@ -402,21 +403,21 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation b
 		if in == nil {
 			return nil
 		}
-		message := safeActivityText(in.Message, 8_000)
+		message := activityDisplayText(in.Message, 8_000, preserveNavigation)
 		if message == "" {
 			return nil
 		}
 		return &tools.ActivityError{Message: message, Code: in.Code}
 	}
-	sanitizeText := func(value string) string { return safeActivityText(value, 8_000) }
+	sanitizeText := func(value string) string { return activityDisplayText(value, 8_000, preserveNavigation) }
 	switch payload := in.(type) {
 	case nil:
 		return nil
 	case tools.StructuredActivityPayload:
 		if payload.Goal != nil {
 			goal := *payload.Goal
-			goal.Text = Redact(SafePathRefsText(goal.Text))
-			goal.Evidence = Redact(SafePathRefsText(goal.Evidence))
+			goal.Text = activitySourceText(goal.Text, preserveNavigation)
+			goal.Evidence = activitySourceText(goal.Evidence, preserveNavigation)
 			payload.Goal = &goal
 		}
 		payload.Status = sanitizeText(payload.Status)
@@ -491,7 +492,7 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation b
 		payload.Status = sanitizeText(payload.Status)
 		payload.ContentType = sanitizeText(payload.ContentType)
 		payload.Format = sanitizeText(payload.Format)
-		payload.ContentPreview = safeActivityText(payload.ContentPreview, 2_000)
+		payload.ContentPreview = activityDisplayText(payload.ContentPreview, 2_000, preserveNavigation)
 		payload.Error = sanitizeError(payload.Error)
 		if payload.SiteIcon != nil {
 			payload.SiteIcon = &tools.WebFetchActivityIcon{
@@ -558,11 +559,17 @@ func sanitizeStructuredActivityRows(in []tools.StructuredActivityRow, preserveNa
 	for i := range out {
 		row := &out[i]
 		row.Target = sanitizeActivityTarget(row.Target, preserveNavigation)
-		row.Title = safeActivityText(row.Title, 8_000)
-		row.Meta = safeActivityText(row.Meta, 8_000)
+		row.Title = activityDisplayText(row.Title, 8_000, preserveNavigation)
+		row.Meta = activityDisplayText(row.Meta, 8_000, preserveNavigation)
+		row.InvalidUTF8Replaced = row.InvalidUTF8Replaced || !utf8.ValidString(row.Content)
+		content := strings.ToValidUTF8(row.Content, "\uFFFD")
+		if !preserveNavigation {
+			content = SafePathRefsText(content)
+		}
+		protected := Redact(content)
+		row.Redacted = row.Redacted || protected != content
+		row.Content = protected
 		if row.Format == tools.StructuredActivityRowFormatCode {
-			// Preserve code whitespace while applying the same path and secret policy.
-			row.Content = Redact(SafePathRefsText(strings.ToValidUTF8(row.Content, "\uFFFD")))
 			if len(row.Content) > 64<<10 {
 				end := 64 << 10
 				for end > 0 && !utf8.RuneStart(row.Content[end]) {
@@ -572,14 +579,34 @@ func sanitizeStructuredActivityRows(in []tools.StructuredActivityRow, preserveNa
 				row.Truncated = true
 			}
 		} else {
-			content := safeActivityText(row.Content, 0)
-			if len([]rune(content)) > 8_000 {
+			if len([]rune(row.Content)) > 8_000 {
 				row.Truncated = true
+				row.Content = string([]rune(row.Content)[:8_000])
 			}
-			row.Content = safeActivityText(content, 8_000)
 		}
 	}
 	return out
+}
+
+func activitySourceText(value string, preserveContent bool) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if !preserveContent {
+		value = SafePathRefsText(value)
+	}
+	return Redact(value)
+}
+
+// Authorized display preserves host-authored text; diagnostic sinks retain
+// their restricted path projection. Neither projection mutates the source.
+func activityDisplayText(value string, limit int, preserveContent bool) string {
+	if !preserveContent {
+		return safeActivityText(value, limit)
+	}
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if limit > 0 && len([]rune(value)) > limit {
+		value = string([]rune(value)[:limit])
+	}
+	return Redact(value)
 }
 
 func safeActivityText(value string, limit int) string {
@@ -595,7 +622,7 @@ func safeActivityText(value string, limit int) string {
 	return Redact(value)
 }
 
-func sanitizeActivityChips(in []tools.ActivityChip) []tools.ActivityChip {
+func sanitizeActivityChips(in []tools.ActivityChip, preserveContent bool) []tools.ActivityChip {
 	if len(in) == 0 {
 		return nil
 	}
@@ -603,8 +630,8 @@ func sanitizeActivityChips(in []tools.ActivityChip) []tools.ActivityChip {
 	for _, chip := range in {
 		item := tools.ActivityChip{
 			Kind:  safeActivityToken(chip.Kind, 64),
-			Label: safeActivityText(chip.Label, 120),
-			Value: safeActivityText(chip.Value, 120),
+			Label: activityDisplayText(chip.Label, 120, preserveContent),
+			Value: activityDisplayText(chip.Value, 120, preserveContent),
 			Tone:  safeActivityToken(chip.Tone, 32),
 		}
 		if item.Kind == "" || item.Label == "" {
@@ -634,7 +661,7 @@ func sanitizeActivityTarget(in *tools.ActivityTargetRef, preserveNavigation bool
 	}
 	out := *in
 	out.Kind = safeActivityToken(out.Kind, 64)
-	out.Label = safeActivityText(out.Label, 240)
+	out.Label = activityDisplayText(out.Label, 240, preserveNavigation)
 	if !preserveNavigation {
 		out.URI = safeActivityURI(out.URI)
 		out.Path = safeActivityPath(out.Path)

@@ -94,6 +94,10 @@ type StructuredActivityRow struct {
 	Language string `json:"language,omitempty"`
 	// Truncated distinguishes a bounded preview from complete display content.
 	Truncated bool `json:"truncated,omitempty"`
+	// Redacted reports credential protection applied to Content.
+	Redacted bool `json:"redacted,omitempty"`
+	// InvalidUTF8Replaced reports replacement of malformed source bytes.
+	InvalidUTF8Replaced bool `json:"invalid_utf8_replaced,omitempty"`
 }
 
 // GoalActivity is a detached invocation snapshot. A recorded review outcome is

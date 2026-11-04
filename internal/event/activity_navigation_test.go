@@ -59,7 +59,7 @@ func TestCanonicalActivityPreservesDetachedNavigationTargets(t *testing.T) {
 	}
 }
 
-func TestNavigationPreservationDoesNotExposeRawEventOrDisplayText(t *testing.T) {
+func TestAuthorizedActivityPreservesDisplayWithoutExposingRawEvent(t *testing.T) {
 	const path = "/private/workspace/report.go"
 	for name, activity := range navigationActivities(path) {
 		t.Run(name, func(t *testing.T) {
@@ -69,7 +69,7 @@ func TestNavigationPreservationDoesNotExposeRawEventOrDisplayText(t *testing.T) 
 			if got.Activity == nil {
 				t.Fatal("missing activity")
 			}
-			if got.Args != "" || got.Result != "" || got.Err != "" || strings.Contains(got.Activity.Label, path) || strings.Contains(got.Activity.Description, "sk-test-secret") {
+			if got.Args != "" || got.Result != "" || got.Err != "" || got.Activity.Label != activity.Label || strings.Contains(got.Activity.Description, "sk-test-secret") {
 				t.Fatalf("host projection exposed raw text: %+v", got)
 			}
 			metadata, err := json.Marshal(got.Metadata)

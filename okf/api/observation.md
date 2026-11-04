@@ -163,7 +163,10 @@ configuration or circuit breaker failures from provider and validation failures.
 
 Observation records are not raw debug traces. They omit secrets, raw tool
 arguments and results, provider payloads, reasoning, and local paths in display
-text and metadata. Explicit ActivityTargetRef Path and URI values remain exact
+text and metadata. Authorized host-authored Activity content is a separate
+presentation surface: preserve source text and whitespace without guessing
+paths in prose or code. Structured rows report credential redaction and invalid
+UTF-8 replacement independently of truncation. Explicit ActivityTargetRef Path and URI values remain exact
 resource facts for authorized host navigation, including top-level targets,
 structured inputs/rows, and patch mutations. They never grant access. Diagnostic
 trace sinks redact these navigation paths too, without mutating canonical data.

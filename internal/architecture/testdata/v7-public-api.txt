@@ -2770,6 +2770,8 @@ field StructuredActivityRow.Content string tag="json:\"content,omitempty\""
 field StructuredActivityRow.Format github.com/floegence/floret/v7/tools.StructuredActivityRowFormat tag="json:\"format,omitempty\""
 field StructuredActivityRow.Language string tag="json:\"language,omitempty\""
 field StructuredActivityRow.Truncated bool tag="json:\"truncated,omitempty\""
+field StructuredActivityRow.Redacted bool tag="json:\"redacted,omitempty\""
+field StructuredActivityRow.InvalidUTF8Replaced bool tag="json:\"invalid_utf8_replaced,omitempty\""
 type StructuredActivityRowFormat string
 const StructuredActivityRowFormatCode github.com/floegence/floret/v7/tools.StructuredActivityRowFormat = "code"
 const StructuredActivityRowFormatMarkdown github.com/floegence/floret/v7/tools.StructuredActivityRowFormat = "markdown"

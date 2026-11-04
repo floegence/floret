@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve authorized Activity source text and whitespace without heuristic path
+  rewriting. Keep restricted diagnostics separate and credential protection
+  intact; add explicit structured-row redaction and invalid-UTF-8 facts.
+
 - Add optional tools.PreparationError for host-sanitized resource-extraction
   failures. Preserve typed model and Activity error facts with an explicit
   pre-execution boundary; never authorize, dispatch or retry failed preparation.

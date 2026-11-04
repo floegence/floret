@@ -438,7 +438,9 @@ facts, never authorization or a guarantee that the resource still exists; hosts
 must authorize current access. Omitted targets preserve existing JSON behavior.
 Top-level targets and targets on structured inputs, result rows, and patch
 mutations retain exact Path and URI values in canonical history and host-facing
-live observations. Display text remains sanitized. Diagnostic traces redact
+live observations. Authorized Activity display preserves host-authored source
+text without guessing paths in prose or code; credential protection still applies.
+Diagnostic traces redact
 navigation paths at every target location without changing canonical facts.
 This boundary does not rewrite or reconstruct previously redacted history.
 
@@ -448,7 +450,9 @@ display rows without interpreting product tools or accepting arbitrary JSON
 payloads. Optional `Inputs` retain safe invocation details independently of result
 rows. `RowsProvided` distinguishes a captured empty result from missing historical
 output. Code rows support a syntax `Language`, up to 64 KiB of content, and an
-explicit `Truncated` preview marker. Other row text remains bounded at 8,000 runes.
+explicit `Truncated` preview marker. `Redacted` and `InvalidUTF8Replaced`
+report credential protection and invalid-byte replacement independently of
+truncation. Other row text remains bounded at 8,000 runes.
 
 Activity presentation is cumulative for one tool invocation. A result may add
 terminal status and output, while non-empty display facts from the matching
