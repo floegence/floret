@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve window mutation membership across reading-interest replacement.
+  Retire resident and deferred detail consistently, keep explicit baselines and
+  semantic components ordered, and cancel obsolete reads within existing budgets.
+
 - Share bounded transaction-local window source and Activity field reads across
   nested projection helpers. Reuse detached validated ancestry locators within
   the same bounded budget. Preserve physical body-read batching, exact source

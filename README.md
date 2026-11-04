@@ -1135,7 +1135,11 @@ channel and versions for authorized item windows. Subscribe with an explicit
 scope, then call `SetWindow` with freshly authorized scope. The channel delivers
 a replacement `Window` baseline before subsequent deltas; a baseline can use
 the current version, and must be accepted even when that version is already
-known. Pages select at most 150 items and 512 KiB encoded item data. Text previews
+known. Replacing an interest consistently withdraws its undelivered item, turn
+and order detail, including resident mutations, while preserving semantic
+components and accepted explicit baselines in order. Obsolete source reads are
+canceled without canceling execution or adding historical reads.
+Pages select at most 150 items and 512 KiB encoded item data. Text previews
 are exact UTF-8 prefixes of at most 64 KiB; partial text is raw preview, never a
 standalone Markdown document. Committed text locators resolve through the body
 reader or manifest. Live text is borrowed from the Engine attempt's output owner.

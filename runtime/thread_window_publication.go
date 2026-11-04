@@ -33,7 +33,32 @@ type sourceWindowPublication struct {
 
 func withoutWindowDetail(update ThreadUpdate) ThreadUpdate {
 	update.Items, update.Window, update.Turns = nil, nil, nil
+	update.ItemOrder = nil
 	return update
+}
+
+// retireWindowLocked withdraws one interest's entire undelivered detail chain.
+// Resident and deferred batches have the same ownership. Explicit SetWindow
+// baselines are independent boundaries and do not belong to this chain.
+func (subscription *ThreadUpdateSubscription) retireWindowLocked(interest *windowInterestLifetime) {
+	if interest == nil {
+		return
+	}
+	interest.cancel()
+	count := len(subscription.updates)
+	for range count {
+		queued := <-subscription.updates
+		if queued.interest == interest {
+			queued.update = withoutWindowDetail(queued.update)
+			queued.hydration = nil
+			raw, _ := json.Marshal(queued.update) // A subset of an already encoded batch.
+			subscription.queuedBytes -= queued.bytes - len(raw)
+			queued.bytes = len(raw)
+		}
+		subscription.updates <- queued
+	}
+	// In-flight storage still owns its reservation until Next unwinds. Its
+	// final ownership check withdraws detail even if hydration already finished.
 }
 
 func (work *windowPublication) read(ctx context.Context, update ThreadUpdate) (ThreadUpdate, error) {
@@ -190,7 +215,7 @@ func (subscription *ThreadUpdateSubscription) enqueueWindowLocked(actor *threadR
 	if update.Window != nil && update.Window.Value != nil {
 		reserve = min(reserve, threadDisplayPageBytes)
 	}
-	return subscription.enqueuePreparedLocked(queuedThreadUpdate{update: cloneThreadUpdate(update), bytes: len(raw) + reserve, hydration: work})
+	return subscription.enqueuePreparedLocked(queuedThreadUpdate{update: cloneThreadUpdate(update), bytes: len(raw) + reserve, hydration: work, interest: interest.lifetime})
 }
 
 // Field-mode publication selects the current resident identities without any

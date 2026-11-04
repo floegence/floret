@@ -155,6 +155,9 @@ func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadU
 		}
 		if queued := subscription.inflight; queued != nil {
 			update, hydration := cloneThreadUpdate(queued.update), queued.hydration
+			if queued.detailReleased || queued.interest != nil && queued.interest.ctx.Err() != nil {
+				update, hydration = withoutWindowDetail(update), nil
+			}
 			subscription.mu.Unlock()
 			var err error
 			if hydration != nil {
@@ -170,7 +173,7 @@ func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadU
 				subscription.mu.Unlock()
 				return ThreadUpdate{}, ctx.Err()
 			}
-			if hydration != nil && hydration.interest.ctx.Err() != nil {
+			if queued.detailReleased || queued.interest != nil && queued.interest.ctx.Err() != nil {
 				// The reading surface changed. Keep semantic/version continuity,
 				// but never resurrect its obsolete detail or report cancellation.
 				update, err = withoutWindowDetail(queued.update), nil
@@ -233,9 +236,11 @@ func (subscription *ThreadUpdateSubscription) closeWithError(err error) {
 // bounded source bytes in addition to the encoded metadata; in-flight work
 // remains charged until the consumer accepts it.
 type queuedThreadUpdate struct {
-	update    ThreadUpdate
-	bytes     int
-	hydration *windowPublication
+	update         ThreadUpdate
+	bytes          int
+	hydration      *windowPublication
+	interest       *windowInterestLifetime
+	detailReleased bool
 }
 
 func (subscription *ThreadUpdateSubscription) finishLocked(err error) {

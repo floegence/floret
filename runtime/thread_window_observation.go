@@ -188,15 +188,16 @@ func (subscription *ThreadUpdateSubscription) ClearWindow(threadID identity.Thre
 		read.cancel(ErrThreadUpdateInvalidated)
 	}
 	delete(subscription.windowReads, threadID.String())
+	if queued := subscription.inflight; queued != nil && queued.update.ThreadID == threadID {
+		queued.detailReleased = true
+	}
 	// A queued event may contain detail for the cleared window. Continuity is
 	// retained by replacing only its detail fields, never semantic facts.
 	count := len(subscription.updates)
 	for range count {
 		queued := <-subscription.updates
 		if queued.update.ThreadID == threadID {
-			queued.update.Items = nil
-			queued.update.Window = nil
-			queued.update.Turns = nil
+			queued.update = withoutWindowDetail(queued.update)
 			queued.hydration = nil
 			raw, _ := json.Marshal(queued.update)
 			subscription.queuedBytes -= queued.bytes - len(raw)

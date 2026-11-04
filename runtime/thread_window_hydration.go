@@ -258,7 +258,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 				subscription.windows = map[string]threadWindowInterest{}
 			}
 			if previous := subscription.windows[input.ThreadID.String()]; previous.lifetime != nil {
-				previous.lifetime.cancel()
+				subscription.retireWindowLocked(previous.lifetime)
 			}
 			retainedInput := normalizeWindowInput(input)
 			if input.AnchorOffset != 0 || input.SkipRange != nil || len(input.RetainItemIDs) > 0 {

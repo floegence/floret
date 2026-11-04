@@ -593,7 +593,16 @@ ActivityFields publication captures bounded immutable sources and hydrates them
 in Next outside actor, service and subscription locks. The existing queue owns
 ordering and charges queued plus in-flight data; caller cancellation retains the
 undelivered mutation. Replacing or clearing an interest cancels its body read and
-removes obsolete detail without dropping versioned semantic facts. Live source
+removes obsolete detail without dropping versioned semantic facts.
+All queued window detail carries its interest ownership, including resident
+mutations that need no hydration. Retirement removes the entire remaining
+detail dependency chain (items, automatic windows, selected turns and order),
+while retaining ordered controls and other semantic components. Accepted
+explicit SetWindow baselines keep their request correlation and are delivered
+before their interest's later deltas. In-flight retirement retains its read
+reservation until the canceled read unwinds. No historical read or extra
+publication is required to withdraw an interest.
+Live source
 previews are captured at append time so source completion cannot invalidate a
 queued first preview. Legacy complete-presentation subscriptions retain their
 published materialization behavior and still require separate qualification.
