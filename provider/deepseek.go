@@ -163,19 +163,54 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 		r.ends = append(r.ends, len(r.input))
 	}
 }
-func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]deepSeekResolvedImage) (deepSeekRendered, []json.RawMessage, error) {
+func deepSeekCanonicalCount(message Message) int {
+	if message.Role == RoleSystem {
+		return 0
+	}
+	count := len(message.ToolCalls)
+	if message.Text != "" || len(message.Attachments) > 0 || (message.Reasoning != "" && len(message.ToolCalls) == 0) {
+		count++
+	}
+	if message.ToolResult != nil {
+		count++
+	}
+	return count
+}
+
+// An exact saved prefix item seals its canonical boundary. A later assistant
+// fragment must not absorb it, even when no user/tool message separates them.
+func deepSeekAssistantPrefixBoundary(message Message, prefix []string, offset int) bool {
+	count := deepSeekCanonicalCount(message)
+	if count == 0 || offset+count > len(prefix) {
+		return false
+	}
+	var signatures []string
+	if message.Text != "" {
+		signatures = append(signatures, deepSeekSignature(deepSeekInput{Type: "message", Role: "assistant", Content: message.Text}))
+	} else if message.Reasoning != "" && len(message.ToolCalls) == 0 {
+		signatures = append(signatures, deepSeekSignature(deepSeekInput{Type: "reasoning", Content: []map[string]string{{"type": "reasoning_text", "text": message.Reasoning}}}))
+	}
+	for _, call := range message.ToolCalls {
+		signatures = append(signatures, deepSeekSignature(deepSeekInput{Type: "function_call", CallID: call.ID, Name: call.Name, Arguments: call.Args}))
+	}
+	return slices.Equal(signatures, prefix[offset:offset+count])
+}
+
+func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]deepSeekResolvedImage, prefix []string) (deepSeekRendered, []json.RawMessage, error) {
 	// Canonical conversation may split one provider answer around hosted activity.
 	// Adjacent assistant fragments and calls still represent one provider response.
 	merged := make([]Message, 0, len(messages))
+	canonicalCount := 0
 	for _, message := range messages {
-		if len(merged) > 0 && message.Role == RoleAssistant && message.ToolResult == nil && len(message.Attachments) == 0 {
+		if len(merged) > 0 {
 			previous := &merged[len(merged)-1]
-			if previous.Role == RoleAssistant && previous.ToolResult == nil && len(previous.Attachments) == 0 {
+			if message.Role == RoleAssistant && message.ToolResult == nil && len(message.Attachments) == 0 && previous.Role == RoleAssistant && previous.ToolResult == nil && len(previous.Attachments) == 0 && !deepSeekAssistantPrefixBoundary(*previous, prefix, canonicalCount) {
 				previous.Text += message.Text
 				previous.Reasoning += message.Reasoning
 				previous.ToolCalls = append(append([]ToolCall(nil), previous.ToolCalls...), message.ToolCalls...)
 				continue
 			}
+			canonicalCount += deepSeekCanonicalCount(*previous)
 		}
 		merged = append(merged, message)
 	}
@@ -291,22 +326,24 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 	if err := configbridge.ReasoningCapability(g.capabilities.ReasoningCapability).ValidateSelection(configbridge.ReasoningSelection(req.Reasoning)); err != nil {
 		return nil, history, err
 	}
-	images := map[string]deepSeekResolvedImage{}
-	rendered, system, err := g.renderMessages(ctx, req.Messages, images)
-	if err != nil {
-		return nil, history, err
-	}
-	history = deepSeekHistory{Compatibility: deepSeekHash(g.identity), Prefix: rendered.prefix, Input: rendered.input}
+	var previous deepSeekHistory
 	if state := req.PreviousState; state != nil {
 		if state.Kind != deepSeekStateKind || strings.TrimSpace(state.ID) == "" {
 			return nil, history, errors.New("invalid DeepSeek response state kind or identity")
 		}
-		var previous deepSeekHistory
 		decoder := json.NewDecoder(strings.NewReader(state.Attributes["history"]))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&previous); err != nil {
 			return nil, history, fmt.Errorf("invalid DeepSeek response history: %w", err)
 		}
+	}
+	images := map[string]deepSeekResolvedImage{}
+	rendered, system, err := g.renderMessages(ctx, req.Messages, images, previous.Prefix)
+	if err != nil {
+		return nil, history, err
+	}
+	history = deepSeekHistory{Compatibility: deepSeekHash(g.identity), Prefix: rendered.prefix, Input: rendered.input}
+	if req.PreviousState != nil {
 		if previous.Compatibility != history.Compatibility || len(previous.Prefix) > len(rendered.prefix) || !slices.Equal(previous.Prefix, rendered.prefix[:len(previous.Prefix)]) || len(previous.Input) == 0 {
 			return nil, history, errors.New("DeepSeek response history does not match canonical context")
 		}

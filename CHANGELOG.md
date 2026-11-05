@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve saved DeepSeek canonical assistant boundaries when a Retry follows
+  retained reasoning with a tool call. Validate the complete saved prefix and
+  replay native history unchanged without discarding state or replaying tools.
+
 - Bound frozen provider preparation contexts to one logical request or compaction
   candidate. Retain them through refits, transport retries and summary regeneration;
   cancel settled and discarded preparations so remote gateway resources can drain.

@@ -100,7 +100,10 @@ Pro supports hosted search; Flash uses the independent Search API. The public
 `DeepSeekModelCapabilities` query owns exact-model support. Previously published
 explicit hosted-tool input and opaque search-item replay remain valid throughout v7. Hosted observations never dispatch local tools. Canonical-prefix hashes
 bind opaque provider input/output items to the projected history. Current
-system instructions are rendered from the current request. Invalid state,
+system instructions are rendered from the current request. Exact saved prefix
+signatures seal existing assistant boundaries before adjacent fragments merge.
+Retry can follow retained standalone reasoning with a new tool call without
+changing earlier signatures or dropping native history. Invalid state,
 unsupported items, malformed streams, and missing terminal responses fail
 explicitly. Runtime clears provider state at its existing lineage boundaries. Turns with
 SupplementalContext neither reuse nor persist provider state, preserving the

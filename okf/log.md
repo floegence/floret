@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-05: Preserve exact saved DeepSeek assistant boundaries across Retry;
+  retain native reasoning and confirmed tool exchanges without resetting state.
+
 - 2026-11-03: Document linear current-turn ancestry and same-read validated
   source reuse in [storage](api/storage.md).
 

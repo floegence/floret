@@ -1478,7 +1478,10 @@ continue to return `provider.ErrContextOverflow`.
 DeepSeek is stateless. Floret retains provider-native response items in opaque
 state, validates them against the canonical conversation, and returns the full
 input history on each call, including search receipts and reasoning. Hosts must
-not inspect or rebuild this state. Supplemental-context Turns retain their
+not inspect or rebuild this state. Exact saved canonical signatures preserve
+assistant boundaries when a Retry follows retained reasoning with a tool call;
+adjacent fragments cannot absorb already bound history. Changed history still
+fails explicitly. Supplemental-context Turns retain their
 existing no-continuation-state privacy boundary. Prepared estimates include the complete wire
 payload using the offline official DeepSeek V4 tokenizer, 10% text headroom,
 and 1024 tokens per actual image. These are conservative predictions, not native
