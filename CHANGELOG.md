@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Return typed preparation failure facts in model-visible JSON Text as well as
+  Structured. Preserve error code, pre-execution state and Activity without
+  authorizing dispatch or replay.
+
 - Add provider.ParseOpenAIModelMetadata for explicit gateway serving limits,
   modalities, tool support and reasoning efforts. Preserve unknown facts and
   independent input/context limits; reject contradictory declarations. Add the

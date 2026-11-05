@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -39,11 +41,15 @@ func TestPreparationErrorPreservesFactsWithoutDispatch(t *testing.T) {
 			if invoked || dispatched || !got.IsError || got.RequiresEffectFinalization() || got.DispatchErr != nil {
 				t.Fatalf("invalid boundary: %#v", got)
 			}
-			if got.CallID != call.ID || got.Name != call.Name || got.Text != failure.Message {
+			if got.CallID != call.ID || got.Name != call.Name {
 				t.Fatalf("identity/content: %#v", got)
 			}
 			if got.Structured["execution"].(map[string]any)["started"] != false || got.Structured["error"].(map[string]any)["code"] != failure.Code {
 				t.Fatalf("facts: %#v", got.Structured)
+			}
+			var model map[string]any
+			if err := json.Unmarshal([]byte(got.Text), &model); err != nil || !reflect.DeepEqual(model, got.Structured) {
+				t.Fatalf("model lost preparation facts: %s (%v)", got.Text, err)
 			}
 			payload := got.Activity.Payload.(StructuredActivityPayload)
 			if payload.Error.Code != failure.Code || payload.Operation != "inspect" || len(payload.Inputs) != 1 {

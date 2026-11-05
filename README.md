@@ -1878,4 +1878,5 @@ queries expose it through `ThreadItemRangeUnknownActivity` and unknown counts.
 Resource extractors may return tools.PreparationError with a safe Code and
 Message (and an optional wrapped Cause). The result retains structured error
 facts and execution:{phase:"resource_extraction",started:false} before effect
-authorization. Activity keeps the typed code; this is not retry authority.
+authorization. Text and Structured expose the same JSON facts to the model and
+retained result. Activity keeps the typed code; this is not retry authority.

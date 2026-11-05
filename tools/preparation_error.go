@@ -1,6 +1,9 @@
 package tools
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // PreparationError carries host-sanitized facts from resource extraction before
 // authorization or handler execution. It never authorizes retry or dispatch.
@@ -28,6 +31,8 @@ func resourcePreparationFailure(call ToolCall, def Definition, inv erasedInvocat
 		"status": "error", "error": map[string]any{"code": failure.Code, "message": failure.Message},
 		"execution": map[string]any{"phase": "resource_extraction", "started": false},
 	}
+	encoded, _ := json.Marshal(result.Structured) // Closed string/bool shape is always JSON encodable.
+	result.Text = string(encoded)
 	result.Activity = CloneActivityPresentation(preparedDispatchActivity(def, inv))
 	if result.Activity == nil {
 		result.Activity = &ActivityPresentation{Renderer: ActivityRendererStructured}

@@ -311,3 +311,10 @@ unsettled execution remains terminal.
 ## Input property order
 
 `tools.InputPropertyOrder` returns declared required root properties first and remaining properties alphabetically, without changing validation. See [provider rendering](provider.md#tool-schema-rendering-order) for final encoding and freezing. `StrictObject` retains its existing sorted required array.
+
+## Preparation failure facts
+
+A typed `PreparationError` returns identical JSON in Result.Text and Result.Structured:
+status, safe error code/message, and execution phase resource_extraction with
+started:false. It reaches neither authorization nor handler dispatch and carries
+no retry advice. Untyped preparation failures retain their existing text contract.
