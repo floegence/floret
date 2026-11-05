@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/provider"
@@ -38,5 +39,24 @@ func TestOutputFinalizationPreservesEphemeralFingerprintFence(t *testing.T) {
 	}
 	if got.RawPlan.PayloadHash != "" || got.MaxOutputTokens != 393216 {
 		t.Fatalf("output request=%+v", got)
+	}
+}
+
+func TestOutputRefitRetainsPreparationUntilDiscarded(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	e := &Engine{provider: budgetControlProvider{}}
+	req := provider.Request{Prepared: &budgetControlPrepared{}, PreparationCancel: cancel, ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 950000, ModelMaxOutputTokens: 393216}, ContextPressure: contextpolicy.ContextPressure{ProjectedInputTokens: 100}}
+	got, err := e.finalizeRequestOutput(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("refit cancelled the frozen preparation")
+	}
+	if err := closePreparedRequest(got); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("discarded refit retained the preparation")
 	}
 }

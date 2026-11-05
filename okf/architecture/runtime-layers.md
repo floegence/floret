@@ -28,6 +28,13 @@ projection. `Engine` owns one run's provider loop, tool dispatch, compaction
 decision, control signals, and events. Gateway owns transport and provider
 rendering.
 
+Engine owns one cancellable preparation context per logical frozen provider
+request. Output refits and physical retries retain it; settlement and discarded
+candidates cancel it. Compaction owns the same boundary per candidate and summary
+batch, including regeneration. Gateway attempt Close remains replay-safe until
+that context ends. This lets remote transports release ephemeral frozen resources
+without adding durable lifecycle state or changing the public prepared interfaces.
+
 Engine constructs each local tool-call message once, then AgentHarness commits
 assistant output, calls and opaque provider state in one transaction. Engine
 applies only the returned canonical messages. Engine-generated continuation and

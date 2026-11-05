@@ -532,7 +532,9 @@ func (u Usage) Normalized() Usage {
 }
 
 // RequestPreparer renders a complete provider request before context limits
-// are applied.
+// are applied. Engine-owned preparation contexts cover the logical request,
+// including output refits and retries; their cancellation releases its frozen
+// resources after settlement or when the request is discarded.
 type RequestPreparer interface {
 	Prepare(context.Context, Request) (PreparedRequest, error)
 }

@@ -71,21 +71,25 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			req.Attempt = 1
 			req.AttemptEpoch = details.Attempts + 1
 			req.AttemptID = fmt.Sprintf("%s:generation:0:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
-			prepared, inputTokens, err := g.prepareSummaryRequest(ctx, req)
+			preparationCtx, release := context.WithCancel(ctx)
+			prepared, inputTokens, err := g.prepareSummaryRequest(preparationCtx, req)
 			if err != nil && !provider.IsCapacityOverflow(err) {
+				release()
 				return "", details, err
 			}
 			capacityErr := err
 			if err != nil {
 				details.OverflowRetries++
 			} else if !summaryRequestFits(inputTokens, policy, cap) {
+				release()
 				if prepared != nil {
 					if err := prepared.Close(); err != nil {
 						return "", details, err
 					}
 				}
 			} else {
-				summary, err := g.generateBatch(ctx, req, prepared, inputTokens, &details)
+				summary, err := g.generateBatch(preparationCtx, req, prepared, inputTokens, &details)
+				release()
 				if err == nil {
 					previous = summary
 					cursor = batch.next
@@ -98,6 +102,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 				details.OverflowRetries++
 				capacityErr = err
 			}
+			release()
 			if batch.bytes <= 1 {
 				return "", details, errors.Join(capacityErr, errors.New("compaction summary indivisible image or fixed prefix exceeds provider capacity"))
 			}

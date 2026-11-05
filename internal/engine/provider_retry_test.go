@@ -155,6 +155,7 @@ type replayRecoveryProvider struct {
 	drift, failClose bool
 }
 type replayRecoveryHandle struct {
+	lifetime     context.Context
 	owner        *replayRecoveryProvider
 	req          provider.Request
 	closed, used bool
@@ -187,8 +188,10 @@ func TestProviderRecoveryRefreshesAttemptMeasurementPrefix(t *testing.T) {
 	}
 }
 
-func (p *replayRecoveryProvider) PrepareRequest(_ context.Context, req provider.Request) (provider.PreparedRequest, error) {
-	return p.prepare(req, "frozen"), nil
+func (p *replayRecoveryProvider) PrepareRequest(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
+	h := p.prepare(req, "frozen")
+	h.lifetime = ctx
+	return h, nil
 }
 func (p *replayRecoveryProvider) prepare(req provider.Request, fingerprint string) *replayRecoveryHandle {
 	h := &replayRecoveryHandle{owner: p, req: req, fingerprint: fingerprint}
@@ -196,6 +199,9 @@ func (p *replayRecoveryProvider) prepare(req provider.Request, fingerprint strin
 	return h
 }
 func (h *replayRecoveryHandle) Stream(ctx context.Context) (<-chan provider.StreamEvent, error) {
+	if h.lifetime.Err() != nil {
+		return nil, h.lifetime.Err()
+	}
 	if h.used || h.closed {
 		return nil, errors.New("single-use violation")
 	}
@@ -219,7 +225,9 @@ func (h *replayRecoveryHandle) PrepareRetry(_ context.Context, req provider.Requ
 	if h.owner.drift {
 		fingerprint = "changed"
 	}
-	return h.owner.prepare(req, fingerprint), nil
+	next := h.owner.prepare(req, fingerprint)
+	next.lifetime = h.lifetime
+	return next, nil
 }
 func TestProviderRecoveryUsesFreshSingleUsePreparationsAndRejectsDrift(t *testing.T) {
 	for _, mode := range []string{"recover", "drift", "close"} {
@@ -238,6 +246,9 @@ func TestProviderRecoveryUsesFreshSingleUsePreparationsAndRejectsDrift(t *testin
 			for _, h := range p.handles {
 				if !h.closed {
 					t.Fatal("preparation leaked")
+				}
+				if !errors.Is(h.lifetime.Err(), context.Canceled) {
+					t.Fatal("settled retry retained its preparation lifetime")
 				}
 			}
 		})

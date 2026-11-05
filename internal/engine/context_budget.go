@@ -85,7 +85,7 @@ func (e *Engine) finalizeRequestOutput(ctx context.Context, req provider.Request
 	if next == nil {
 		return req, errors.New("provider returned nil output-limited request")
 	}
-	if err := closePreparedRequest(req); err != nil {
+	if err := closePreparedAttempt(req); err != nil {
 		return req, errors.Join(err, next.Close())
 	}
 	req.Prepared = next

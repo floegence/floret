@@ -2746,14 +2746,18 @@ func (e *Engine) estimateRequestTokens(ctx context.Context, req provider.Request
 
 func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Request) (provider.Request, error) {
 	if preparer, ok := e.provider.(provider.RequestPreparer); ok {
-		prepared, err := preparer.PrepareRequest(ctx, req)
+		preparationCtx, cancel := context.WithCancel(ctx)
+		prepared, err := preparer.PrepareRequest(preparationCtx, req)
 		if err != nil {
+			cancel()
 			return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
 		}
 		if prepared == nil {
+			cancel()
 			return provider.Request{}, withFailureOrigin(errors.New("provider returned a nil prepared request"), FailureOriginProvider)
 		}
 		req.Prepared = prepared
+		req.PreparationCancel = cancel
 		estimate := prepared.TokenEstimate()
 		if err := validatePreparedTokenEstimate(estimate); err != nil {
 			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
@@ -2826,6 +2830,14 @@ func addNonnegativeTokenCounts(values ...int64) (int64, bool) {
 }
 
 func closePreparedRequest(req provider.Request) error {
+	if req.PreparationCancel != nil {
+		req.PreparationCancel()
+	}
+	return closePreparedAttempt(req)
+}
+
+// Closing an attempt preserves frozen replay until its logical preparation ends.
+func closePreparedAttempt(req provider.Request) error {
 	if req.Prepared == nil {
 		return nil
 	}
@@ -3141,7 +3153,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (out StepOutput, latency int64, overflow bool, retErr error) {
 	if req.Prepared != nil {
 		defer func() {
-			if closeErr := closePreparedRequest(req); closeErr != nil {
+			if closeErr := closePreparedAttempt(req); closeErr != nil {
 				retErr = &failureOriginError{origin: FailureOriginContract, err: errors.Join(retErr, closeErr)}
 				overflow = false
 			}

@@ -289,7 +289,7 @@ func newPreparedLifecycleProvider(behaviors ...preparedBehavior) *preparedLifecy
 	return &preparedLifecycleProvider{behaviors: behaviors}
 }
 
-func (p *preparedLifecycleProvider) PrepareRequest(_ context.Context, _ provider.Request) (provider.PreparedRequest, error) {
+func (p *preparedLifecycleProvider) PrepareRequest(ctx context.Context, _ provider.Request) (provider.PreparedRequest, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	index := len(p.handles)
@@ -305,6 +305,7 @@ func (p *preparedLifecycleProvider) PrepareRequest(_ context.Context, _ provider
 		behavior.estimate = preparedEstimate(10)
 	}
 	handle := &preparedLifecycleHandle{
+		lifetime:    ctx,
 		behavior:    behavior,
 		fingerprint: fmt.Sprintf("prepared-payload-%d", index+1),
 	}
@@ -327,6 +328,7 @@ func (p *preparedLifecycleProvider) snapshotHandles() []*preparedLifecycleHandle
 
 type preparedLifecycleHandle struct {
 	mu          sync.Mutex
+	lifetime    context.Context
 	behavior    preparedBehavior
 	fingerprint string
 	streamCalls int
@@ -404,6 +406,9 @@ func assertPreparedHandlesTerminated(t *testing.T, p *preparedLifecycleProvider,
 		handle.mu.Unlock()
 		if gotStreamCalls != streamCalls[index] || gotCloseCalls != 1 || !closed {
 			t.Fatalf("handle %d lifecycle: stream=%d close=%d closed=%t, want stream=%d close=1 closed", index, gotStreamCalls, gotCloseCalls, closed, streamCalls[index])
+		}
+		if !errors.Is(handle.lifetime.Err(), context.Canceled) {
+			t.Fatalf("handle %d retained its preparation lifetime after settlement", index)
 		}
 	}
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound frozen provider preparation contexts to one logical request or compaction
+  candidate. Retain them through refits, transport retries and summary regeneration;
+  cancel settled and discarded preparations so remote gateway resources can drain.
+
 - Return typed preparation failure facts in model-visible JSON Text as well as
   Structured. Preserve error code, pre-execution state and Activity without
   authorizing dispatch or replay.

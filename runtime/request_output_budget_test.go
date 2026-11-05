@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -15,20 +16,26 @@ type outputBudgetGateway struct {
 	*florettest.ScriptedGateway
 	tokens               int64
 	preparations, refits int
+	lifetime             context.Context
 }
 
 func (g *outputBudgetGateway) Prepare(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
 	g.preparations++
-	return &outputBudgetPrepared{gateway: g, request: req}, ctx.Err()
+	g.lifetime = ctx
+	return &outputBudgetPrepared{gateway: g, request: req, lifetime: ctx}, ctx.Err()
 }
 
 type outputBudgetPrepared struct {
-	gateway *outputBudgetGateway
-	request provider.Request
-	closed  bool
+	gateway  *outputBudgetGateway
+	request  provider.Request
+	closed   bool
+	lifetime context.Context
 }
 
 func (p *outputBudgetPrepared) Stream(ctx context.Context) (<-chan provider.Event, error) {
+	if p.lifetime.Err() != nil {
+		return nil, p.lifetime.Err()
+	}
 	if p.closed {
 		return nil, fmt.Errorf("request already consumed")
 	}
@@ -49,16 +56,19 @@ func (p *outputBudgetPrepared) WithMaxOutputTokens(ctx context.Context, limit in
 	p.gateway.refits++
 	req := p.request
 	req.MaxOutputTokens = limit
-	return &outputBudgetPrepared{gateway: p.gateway, request: req}, ctx.Err()
+	return &outputBudgetPrepared{gateway: p.gateway, request: req, lifetime: p.lifetime}, ctx.Err()
 }
 func (p *outputBudgetPrepared) PrepareRetry(ctx context.Context, next provider.Request) (provider.PreparedRequest, error) {
+	if p.lifetime.Err() != nil {
+		return nil, p.lifetime.Err()
+	}
 	if next.MaxOutputTokens != p.request.MaxOutputTokens {
 		return nil, fmt.Errorf("retry changed frozen output ceiling")
 	}
 	req := p.request
 	req.AttemptID = next.AttemptID
 	req.AttemptEpoch = next.AttemptEpoch
-	return &outputBudgetPrepared{gateway: p.gateway, request: req}, ctx.Err()
+	return &outputBudgetPrepared{gateway: p.gateway, request: req, lifetime: p.lifetime}, ctx.Err()
 }
 
 func TestRequestOutputBudgetFreezesOnceAndSurvivesRetry(t *testing.T) {
@@ -82,6 +92,9 @@ func TestRequestOutputBudgetFreezesOnceAndSurvivesRetry(t *testing.T) {
 	view := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
 	if view.Failure != nil || g.preparations != 1 || g.refits != 1 {
 		t.Fatalf("failure=%+v prepare=%d refit=%d", view.Failure, g.preparations, g.refits)
+	}
+	if !errors.Is(g.lifetime.Err(), context.Canceled) {
+		t.Fatal("completed provider request retained its preparation lifetime")
 	}
 	reqs := g.Requests()
 	if len(reqs) != 2 || reqs[0].MaxOutputTokens != 393216 || reqs[1].MaxOutputTokens != 393216 {

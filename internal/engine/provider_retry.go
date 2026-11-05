@@ -24,6 +24,9 @@ type providerAttemptResult struct {
 }
 
 func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options, step int, initial provider.Request, metrics *RunMetrics) (provider.Request, StepOutput, int64, bool, error) {
+	if initial.PreparationCancel != nil {
+		defer initial.PreparationCancel()
+	}
 	frozen, freezeErr := json.Marshal(initial)
 	if freezeErr != nil {
 		return initial, StepOutput{}, 0, false, errors.Join(freezeErr, closePreparedRequest(initial))
@@ -56,6 +59,7 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 			next.AttemptEpoch = e.attemptEpoch
 			next.AttemptID = fmt.Sprintf("%s:attempt:%d", next.LogicalRequestID, next.AttemptEpoch)
 			next.Attempt = initial.Attempt + n
+			next.PreparationCancel = initial.PreparationCancel
 			next.PromptStore = e.prompt // staged immutable segments were committed on the first send.
 			if initial.Prepared != nil {
 				replayer, ok := initial.Prepared.(provider.PreparedRequestReplay)

@@ -703,6 +703,12 @@ payload and estimate while refreshing the attempt's transport measurement prefix
 usage without matching transport evidence remains billable but cannot establish
 an exact context anchor.
 
+The Engine bounds each preparation context to one logical frozen request. That
+context survives output refits and all physical retries, then is cancelled when
+the request settles or is discarded. Compaction bounds each candidate and summary
+batch separately. Remote gateways can release frozen resources on cancellation;
+closing a single attempt still preserves replay during the preparation lifetime.
+
 `WithAgentProviderRequestTimeoutPolicy` configures one physical request clock,
 shared by ordinary requests, compaction and titles. Zero fields use
 `DefaultProviderRequestTimeoutPolicy`: five minutes without first semantic output,

@@ -60,17 +60,20 @@ type frozenImageSummaryProvider struct {
 	oversized                          bool
 }
 type frozenImageSummary struct {
-	owner   *frozenImageSummaryProvider
-	request provider.Request
-	closed  bool
+	owner    *frozenImageSummaryProvider
+	request  provider.Request
+	closed   bool
+	lifetime context.Context
 }
 
 func (p *frozenImageSummaryProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
 	panic("must stream frozen images")
 }
-func (p *frozenImageSummaryProvider) PrepareRequest(_ context.Context, req provider.Request) (provider.PreparedRequest, error) {
+func (p *frozenImageSummaryProvider) PrepareRequest(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
 	p.prepared++
-	return p.handle(req), nil
+	h := p.handle(req)
+	h.lifetime = ctx
+	return h, nil
 }
 func (p *frozenImageSummaryProvider) handle(req provider.Request) *frozenImageSummary {
 	h := &frozenImageSummary{owner: p, request: req}
@@ -98,7 +101,9 @@ func (h *frozenImageSummary) PrepareRetry(_ context.Context, req provider.Reques
 	h.owner.replays++
 	// Preserve frozen content, updating only observable transport identity.
 	req.Messages = session.CloneMessages(h.request.Messages)
-	return h.owner.handle(req), nil
+	next := h.owner.handle(req)
+	next.lifetime = h.lifetime
+	return next, nil
 }
 func (h *frozenImageSummary) WithMaxOutputTokens(_ context.Context, cap int64) (provider.PreparedRequest, error) {
 	if h.closed {
@@ -107,9 +112,14 @@ func (h *frozenImageSummary) WithMaxOutputTokens(_ context.Context, cap int64) (
 	h.owner.refits++
 	req := h.request
 	req.MaxOutputTokens = cap
-	return h.owner.handle(req), nil
+	next := h.owner.handle(req)
+	next.lifetime = h.lifetime
+	return next, nil
 }
 func (h *frozenImageSummary) Stream(context.Context) (<-chan provider.StreamEvent, error) {
+	if h.lifetime != nil && h.lifetime.Err() != nil {
+		return nil, h.lifetime.Err()
+	}
 	p := h.owner
 	p.streams++
 	p.requests = append(p.requests, h.request)
@@ -143,6 +153,9 @@ func TestImageSummaryTransportRetryAndRegenerationKeepFrozenInput(t *testing.T) 
 		if !h.closed {
 			t.Fatal("frozen image handle leaked")
 		}
+		if h.lifetime != nil && !errors.Is(h.lifetime.Err(), context.Canceled) {
+			t.Fatal("completed summary retained its preparation lifetime")
+		}
 	}
 	for _, req := range p.requests {
 		if req.Messages[1].Content != p.requests[0].Messages[1].Content {
@@ -159,6 +172,9 @@ func TestSingleImageCannotSilentlyFallBackToTextSummary(t *testing.T) {
 	for _, h := range p.handles {
 		if !h.closed {
 			t.Fatal("overflow image handle leaked")
+		}
+		if h.lifetime != nil && !errors.Is(h.lifetime.Err(), context.Canceled) {
+			t.Fatal("discarded summary retained its preparation lifetime")
 		}
 	}
 }

@@ -24,8 +24,9 @@ var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close 
 type Request struct {
 	// DisableProviderState fences auxiliary generations from native continuation.
 	DisableProviderState bool
-	ModelContextEntryID  string `json:"-"`
-	PressureAnchorReason string `json:"-"`
+	ModelContextEntryID  string             `json:"-"`
+	PressureAnchorReason string             `json:"-"`
+	PreparationCancel    context.CancelFunc `json:"-"`
 
 	RunID            string
 	ThreadID         string
