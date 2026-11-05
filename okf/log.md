@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-05: Validate exact DeepSeek history boundaries within Runtime-grouped
+  messages and qualify a released-writer incident fixture through adoption.
+
 - 2026-11-05: Preserve exact saved DeepSeek assistant boundaries across Retry;
   retain native reasoning and confirmed tool exchanges without resetting state.
 

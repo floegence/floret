@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate saved DeepSeek signatures inside Runtime-grouped assistant messages.
+  Retain released native history across interrupted reasoning or text and
+  confirmed tool exchanges, including after restart and Fork.
+
 - Preserve saved DeepSeek canonical assistant boundaries when a Retry follows
   retained reasoning with a tool call. Validate the complete saved prefix and
   replay native history unchanged without discarding state or replaying tools.

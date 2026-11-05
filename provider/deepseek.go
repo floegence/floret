@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,27 +165,7 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 		r.ends = append(r.ends, len(r.input))
 	}
 }
-func deepSeekCanonicalCount(message Message) int {
-	if message.Role == RoleSystem {
-		return 0
-	}
-	count := len(message.ToolCalls)
-	if message.Text != "" || len(message.Attachments) > 0 || (message.Reasoning != "" && len(message.ToolCalls) == 0) {
-		count++
-	}
-	if message.ToolResult != nil {
-		count++
-	}
-	return count
-}
-
-// An exact saved prefix item seals its canonical boundary. A later assistant
-// fragment must not absorb it, even when no user/tool message separates them.
-func deepSeekAssistantPrefixBoundary(message Message, prefix []string, offset int) bool {
-	count := deepSeekCanonicalCount(message)
-	if count == 0 || offset+count > len(prefix) {
-		return false
-	}
+func deepSeekAssistantSignatures(message Message) []string {
 	var signatures []string
 	if message.Text != "" {
 		signatures = append(signatures, deepSeekSignature(deepSeekInput{Type: "message", Role: "assistant", Content: message.Text}))
@@ -193,32 +175,172 @@ func deepSeekAssistantPrefixBoundary(message Message, prefix []string, offset in
 	for _, call := range message.ToolCalls {
 		signatures = append(signatures, deepSeekSignature(deepSeekInput{Type: "function_call", CallID: call.ID, Name: call.Name, Arguments: call.Args}))
 	}
-	return slices.Equal(signatures, prefix[offset:offset+count])
+	return signatures
 }
 
-func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]deepSeekResolvedImage, prefix []string) (deepSeekRendered, []json.RawMessage, error) {
+// A saved item may end inside a Runtime-grouped string. Hash each possible
+// UTF-8 boundary incrementally using the exact JSON representation; a match
+// proves the boundary without guessing or changing the saved native items.
+func deepSeekBoundStringPrefix(ctx context.Context, value, signature string, reasoning bool, limit int) (int, bool, error) {
+	want, err := hex.DecodeString(signature)
+	if err != nil || len(want) != sha256.Size {
+		return 0, false, nil
+	}
+	start, end := `{"type":"message","role":"assistant","content":"`, `"}`
+	if reasoning {
+		start, end = `{"type":"reasoning","content":[{"text":"`, `","type":"reasoning_text"}]}`
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte(start))
+	copyHash := sha256.New()
+	var state [256]byte
+	var sum [sha256.Size]byte
+	for index, r := range value {
+		if limit > 0 && index >= limit {
+			break
+		}
+		if index%4096 < utf8.UTFMax {
+			if err := ctx.Err(); err != nil {
+				return 0, false, err
+			}
+		}
+		width := utf8.RuneLen(r)
+		if r == utf8.RuneError {
+			_, width = utf8.DecodeRuneInString(value[index:])
+		}
+		if limit > 0 && index+width > limit {
+			break
+		}
+		if r >= ' ' && r != '"' && r != '\\' && r != '<' && r != '>' && r != '&' && r != '\u2028' && r != '\u2029' && r != utf8.RuneError {
+			_, _ = h.Write([]byte(value[index : index+width]))
+		} else {
+			encoded, _ := json.Marshal(string(r))
+			_, _ = h.Write(encoded[1 : len(encoded)-1])
+		}
+		binary, _ := h.(encoding.BinaryAppender).AppendBinary(state[:0])
+		_ = copyHash.(encoding.BinaryUnmarshaler).UnmarshalBinary(binary)
+		_, _ = copyHash.Write([]byte(end))
+		if bytes.Equal(copyHash.Sum(sum[:0]), want) {
+			return index + width, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func deepSeekBoundAssistantPieces(ctx context.Context, message Message, prefix []string, offset, reasoningLimit, textLimit int) ([]Message, error) {
+	var pieces []Message
+	for offset < len(prefix) {
+		signatures := deepSeekAssistantSignatures(message)
+		count := min(len(signatures), len(prefix)-offset)
+		if count > 0 && slices.Equal(signatures[:count], prefix[offset:offset+count]) {
+			break
+		}
+		if message.Reasoning != "" && reasoningLimit > 0 {
+			end, ok, err := deepSeekBoundStringPrefix(ctx, message.Reasoning, prefix[offset], true, reasoningLimit)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				pieces = append(pieces, Message{Role: RoleAssistant, Reasoning: message.Reasoning[:end]})
+				message.Reasoning = message.Reasoning[end:]
+				offset++
+				continue
+			}
+		}
+		// Text and non-canonical reasoning cannot be split independently: the
+		// saved signature does not say which text fragment owned that reasoning.
+		if message.Text != "" && message.Reasoning == "" && textLimit > 0 {
+			end, ok, err := deepSeekBoundStringPrefix(ctx, message.Text, prefix[offset], false, textLimit)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				pieces = append(pieces, Message{Role: RoleAssistant, Text: message.Text[:end]})
+				message.Text = message.Text[end:]
+				offset++
+				continue
+			}
+		}
+		break
+	}
+	if message.Text != "" || message.Reasoning != "" || len(message.ToolCalls) > 0 {
+		pieces = append(pieces, message)
+	}
+	return pieces, nil
+}
+
+func deepSeekNativeStringLimits(input []json.RawMessage) (int, int) {
+	var reasoning, text int
+	for _, raw := range input {
+		var item struct {
+			Type    string          `json:"type"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &item) != nil {
+			continue
+		}
+		if item.Type == "reasoning" {
+			var parts []struct{ Text string }
+			if json.Unmarshal(item.Content, &parts) == nil {
+				n := 0
+				for _, part := range parts {
+					n += len(part.Text)
+				}
+				reasoning += n
+			}
+		} else if item.Type == "message" && item.Role == "assistant" {
+			var value string
+			if json.Unmarshal(item.Content, &value) == nil {
+				text += len(value)
+			} else {
+				var parts []struct{ Text string }
+				if json.Unmarshal(item.Content, &parts) == nil {
+					for _, part := range parts {
+						text += len(part.Text)
+					}
+				}
+			}
+		}
+	}
+	return reasoning, text
+}
+
+func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]deepSeekResolvedImage, previous deepSeekHistory) (deepSeekRendered, []json.RawMessage, error) {
 	// Canonical conversation may split one provider answer around hosted activity.
 	// Adjacent assistant fragments and calls still represent one provider response.
 	merged := make([]Message, 0, len(messages))
-	canonicalCount := 0
 	for _, message := range messages {
 		if len(merged) > 0 {
 			previous := &merged[len(merged)-1]
-			if message.Role == RoleAssistant && message.ToolResult == nil && len(message.Attachments) == 0 && previous.Role == RoleAssistant && previous.ToolResult == nil && len(previous.Attachments) == 0 && !deepSeekAssistantPrefixBoundary(*previous, prefix, canonicalCount) {
+			if message.Role == RoleAssistant && message.ToolResult == nil && len(message.Attachments) == 0 && previous.Role == RoleAssistant && previous.ToolResult == nil && len(previous.Attachments) == 0 {
 				previous.Text += message.Text
 				previous.Reasoning += message.Reasoning
 				previous.ToolCalls = append(append([]ToolCall(nil), previous.ToolCalls...), message.ToolCalls...)
 				continue
 			}
-			canonicalCount += deepSeekCanonicalCount(*previous)
 		}
 		merged = append(merged, message)
 	}
 	var out deepSeekRendered
 	var system []json.RawMessage
+	// Saved input contains the bound items; their total content bounds a search
+	// even when an unbound suffix is much larger than the saved history.
+	reasoningLimit, textLimit := deepSeekNativeStringLimits(previous.Input)
 	pending := map[string]bool{}
 	seen := map[string]bool{}
-	for _, m := range merged {
+	for i := 0; i < len(merged); i++ {
+		m := merged[i]
+		if m.Role == RoleAssistant && len(m.Attachments) == 0 && m.ToolResult == nil {
+			pieces, err := deepSeekBoundAssistantPieces(ctx, m, previous.Prefix, len(out.prefix), reasoningLimit, textLimit)
+			if err != nil {
+				return out, nil, err
+			}
+			if len(pieces) > 1 {
+				merged = slices.Insert(merged, i+1, pieces[1:]...)
+				m = pieces[0]
+			}
+		}
 		var content any = m.Text
 		if len(m.Attachments) > 0 {
 			if m.Role != RoleUser || !g.supportsImages || g.resolveAttachment == nil {
@@ -338,7 +460,7 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 		}
 	}
 	images := map[string]deepSeekResolvedImage{}
-	rendered, system, err := g.renderMessages(ctx, req.Messages, images, previous.Prefix)
+	rendered, system, err := g.renderMessages(ctx, req.Messages, images, previous)
 	if err != nil {
 		return nil, history, err
 	}

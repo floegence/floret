@@ -1,0 +1,112 @@
+package runtime_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/tools"
+)
+
+// Run against the exact released writer with FIXTURE_OUTPUT naming a new file.
+func TestGenerateDeepSeekRetryFixture(t *testing.T) {
+	path := os.Getenv("FIXTURE_OUTPUT")
+	if path == "" {
+		t.Fatal("FIXTURE_OUTPUT is required")
+	}
+	var requests, effects atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Input json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch requests.Add(1) {
+		case 1:
+			fmt.Fprint(w, "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"Released writer retained reasoning.\"}\n\n")
+			fmt.Fprint(w, "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"failed\",\"error\":{\"code\":\"fixture_failure\",\"message\":\"fixture failure\"}}}\n\n")
+		case 2:
+			if !strings.Contains(string(body.Input), "Released writer retained reasoning.") {
+				t.Error("Retry lost reasoning")
+			}
+			fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"call-response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"item\",\"call_id\":\"confirmed-call\",\"name\":\"write\",\"arguments\":\"{}\"}]}}\n\n")
+		default:
+			t.Error("old writer unexpectedly sent a third request")
+		}
+	}))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-flash", BaseURL: server.URL, APIKey: "fixture", StateCompatibilityKey: "fixture:v7.107.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := tools.Define[struct{}](tools.Definition{Name: "write", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
+		effects.Add(1)
+		return tools.Result{Text: "CONFIRMED_RELEASED_WRITE"}, nil
+	})
+	gate := runtime.EffectAuthorizationGateFunc(func(ctx context.Context, request runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		return effect(ctx, runtime.EffectAuthorizationProof{EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint, ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now()})
+	})
+	agent, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "fixture", Name: "Fixture"}, SystemPrompt: "Write once.", Context: config.ContextPolicy{ContextWindowTokens: 128000}}, gateway, runtime.WithAgentTools(write), runtime.WithAgentEffectAuthorization(gate), runtime.WithAgentProviderRetryPolicy(runtime.ProviderRetryPolicy{Disabled: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path), IDSource: florettest.NewIDSource(florettest.IDSourceOptions{ThreadIDs: []identity.ThreadID{"fixture", "fixture-fork"}, TurnIDs: []identity.TurnID{"fixture-turn"}, RunIDs: []identity.RunID{"fixture-run"}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := func(id identity.ThreadID) runtime.ThreadView {
+		t.Helper()
+		waited, err := service.(runtime.ThreadWaiter).WaitThreads(t.Context(), runtime.WaitThreadsInput{ThreadIDs: []identity.ThreadID{id}, Timeout: time.Minute})
+		if err != nil || waited.Reason != runtime.ThreadWaitCompleted {
+			t.Fatalf("wait=%+v err=%v", waited, err)
+		}
+		view, err := service.View(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	if _, err := service.Send(t.Context(), runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: runtime.UserInput{Text: "Write once."}}); err != nil {
+		t.Fatal(err)
+	}
+	first := wait(created.ThreadID)
+	if first.Failure == nil {
+		t.Fatal("missing initial failure")
+	}
+	if _, err := service.Retry(t.Context(), runtime.RetryInput{ThreadID: created.ThreadID, SourceTurnID: first.TurnID, RequestKey: "retry"}); err != nil {
+		t.Fatal(err)
+	}
+	failed := wait(created.ThreadID)
+	if failed.Failure == nil || !strings.Contains(failed.Failure.Message, "DeepSeek response history does not match canonical context") || requests.Load() != 2 || effects.Load() != 1 {
+		t.Fatalf("unexpected old writer state: failure=%+v requests=%d effects=%d", failed.Failure, requests.Load(), effects.Load())
+	}
+	if _, err := service.Fork(t.Context(), runtime.ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}

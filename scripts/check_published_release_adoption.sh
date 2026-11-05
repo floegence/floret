@@ -46,6 +46,8 @@ sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/
 cp -R "${repository_root}/internal/sessiontree/testdata/host-work-v7.102.0" historical-host-work
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_correction_test.go" > historical_correction_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/tool-correction-v7.69.1" historical-correction
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_deepseek_retry_test.go" > historical_deepseek_retry_test.go
+cp -R "${repository_root}/internal/sessiontree/testdata/deepseek-retry-v7.107.2" historical-deepseek-retry
 mkdir historical-compaction
 for fixture in "${repository_root}"/internal/sessiontree/testdata/compaction-v*; do
   cp -R "${fixture}" historical-compaction/

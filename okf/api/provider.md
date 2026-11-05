@@ -102,8 +102,13 @@ explicit hosted-tool input and opaque search-item replay remain valid throughout
 bind opaque provider input/output items to the projected history. Current
 system instructions are rendered from the current request. Exact saved prefix
 signatures seal existing assistant boundaries before adjacent fragments merge.
+Runtime may group adjacent assistant records into one message; exact saved
+signatures identify their internal boundaries without changing the public
+projection or discarding native history. Matching is bounded and cancellable.
 Retry can follow retained standalone reasoning with a new tool call without
-changing earlier signatures or dropping native history. Invalid state,
+changing earlier signatures or dropping native history. The released v7.107.2
+fixture qualifies restart, Fork and confirmed effects in both adoption gates.
+Invalid state,
 unsupported items, malformed streams, and missing terminal responses fail
 explicitly. Runtime clears provider state at its existing lineage boundaries. Turns with
 SupplementalContext neither reuse nor persist provider state, preserving the
