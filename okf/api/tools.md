@@ -24,6 +24,13 @@ strict provider-visible schemas and typed handlers.
   `EffectDispatcher` supplied by Floret's durable thread runtime.
 * Schema helpers build strict tool input shapes.
 
+An optional `tools.Define` decoder may check operation-dependent argument
+requirements that the portable provider schema describes in prose. It must be
+deterministic and side-effect-free. Decoder rejection joins schema rejection in
+the existing bounded correction path, including tools without presentation
+callbacks, before resources, permissions or dispatch. Projector, resource,
+storage and handler failures retain their distinct semantics.
+
 `tools.Definition.InvalidActivity` is an optional presentation-only callback
 for a parseable JSON object rejected by the declared input schema or typed
 decoder. It lets engine internals derive safe correction context without

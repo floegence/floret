@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-06: Validate conditional Goal inputs before execution and classify
+  typed decoder rejection through bounded model correction without exposing
+  invalid calls as Activity or reclassifying projector and business failures.
+
 - 2026-11-05: Clarify that standalone web fetch reads a known URL independently
   of host search configuration, without changing execution or public contracts.
 

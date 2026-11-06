@@ -158,7 +158,7 @@ func TestApplicationStorageSourceIsOpaque(t *testing.T) {
 
 func TestPublicPackageDependencyDirection(t *testing.T) {
 	allowed := map[string]map[string]bool{
-		"tools":       {"identity": true, "tools": true, "internal/activitymerge": true},
+		"tools":       {"identity": true, "tools": true, "internal/activitymerge": true, "internal/toolinput": true},
 		"observation": {"config": true, "identity": true, "tools": true, "internal/usageaccounting": true, "internal/providertransport": true},
 	}
 	for directory, packageAllowlist := range allowed {
@@ -193,26 +193,30 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 	}
 }
 
-// The shared field selector is tool-domain logic, not a dependency on runtime,
-// storage or a downstream presentation. Keep that ownership boundary explicit.
-func TestActivityMergeSelectorHasNoDomainDependencies(t *testing.T) {
-	files, err := filepath.Glob("internal/activitymerge/*.go")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("activity merge selector: %v", err)
-	}
-	for _, path := range files {
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, imported := range file.Imports {
-			value, err := strconv.Unquote(imported.Path.Value)
-			if err != nil {
-				t.Fatal(err)
+// Shared tool-domain helpers must not depend on runtime, storage or downstream
+// presentation. Keep the error identity and field selector dependency-free.
+func TestToolDomainHelpersHaveNoDomainDependencies(t *testing.T) {
+	for _, directory := range []string{"internal/activitymerge", "internal/toolinput"} {
+		t.Run(directory, func(t *testing.T) {
+			files, err := filepath.Glob(directory + "/*.go")
+			if err != nil || len(files) == 0 {
+				t.Fatalf("tool-domain helper: %v", err)
 			}
-			if strings.Contains(value, ".") {
-				t.Fatalf("activity merge selector imports a domain dependency: %s", value)
+			for _, path := range files {
+				file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, imported := range file.Imports {
+					value, err := strconv.Unquote(imported.Path.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(value, ".") {
+						t.Fatalf("tool-domain helper imports a domain dependency: %s", value)
+					}
+				}
 			}
-		}
+		})
 	}
 }

@@ -61,6 +61,28 @@ type goalToolInput struct {
 	NewTask         bool   `json:"new_task"`
 }
 
+func decodeGoalToolInput(raw []byte) (goalToolInput, error) {
+	var in goalToolInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return in, err
+	}
+	switch in.Operation {
+	case "set":
+		if strings.TrimSpace(in.Text) == "" {
+			return in, errors.New("goal set requires nonempty text")
+		}
+	case "delete":
+		if strings.TrimSpace(in.Reason) == "" {
+			return in, errors.New("goal deletion requires a reason")
+		}
+	case "review":
+		if in.Outcome != "completed" && in.Outcome != "continue" && in.Outcome != "blocked" || strings.TrimSpace(in.Evidence) == "" {
+			return in, errors.New("goal review requires an outcome and evidence")
+		}
+	}
+	return in, nil
+}
+
 func goalTool(p *turnProjection) tools.Tool {
 	schema := map[string]any{"type": "object", "properties": map[string]any{
 		"operation":        map[string]any{"type": "string", "enum": []string{"set", "delete", "review"}, "description": "set updates the desired result; delete removes an obsolete Goal; review records whether current work meets it."},
@@ -77,7 +99,7 @@ func goalTool(p *turnProjection) tools.Tool {
 			return nil, err
 		}
 		return goalactivity.Presentation(path, p.turnID, p.runID, inv.CallID, inv.RawArgs, "running", ""), nil
-	}}, nil, nil, func(ctx context.Context, inv tools.Invocation[goalToolInput]) (output tools.Result, resultErr error) {
+	}}, decodeGoalToolInput, nil, func(ctx context.Context, inv tools.Invocation[goalToolInput]) (output tools.Result, resultErr error) {
 		defer func() {
 			path, err := p.goalPath(context.Background())
 			if err != nil {
@@ -104,9 +126,6 @@ func goalTool(p *turnProjection) tools.Tool {
 			}
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 			return tools.Result{Text: "Goal review recorded. Provide a final answer, or continue work if needed."}, nil
-		}
-		if in.Operation == "delete" && strings.TrimSpace(in.Reason) == "" {
-			return tools.Result{}, errors.New("goal deletion requires a reason")
 		}
 		repo, ok := p.thread.harness.options.Repo.(sessiontree.GoalRepo)
 		if !ok {

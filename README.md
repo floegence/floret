@@ -1581,6 +1581,13 @@ Architecture and maintenance knowledge lives in [okf/](okf/).
 
 ## Model input validation
 
+`tools.Define` decoders may validate operation-dependent requirements that a flat
+provider schema cannot express. Keep decoders deterministic and side-effect-free:
+their rejections join schema failures in the correction path before Activity,
+resource resolution or authorization, including tools without Activity callbacks.
+Execution-state checks remain in resource resolution or handlers; their errors
+do not become input correction merely because they mention invalid arguments.
+
 Invalid tool arguments remain strict errors. The Engine records each rejected
 call and its validation result and allows at most two regeneration opportunities
 per correction episode. Each invalid tool batch counts once; a fully committed

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/toolinput"
 )
 
 var ErrRejected = errors.New("tool call rejected")
@@ -156,6 +157,10 @@ type Tool struct {
 	handler    func(context.Context, erasedInvocation) (Result, error)
 }
 
+// Define builds a tool whose optional decoder validates operation-dependent
+// inputs before presentation, resource resolution, or effect authorization.
+// Decoders must be deterministic and free of side effects; execution-state
+// checks belong to resource resolution or the handler.
 func Define[T any](
 	def Definition,
 	decode func([]byte) (T, error),
@@ -634,7 +639,7 @@ func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*Activi
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
-	if !ok || (t.Definition.Activity == nil && t.Definition.InvalidActivity == nil) {
+	if !ok {
 		return nil, nil
 	}
 	raw := strings.TrimSpace(call.Args)
@@ -643,7 +648,7 @@ func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*Activi
 	}
 	args, err := t.decode([]byte(raw))
 	if err != nil {
-		return invalidCallActivity(t.Definition, call, opts, raw), err
+		return invalidCallActivity(t.Definition, call, opts, raw), &toolinput.DecodeError{Cause: err}
 	}
 	if t.Definition.Activity == nil {
 		return nil, nil

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate operation-dependent Goal inputs before presentation and effect
+  authorization. Return typed decoder failures through the existing bounded
+  model-correction path, including tools without Activity callbacks; preserve
+  projector failures, business errors, accepted inputs and durable history.
+
 - Describe standalone web fetch as reading a known URL, without assuming the
   host has enabled a separate search capability. Preserve retrieval behavior,
   permissions, schemas and public API.

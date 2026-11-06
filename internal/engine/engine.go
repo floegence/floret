@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/toolinput"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -1352,6 +1353,11 @@ steps:
 				}
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
 				if activityErr != nil {
+					var inputErr *toolinput.DecodeError
+					if errors.As(activityErr, &inputErr) {
+						validationErrors[call.ID] = inputErr.Cause
+						continue
+					}
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(activityErr, FailureOriginContract), metrics, started, decision)
 				}
 				callActivities[call.ID] = event.NormalizeActivityPresentation(activity)

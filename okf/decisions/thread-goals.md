@@ -46,8 +46,11 @@ new ordinary user task can justify new_task after a deletion.
 
 The model-facing Goal schema describes each operation-dependent field at its
 property: set needs text, delete needs a reason, and review needs outcome and
-evidence. The flat object retains provider portability; the canonical owner
-continues validating operation semantics. Stable Goal instructions identify
+evidence. The flat object retains provider portability. A pure typed decoder
+checks these requirements before presentation, resources or effect authorization;
+rejected inputs receive bounded model correction without a Goal mutation or
+public tool Activity. The canonical owner retains version, execution and
+pending-work checks as ordinary operation semantics. Stable Goal instructions identify
 `Goal runtime fact` as engine state, not a new user request or authorization.
 The existing typed facts, chronological user-role provider projection and
 stored text are unchanged. A changed tool description is still a changed
