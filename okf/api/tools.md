@@ -41,6 +41,13 @@ failure or panic produce no presentation fallback.
 
 ## Argument correction episodes
 
+Malformed non-empty JSON and schema-invalid objects use this same path. The
+provider stream retains raw argument text and verifies identity and completion;
+it does not repair, coerce, or authorize that text. DeepSeek preserves rejected
+arguments and their paired feedback in native continuation history, including
+after restart, Retry and Fork. Missing identity/arguments, duplicate calls and
+corrupt or incomplete stream envelopes remain immediate protocol failures.
+
 One Engine-owned in-memory counter counts invalid batches, not individual calls
 or all errors in a Run. The initial invalid batch allows two regeneration
 opportunities. A validation-clean committed tool batch resets the counter; a

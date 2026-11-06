@@ -4779,7 +4779,6 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 			{name: "missing id", call: provider.ToolCall{Name: "read", Args: `{}`}, want: "id is required"},
 			{name: "missing name", call: provider.ToolCall{ID: "call-1", Args: `{}`}, want: "name is required"},
 			{name: "missing args", call: provider.ToolCall{ID: "call-1", Name: "read"}, want: "args are required"},
-			{name: "invalid args", call: provider.ToolCall{ID: "call-1", Name: "read", Args: "{"}, want: "valid JSON"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				p := harness.NewScriptedProvider([]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{tc.call}}})

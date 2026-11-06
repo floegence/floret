@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Route malformed non-empty model tool arguments through the existing bounded
+  Engine correction episode. Preserve raw DeepSeek call history and confirmed
+  effects through restart, Retry and Fork; reject invalid identities and broken
+  stream envelopes without dispatch. Keep rejected calls out of user Activity.
+
 - Validate operation-dependent Goal inputs before presentation and effect
   authorization. Return typed decoder failures through the existing bounded
   model-correction path, including tools without Activity callbacks; preserve

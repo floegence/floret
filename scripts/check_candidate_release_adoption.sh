@@ -64,6 +64,7 @@ cp -R "${repository_root}/internal/sessiontree/testdata/host-work-v7.102.0" hist
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_pending_activity_test.go" > historical_pending_activity_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/pending-activity-v7.107.4" historical-pending-activity
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_correction_test.go" > historical_correction_test.go
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/deepseek_argument_correction_test.go" > deepseek_argument_correction_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/tool-correction-v7.69.1" historical-correction
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_deepseek_retry_test.go" > historical_deepseek_retry_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/deepseek-retry-v7.107.2" historical-deepseek-retry

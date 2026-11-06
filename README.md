@@ -1588,7 +1588,11 @@ resource resolution or authorization, including tools without Activity callbacks
 Execution-state checks remain in resource resolution or handlers; their errors
 do not become input correction merely because they mention invalid arguments.
 
-Invalid tool arguments remain strict errors. The Engine records each rejected
+Invalid tool arguments, including malformed non-empty JSON, remain strict errors.
+Adapters retain the exact argument text; only the Engine decides argument
+rejection and correction. Missing call identity, missing arguments, duplicate
+identities, and incomplete or corrupt provider envelopes remain protocol errors.
+The Engine records each rejected
 call and its validation result and allows at most two regeneration opportunities
 per correction episode. Each invalid tool batch counts once; a fully committed
 validation-clean batch ends the episode, including ordinary business-error results.

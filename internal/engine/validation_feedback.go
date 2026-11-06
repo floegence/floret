@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +15,10 @@ import (
 // Only provider arguments are correctable. Activity and control projectors run
 // after this boundary; their failures are engine contracts, not model feedback.
 func validateModelToolArguments(definitions []tools.ToolDefinition, call provider.ToolCall) error {
+	if !json.Valid([]byte(call.Args)) {
+		_, err := tools.Validate(nil, []byte(call.Args))
+		return err
+	}
 	for _, definition := range definitions {
 		if definition.Name == call.Name {
 			_, err := tools.Validate(definition.InputSchema, []byte(call.Args))

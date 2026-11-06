@@ -102,6 +102,8 @@ func TestDeepSeekStreamsToolsAndRequiresTerminal(t *testing.T) {
 	args := `{"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{}"}`
 	done := `{"type":"response.output_item.done","item":{"type":"function_call","id":"item1","call_id":"call1","name":"inspect","arguments":"{}"}}`
 	terminal := `{"type":"response.completed","response":{"id":"resp","status":"completed","output":[{"type":"function_call","id":"item1","call_id":"call1","name":"inspect","arguments":"{}"}]}}`
+	malformedDone := strings.Replace(done, `"arguments":"{}"`, `"arguments":"{broken"`, 1)
+	malformedTerminal := strings.Replace(terminal, `"arguments":"{}"`, `"arguments":"{broken"`, 1)
 	for _, tc := range []struct {
 		name          string
 		events        []string
@@ -109,6 +111,10 @@ func TestDeepSeekStreamsToolsAndRequiresTerminal(t *testing.T) {
 		wantTruncated bool
 	}{
 		{"function", []string{start, args, done, terminal}, false, false},
+		{"malformed arguments", []string{start, malformedDone, malformedTerminal}, false, false},
+		{"malformed arguments missing terminal", []string{start, malformedDone}, true, false},
+		{"missing call identity", []string{strings.Replace(malformedDone, `"call_id":"call1",`, "", 1)}, true, false},
+		{"missing arguments", []string{strings.Replace(done, `"arguments":"{}"`, `"arguments":""`, 1)}, true, false},
 		{"missing terminal", []string{start, args, done}, true, false},
 		{"failed", []string{`{"type":"response.failed","response":{"id":"resp","status":"failed","error":{"message":"failed"}}}`}, true, false},
 		{"malformed", []string{`{broken`}, true, false},
@@ -133,6 +139,22 @@ func TestDeepSeekStreamsToolsAndRequiresTerminal(t *testing.T) {
 			}
 			if tc.wantTruncated && last.Type != provider.EventTruncated {
 				t.Fatalf("last = %+v", last)
+			}
+			if tc.name == "malformed arguments" {
+				var calls []provider.ToolCall
+				for _, event := range events {
+					calls = append(calls, event.ToolCalls...)
+				}
+				if len(calls) != 1 || calls[0].Args != "{broken" {
+					t.Fatalf("raw arguments lost: %+v", calls)
+				}
+			}
+			if tc.wantError {
+				for _, event := range events {
+					if len(event.ToolCalls) != 0 {
+						t.Fatal("protocol failure admitted a tool batch")
+					}
+				}
 			}
 			if tc.name == "function" {
 				var starts, ends, invocations int

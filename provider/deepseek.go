@@ -387,7 +387,7 @@ func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message
 			out.add(deepSeekInput{Type: "message", Role: string(m.Role), Content: content}, true)
 		}
 		for _, c := range m.ToolCalls {
-			if c.ID == "" || c.Name == "" || !json.Valid([]byte(c.Args)) || seen[c.ID] {
+			if c.ID == "" || c.Name == "" || strings.TrimSpace(c.Args) == "" || seen[c.ID] {
 				return out, nil, errors.New("invalid or duplicate DeepSeek function call")
 			}
 			seen[c.ID] = true
@@ -777,7 +777,9 @@ func (g *deepSeekGateway) readStream(ctx context.Context, response *http.Respons
 		emit(Event{Type: EventHostedToolResult, OutputPart: partFor(item.ID), HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}, HostedResult: result})
 	}
 	finishCall := func(item deepSeekOutput) error {
-		if item.ID == "" || item.CallID == "" || item.Name == "" || !json.Valid([]byte(item.Arguments)) {
+		// Arguments are model output, including rejected JSON retained for feedback.
+		// The Engine owns validation; the adapter owns complete call identity.
+		if item.ID == "" || item.CallID == "" || item.Name == "" || strings.TrimSpace(item.Arguments) == "" {
 			return errors.New("invalid DeepSeek function call output")
 		}
 		c := calls[item.ID]

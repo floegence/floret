@@ -66,6 +66,63 @@ func TestValidationEpisodeResetsAfterCommittedValidBatch(t *testing.T) {
 	}
 }
 
+func TestValidationEpisodeMalformedArgumentsPreserveValidSiblings(t *testing.T) {
+	for _, name := range []string{"write", "unavailable"} {
+		t.Run(name, func(t *testing.T) {
+			const malformed = `{"value": unquoted}`
+			p := harness.NewScriptedProvider(
+				harness.Step(harness.Tool("bad", name, malformed), harness.Tool("good", "write", `{"value":"once"}`), harness.DoneReason("tool_calls")),
+				harness.Step(harness.Tool("fixed", "write", `{"value":"corrected"}`), harness.DoneReason("tool_calls")),
+				harness.Step(harness.Text("done"), harness.Done()),
+			)
+			rec := &event.Recorder{}
+			e := newTestEngine(p, rec)
+			var values []string
+			e.Tools = tools.NewRegistry(stringTool("write", "Write", true, tools.PermissionSpec{}, func(_ context.Context, value string) (string, error) {
+				values = append(values, value)
+				return value, nil
+			}))
+			got := e.Run(t.Context(), "write once")
+			if got.Status != engine.Completed || !reflect.DeepEqual(values, []string{"once", "corrected"}) {
+				t.Fatalf("result=%+v executions=%v", got, values)
+			}
+			messages, err := e.Store.Transcript("run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls, results int
+			for _, message := range messages {
+				if message.ToolCallID != "bad" {
+					continue
+				}
+				if message.Kind != session.MessageKindToolValidationError || message.Activity != nil || message.ControlSignal != nil {
+					t.Fatalf("rejected call acquired execution presentation: %+v", message)
+				}
+				if message.Role == session.Assistant {
+					calls++
+					if message.ToolArgs != malformed {
+						t.Fatal("arguments rewritten")
+					}
+				}
+				if message.Role == session.Tool {
+					results++
+					if !strings.Contains(message.Content, "invalid JSON") || !strings.Contains(message.Content, "not executed") {
+						t.Fatalf("feedback=%s", message.Content)
+					}
+				}
+			}
+			if calls != 1 || results != 1 {
+				t.Fatalf("rejected pair=%d/%d", calls, results)
+			}
+			for _, ev := range rec.Events {
+				if ev.Type == event.ToolDispatchStarted && ev.ToolID == "bad" {
+					t.Fatal("malformed call dispatched")
+				}
+			}
+		})
+	}
+}
+
 func TestValidationEpisodeCountsBatchesAcrossToolKinds(t *testing.T) {
 	for _, validControl := range []bool{false, true} {
 		t.Run(fmt.Sprint(validControl), func(t *testing.T) {

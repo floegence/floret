@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/internal/providertransport"
@@ -458,9 +457,8 @@ func ValidateToolCall(call ToolCall) error {
 	if args == "" {
 		return errors.New("provider tool call args are required")
 	}
-	if !json.Valid([]byte(args)) {
-		return errors.New("provider tool call args must be valid JSON")
-	}
+	// Syntax and schema errors belong to the Engine's bounded argument feedback.
+	// Stream validation establishes identity and completeness, never execution.
 	return nil
 }
 

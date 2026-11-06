@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -4997,9 +4996,6 @@ func validateToolCalls(calls []provider.ToolCall) error {
 		args := strings.TrimSpace(call.Args)
 		if args == "" {
 			return fmt.Errorf("provider returned tool call %q without args", callID)
-		}
-		if !json.Valid([]byte(args)) {
-			return fmt.Errorf("provider returned tool call %q with invalid JSON args", callID)
 		}
 		if _, ok := seen[callID]; ok {
 			return ErrDuplicateToolCallID
