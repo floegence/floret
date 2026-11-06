@@ -120,6 +120,13 @@ late interaction is ignored. Provider history pairs that failed call with one
 safe error result containing only the failed outcome, so later Turns remain
 valid without exposing arguments or validation details.
 
+The canonical control schema also owns model-facing field guidance.
+`required_from_user` describes the missing inputs or decisions in plain language;
+`questions` contains the actual prompts. `evidence_refs` carries existing
+identifiers such as a blocking tool call ID, or an empty array when none is
+available. These references grant no permission. Hosts consume this definition
+rather than maintaining a second schema that the Runtime never dispatches.
+
 The `ask_user` response modes offered to models are `write` and
 `select_or_write`. A legacy `select` value is normalized to `select_or_write`
 with `choices_exhaustive=false` before schema validation and when reading a

@@ -193,6 +193,8 @@ Turns are updated without queuing work or resolving interactions. Replays retain
 the original decision, including after Stop or restart. Execution preparation
 failures retain the Goal and use the existing recoverable Turn failure surface.
 This additive API reuses schema 24 journal shapes; no migration is needed.
+Goal field descriptions explain set/delete/review requirements; runtime facts
+are engine state, not new user instructions or additional authorization.
 See [the Goal contract](okf/decisions/thread-goals.md).
 
 ## Passive child events

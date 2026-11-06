@@ -63,11 +63,13 @@ type goalToolInput struct {
 
 func goalTool(p *turnProjection) tools.Tool {
 	schema := map[string]any{"type": "object", "properties": map[string]any{
-		"operation":        map[string]any{"type": "string", "enum": []string{"set", "delete", "review"}},
-		"expected_version": map[string]any{"type": "integer", "minimum": 0},
-		"text":             map[string]any{"type": "string"}, "reason": map[string]any{"type": "string"},
-		"outcome":  map[string]any{"type": "string", "enum": []string{"completed", "continue", "blocked"}},
-		"evidence": map[string]any{"type": "string"}, "new_task": map[string]any{"type": "boolean"},
+		"operation":        map[string]any{"type": "string", "enum": []string{"set", "delete", "review"}, "description": "set updates the desired result; delete removes an obsolete Goal; review records whether current work meets it."},
+		"expected_version": map[string]any{"type": "integer", "minimum": 0, "description": "Exact current version from Goal runtime facts or the latest tool result, including when the Goal is absent."},
+		"text":             map[string]any{"type": "string", "description": "Required nonempty desired result for set; preserve unfinished user requirements."},
+		"reason":           map[string]any{"type": "string", "description": "Required nonempty explanation for delete, identifying why the Goal is cancelled, replaced or obsolete."},
+		"outcome":          map[string]any{"type": "string", "enum": []string{"completed", "continue", "blocked"}, "description": "Required for review: completed only when verified, continue for remaining work, blocked for a concrete obstacle."},
+		"evidence":         map[string]any{"type": "string", "description": "Required nonempty evidence for review: observed results and checks, remaining work, or the concrete blocker."},
+		"new_task":         map[string]any{"type": "boolean", "description": "For set after user deletion, true only for a genuinely new user task; not an answer, approval, retry or restart."},
 	}, "required": []string{"operation", "expected_version"}, "additionalProperties": false}
 	return tools.Define[goalToolInput](tools.Definition{Name: goalToolName, Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, Annotations: map[string]any{"source": "floret"}, Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 		path, err := p.goalPath(context.Background())

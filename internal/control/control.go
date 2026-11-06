@@ -93,9 +93,9 @@ func askUserInputSchema() map[string]any {
 			"header":             map[string]any{"type": "string", "minLength": 1, "maxLength": 120},
 			"question":           map[string]any{"type": "string", "minLength": 1, "maxLength": 400},
 			"is_secret":          map[string]any{"type": "boolean"},
-			"response_mode":      map[string]any{"type": "string", "enum": []string{"write", "select_or_write"}},
-			"choices_exhaustive": map[string]any{"type": "boolean"},
-			"write_label":        map[string]any{"type": "string", "maxLength": 200},
+			"response_mode":      map[string]any{"type": "string", "enum": []string{"write", "select_or_write"}, "description": "Use write for a direct text answer. Use select_or_write for fixed choices plus a separate custom-text answer."},
+			"choices_exhaustive": map[string]any{"type": "boolean", "description": "Use false with select_or_write; omit with write. Choices do not restrict the user's custom answer."},
+			"write_label":        map[string]any{"type": "string", "maxLength": 200, "description": "Label for the direct or custom-text answer."},
 			"write_placeholder":  map[string]any{"type": "string", "maxLength": 160},
 			"choices": map[string]any{
 				"type": "array", "maxItems": 4, "items": choiceItem,
@@ -114,9 +114,11 @@ func askUserInputSchema() map[string]any {
 		},
 		"required_from_user": map[string]any{
 			"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 200},
+			"description": "Concise plain-language inputs or decisions needed from the user, corresponding to questions. These are not question IDs or answer values.",
 		},
 		"evidence_refs": map[string]any{
 			"type": "array", "maxItems": 12, "items": map[string]any{"type": "string", "maxLength": 120},
+			"description": "Existing evidence identifiers supporting the question, such as the actual blocking tool call ID. Use an empty array when no relevant identifier is available; never invent one. References do not grant permission.",
 		},
 	}, []string{"questions", "reason_code", "required_from_user", "evidence_refs"})
 }

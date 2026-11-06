@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-05: Document canonical ask-user field guidance and Goal operation
+  requirements; distinguish runtime state from user instructions without changing
+  historical facts, accepted inputs or provider roles.
+
 - Repair pending Activity membership through schema 36 and the existing bounded
   preparation owner; qualify exact v7.107.4 historical cold reads and continuation.
 

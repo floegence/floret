@@ -104,6 +104,7 @@ func TestReleasedDeepSeekRetryHistorySurvivesUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, id := range []identity.ThreadID{"fixture", "fixture-fork"} {
+			preparedBefore := statePreparations.Load()
 			before, err := service.View(t.Context(), id)
 			if err != nil || len(before.Items) == 0 {
 				t.Fatalf("historical view: %+v err=%v", before, err)
@@ -120,8 +121,13 @@ func TestReleasedDeepSeekRetryHistorySurvivesUpgrade(t *testing.T) {
 			if err != nil || after.TurnID != accepted.TurnID || after.Failure != nil || after.LastOutcome == nil || *after.LastOutcome != runtime.TurnOutcomeCompleted {
 				t.Fatalf("continuation=%+v err=%v", after.Failure, err)
 			}
-			if restart == 0 && id == "fixture" && statePreparations.Load() == 0 {
-				t.Fatal("released opaque state was not used by the first continuation")
+			// The released DeepSeek state requires an exact tool surface. Updated
+			// canonical control guidance changes that surface on the first new
+			// Turn. Preserve full canonical history while invalidating only the
+			// incompatible cache; the newly committed state must survive restart.
+			prepared := statePreparations.Load() - preparedBefore
+			if restart == 0 && prepared != 0 || restart == 1 && prepared == 0 {
+				t.Fatalf("exact-surface reuse: restart=%d state preparations=%d", restart, prepared)
 			}
 			for index, item := range before.Items {
 				if index >= len(after.Items) || after.Items[index].ID != item.ID {

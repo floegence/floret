@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Clarify canonical ask-user fields and operation-dependent Goal inputs in
+  model-facing schemas. Identify Goal runtime facts as engine state rather than
+  new user instructions. Preserve accepted inputs, typed history and provider
+  message roles; verify guidance at the public Runtime request boundary.
+
 - Repair historical window membership that counted reasoning as pending tool
   Activity. Schema 36 fences older writers and rebuilds released membership
   through validated, bounded per-thread preparation, preserving canonical bytes.
