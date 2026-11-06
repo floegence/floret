@@ -480,6 +480,7 @@ do not need to infer management actions from labels or collapse multi-child
 results.
 
 `tools/webfetch.New` supplies the product-neutral `web_fetch` implementation.
+It reads a known URL independently of whether a search tool is configured.
 It performs GET-only public HTTP/HTTPS reads, revalidates redirects, DNS, and
 dial targets, rejects non-text bodies, and returns Markdown or text under fixed
 limits. Its typed Activity carries the requested URL, response metadata, a

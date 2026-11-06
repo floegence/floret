@@ -11,6 +11,9 @@ timestamp: 2026-08-27T00:00:00Z
 
 `tools/webfetch.New` returns the product-neutral `web_fetch` local tool. Its
 provider arguments are only `url` and optional `format` (`markdown` or `text`).
+It reads a known URL without requiring a separate search capability. Hosts
+configure search and fetch independently; fetch guidance does not imply search
+availability.
 
 # Fixed Behavior
 

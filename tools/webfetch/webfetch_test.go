@@ -100,6 +100,17 @@ func TestDefinitionKeepsFixedPublicContract(t *testing.T) {
 	}
 }
 
+func TestStandaloneFetchDoesNotRequireSearch(t *testing.T) {
+	definitions := tools.NewRegistry(New(Options{})).ExposedDefinitions()
+	if len(definitions) != 1 || definitions[0].Name != ToolName {
+		t.Fatalf("standalone fetch surface = %#v", definitions)
+	}
+	description := definitions[0].Description
+	if !strings.Contains(description, "known URL") || strings.Contains(description, "Use web search") {
+		t.Fatalf("fetch assumes an independently configured capability: %s", description)
+	}
+}
+
 func TestPermissionForIsResolvedAtDispatch(t *testing.T) {
 	t.Parallel()
 

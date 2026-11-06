@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-05: Clarify that standalone web fetch reads a known URL independently
+  of host search configuration, without changing execution or public contracts.
+
 - 2026-11-05: Document canonical ask-user field guidance and Goal operation
   requirements; distinguish runtime state from user instructions without changing
   historical facts, accepted inputs or provider roles.

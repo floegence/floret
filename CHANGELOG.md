@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Describe standalone web fetch as reading a known URL, without assuming the
+  host has enabled a separate search capability. Preserve retrieval behavior,
+  permissions, schemas and public API.
+
 - Clarify canonical ask-user fields and operation-dependent Goal inputs in
   model-facing schemas. Identify Goal runtime facts as engine state rather than
   new user instructions. Preserve accepted inputs, typed history and provider
