@@ -18,11 +18,12 @@ import (
 const itemMembershipNamespace = "floret.sessiontree.item-membership.v8"
 
 type itemMembershipManifest struct {
-	ResponseRangesVersion int    `json:"response_ranges_version,omitempty"`
-	Leaf                  string `json:"leaf"`
-	Hash                  string `json:"hash"`
-	Slots                 int    `json:"slots"`
-	Visible               int    `json:"visible"`
+	ActivityPendingVersion int    `json:"activity_pending_version,omitempty"`
+	ResponseRangesVersion  int    `json:"response_ranges_version,omitempty"`
+	Leaf                   string `json:"leaf"`
+	Hash                   string `json:"hash"`
+	Slots                  int    `json:"slots"`
+	Visible                int    `json:"visible"`
 }
 
 // No body, lifecycle, actor, or public view is stored here. The source hash and
@@ -74,10 +75,12 @@ func readItemManifest(tx spi.ReadTx, thread string) (itemMembershipManifest, boo
 	if errors.Is(err, spi.ErrNotFound) {
 		return m, false, nil
 	}
-	if err != nil || m.ResponseRangesVersion < 0 || m.ResponseRangesVersion > 1 || m.Slots < 0 || m.Visible < 0 || m.Visible > m.Slots || (m.Leaf == "") != (m.Hash == "") {
+	if err != nil || m.ActivityPendingVersion < 0 || m.ActivityPendingVersion > 1 || m.ResponseRangesVersion < 0 || m.ResponseRangesVersion > 1 || m.Slots < 0 || m.Visible < 0 || m.Visible > m.Slots || (m.Leaf == "") != (m.Hash == "") {
 		return m, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	return m, true, nil
+	// Version zero is the exact released index shape, not evidence of corrupt
+	// canonical authority. It must be rebuilt before any reader or writer uses it.
+	return m, m.ActivityPendingVersion == 1, nil
 }
 func readItemSlot(tx spi.ReadTx, thread string, slot int) (storedItemMember, error) {
 	var member storedItemMember
@@ -171,6 +174,9 @@ func putNewItemMember(tx spi.WriteTx, thread string, m *itemMembershipManifest, 
 	return updateItemRange(tx, thread, m.Slots, member.ItemMember)
 }
 func putItemMember(tx spi.WriteTx, thread string, m *itemMembershipManifest, member storedItemMember) error {
+	if member.ActivityPending && member.Kind != "tool" {
+		return ErrAuthorityCorrupt
+	}
 	member.Slot = m.Slots
 	if err := putItemJSON(tx, itemSlotKey(thread, member.Slot), member); err != nil {
 		return err
@@ -569,11 +575,11 @@ func storeItemMembership(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, e
 			return err
 		}
 	}
-	m := itemMembershipManifest{ResponseRangesVersion: 1, Leaf: meta.LeafID, Hash: hashes[meta.LeafID]}
+	m := itemMembershipManifest{ActivityPendingVersion: 1, ResponseRangesVersion: 1, Leaf: meta.LeafID, Hash: hashes[meta.LeafID]}
 	bySource := map[string][]int{}
 	for i, member := range projection.Members {
 		var err error
-		member.ActivityPending = pending[member.SourceID]
+		member.ActivityPending = member.Kind == "tool" && pending[member.SourceID]
 		if !member.ActivityPending {
 			member.RangeFacts, err = itemRangeActivityFacts(tx, meta.ID, member)
 			if err != nil {

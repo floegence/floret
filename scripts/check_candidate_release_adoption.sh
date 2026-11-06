@@ -60,6 +60,8 @@ sed 's/package provider_test/package adoption_test/' "${repository_root}/provide
 cp "${repository_root}/scripts/testdata/historical_compaction_test.go" historical_compaction_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_host_work_test.go" > historical_host_work_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/host-work-v7.102.0" historical-host-work
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_pending_activity_test.go" > historical_pending_activity_test.go
+cp -R "${repository_root}/internal/sessiontree/testdata/pending-activity-v7.107.4" historical-pending-activity
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_correction_test.go" > historical_correction_test.go
 cp -R "${repository_root}/internal/sessiontree/testdata/tool-correction-v7.69.1" historical-correction
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_deepseek_retry_test.go" > historical_deepseek_retry_test.go

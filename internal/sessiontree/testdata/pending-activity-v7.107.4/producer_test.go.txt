@@ -1,0 +1,48 @@
+package sessiontree
+import (
+ "context"
+ "fmt"
+ "os"
+ "path/filepath"
+ "testing"
+ "time"
+ "github.com/floegence/floret/v7/internal/session"
+ "github.com/floegence/floret/v7/internal/storagebridge"
+ "github.com/floegence/floret/v7/storage"
+ "github.com/floegence/floret/v7/storage/spi"
+ "github.com/floegence/floret/v7/tools"
+)
+func TestProducePendingActivityFixture(t *testing.T) {
+ ctx:=context.Background()
+ memory:=newMemoryRepo(time.Now)
+ if _,err:=memory.CreateThread(ctx,ThreadMeta{ID:"pending-history"});err!=nil {t.Fatal(err)}
+ add:=func(e Entry) { e.ThreadID="pending-history";e.TurnID="initial-turn";e.RunID="initial-run";if _,err:=memory.Append(ctx,e,AppendOptions{});err!=nil {t.Fatal(err)} }
+ add(Entry{ID:"start",Type:EntryTurnMarker,TurnStatus:TurnStarted})
+ add(Entry{ID:"user",Type:EntryUserMessage,Message:session.Message{Role:session.User,Content:"Inspect synthetic history"}})
+ for i:=range 5 {
+  id:=fmt.Sprint("call-",i)
+  add(Entry{ID:id,Type:EntryToolCall,Message:session.Message{Role:session.Assistant,ToolName:"inspect",ToolCallID:id,ToolArgs:"{}",Reasoning:"Retained thought",ReasoningSourceID:fmt.Sprint("thought-",i),Activity:&tools.ActivityPresentation{Label:"Inspect",Renderer:tools.ActivityRendererStructured,Payload:tools.StructuredActivityPayload{Status:"running",Summary:"Synthetic tool activity"}}}})
+  add(Entry{ID:fmt.Sprint("result-",i),Type:EntryToolResult,Message:session.Message{Role:session.Tool,ToolName:"inspect",ToolCallID:id,Content:"CONFIRMED_PENDING_FIXTURE_RESULT",ToolResult:&session.ToolResultView{Status:"success"},Activity:&tools.ActivityPresentation{Label:"Inspect",Renderer:tools.ActivityRendererStructured,Payload:tools.StructuredActivityPayload{Status:"success",Summary:"Synthetic retained result"}}}})
+ }
+ add(Entry{ID:"answer",Type:EntryAssistantMessage,Message:session.Message{Role:session.Assistant,Content:"All five inspections completed."}})
+ add(Entry{ID:"complete",Type:EntryTurnMarker,TurnStatus:TurnCompleted})
+ backend,err:=storagebridge.Open(ctx,storagebridge.Source(storage.SQLite(filepath.Join(os.Getenv("FLORET_FIXTURE_DIR"),"history.sqlite"))));if err!=nil {t.Fatal(err)};defer backend.Close()
+ var repo *BackendRepo
+ if err:=backend.Update(ctx,func(tx spi.WriteTx)error {
+  if err:=saveCompleteBackendDomainContext(ctx,tx,memory,backendDomainV31Format);err!=nil {return err}
+  var err error;repo,_,err=NewCurrentBackendRepoInTransaction(ctx,backend,tx,time.Now,false);return err
+ });err!=nil {t.Fatal(err)}
+ if err:=repo.PrepareThread(ctx,"pending-history");err!=nil {t.Fatal(err)}
+ if err:=backend.Update(ctx,func(tx spi.WriteTx)error {
+  meta,err:=readPublishedThreadMeta(tx,backendDomainV32Format,"pending-history");if err!=nil{return err}
+  if err:=visitCanonicalPathMetadata(ctx,tx,meta.ID,meta.LeafID,func(e Entry)error {if ref,ok:=e.bodyFields["activity_json"];ok {return deleteActivityFieldIndex(ctx,tx,ref.SHA256)};return nil});err!=nil{return err}
+  return deleteItemMembership(ctx,tx,meta.ID)
+ });err!=nil {t.Fatal(err)}
+ if err:=repo.prepareWindowProjection(ctx,"pending-history");err!=nil {t.Fatal(err)}
+ if err:=backend.View(ctx,func(tx spi.ReadTx)error {
+  m,_,err:=readItemManifest(tx,"pending-history");if err!=nil{return err}
+  pending:=0;for i:=range m.Slots {member,err:=readItemSlot(tx,"pending-history",i);if err!=nil{return err};if member.ActivityPending&&member.Kind=="thinking" {pending++}}
+  if pending!=5 {t.Fatalf("released writer did not reproduce defect: %d",pending)}
+  return nil
+ });err!=nil {t.Fatal(err)}
+}

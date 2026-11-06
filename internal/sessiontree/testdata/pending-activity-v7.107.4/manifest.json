@@ -1,0 +1,14 @@
+{
+  "writer_version": "v7.107.4",
+  "writer_commit": "c9657bc78ddb7f669b225c129b41da5e7569d70c",
+  "go_version": "go version go1.27.3 darwin/arm64",
+  "scenarios": [
+    "historical_reasoning_and_tool_share_source",
+    "pending_activity_without_field_preparation",
+    "released_invalid_derived_index"
+  ],
+  "files": {
+    "history.sqlite": "0f81868ae34c3c6a55ffd9f9bd80b659b6aea59abd569f54d038b3213a20a548",
+    "producer_test.go.txt": "72b8fca3bd760fa5fa3d72c78fb713177931c2c2a671f3cc7d81e6779f0b8a1c"
+  }
+}

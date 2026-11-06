@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- Repair pending Activity membership through schema 36 and the existing bounded
+  preparation owner; qualify exact v7.107.4 historical cold reads and continuation.
+
 - 2026-11-05: Validate exact DeepSeek history boundaries within Runtime-grouped
   messages and qualify a released-writer incident fixture through adoption.
 

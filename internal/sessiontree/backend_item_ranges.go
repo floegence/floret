@@ -232,6 +232,9 @@ func putItemRangeSummary(tx spi.WriteTx, thread string, level, block int, s item
 	return tx.Put(itemMembershipNamespace, itemRangeKey(thread, level, block), raw)
 }
 func itemRangeLeaf(member ItemMember) (itemRangeSummary, error) {
+	if member.ActivityPending && member.Kind != "tool" {
+		return itemRangeSummary{}, ErrAuthorityCorrupt
+	}
 	if member.Hidden {
 		return itemRangeSummary{}, nil
 	}

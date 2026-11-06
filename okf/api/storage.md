@@ -455,6 +455,17 @@ the new journal. Cleanup validates every retained record and the complete root
 inventory before removing the source. New and already published threads do not
 wait for unrelated history or inherit an unrelated migration failure.
 
+Schema 36 appends the explicit 35-to-36 writer fence for pending Activity
+membership. Released indexes without `activity_pending_version` are unprepared;
+only tool members contribute to pending Activity counts. The existing bounded
+window preparation owner validates canonical sources, stages derived metadata,
+and publishes its readiness anchor last. No journal or body is rewritten, no
+host repair is permitted, and current ready indexes are not rebuilt on restart.
+The [released-writer regression](../../runtime/historical_pending_activity_test.go)
+qualifies cold windows, summaries, continuation, Retry and Fork. Write failures,
+cancellation and panic leave canonical sources unchanged and resume through the
+same preparation owner.
+
 Current-store background preparation checks the existing thread metadata,
 journal count, leaf locator and matching query manifest before doing historical
 work. Matching anchors establish readiness, not full historical integrity or a

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Repair historical window membership that counted reasoning as pending tool
+  Activity. Schema 36 fences older writers and rebuilds released membership
+  through validated, bounded per-thread preparation, preserving canonical bytes.
+  Qualify cold reads, restart, Send, Retry and Fork from an exact v7.107.4 writer.
+
 - Validate saved DeepSeek signatures inside Runtime-grouped assistant messages.
   Retain released native history across interrupted reasoning or text and
   confirmed tool exchanges, including after restart and Fork.
