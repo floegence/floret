@@ -46,6 +46,7 @@ mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}"
 cd "${adoption_root}/consumer"
 go mod init example.com/floret-v7-candidate-adoption
 cp "${repository_root}/scripts/testdata/v7_adoption_test.go" adoption_test.go
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/compact_ask_user_external_test.go" > compact_ask_user_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/goal_argument_validation_external_test.go" > goal_argument_validation_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/openai_model_metadata_test.go" > openai_model_metadata_test.go
 sed 's/package tools_test/package adoption_test/' "${repository_root}/tools/preparation_error_external_test.go" > preparation_error_test.go

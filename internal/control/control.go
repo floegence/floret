@@ -50,8 +50,7 @@ func IsControlTool(name string) bool {
 func Project(call provider.ToolCall) (Signal, bool, error) {
 	switch strings.TrimSpace(call.Name) {
 	case AskUserTool:
-		call.Args = NormalizeAskUserToolArgs(call.Args)
-		payload, err := tools.Validate(askUserInputSchema(), []byte(strings.TrimSpace(call.Args)))
+		payload, err := ValidateAskUserToolArgs(askUserInputSchema(), call.Args)
 		if err != nil {
 			return Signal{}, true, fmt.Errorf("%s", tools.InvalidArgumentsText(AskUserTool, err))
 		}
@@ -81,22 +80,20 @@ func askUserInputSchema() map[string]any {
 			"choice_id":   map[string]any{"type": "string", "minLength": 1, "maxLength": 64},
 			"label":       map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
 			"description": map[string]any{"type": "string", "maxLength": 240},
-			"kind":        map[string]any{"type": "string", "enum": []string{"select"}},
 		},
-		"required":             []string{"choice_id", "label", "kind"},
+		"required":             []string{"choice_id", "label"},
 		"additionalProperties": false,
 	}
 	questionItem := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
-			"header":             map[string]any{"type": "string", "minLength": 1, "maxLength": 120},
-			"question":           map[string]any{"type": "string", "minLength": 1, "maxLength": 400},
-			"is_secret":          map[string]any{"type": "boolean"},
-			"response_mode":      map[string]any{"type": "string", "enum": []string{"write", "select_or_write"}, "description": "Use write for a direct text answer. Use select_or_write for fixed choices plus a separate custom-text answer."},
-			"choices_exhaustive": map[string]any{"type": "boolean", "description": "Use false with select_or_write; omit with write. Choices do not restrict the user's custom answer."},
-			"write_label":        map[string]any{"type": "string", "maxLength": 200, "description": "Label for the direct or custom-text answer."},
-			"write_placeholder":  map[string]any{"type": "string", "maxLength": 160},
+			"id":                map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
+			"header":            map[string]any{"type": "string", "minLength": 1, "maxLength": 120},
+			"question":          map[string]any{"type": "string", "minLength": 1, "maxLength": 400},
+			"is_secret":         map[string]any{"type": "boolean"},
+			"response_mode":     map[string]any{"type": "string", "enum": []string{"write", "select_or_write"}, "description": "Use write for a direct text answer. Use select_or_write for fixed choices plus a separate custom-text answer."},
+			"write_label":       map[string]any{"type": "string", "maxLength": 200, "description": "Label for the direct or custom-text answer."},
+			"write_placeholder": map[string]any{"type": "string", "maxLength": 160},
 			"choices": map[string]any{
 				"type": "array", "maxItems": 4, "items": choiceItem,
 			},
@@ -108,19 +105,43 @@ func askUserInputSchema() map[string]any {
 		"questions": map[string]any{
 			"type": "array", "minItems": 1, "maxItems": maxAskUserQuestions, "items": questionItem,
 		},
-		"reason_code": map[string]any{
-			"type": "string",
-			"enum": []string{"user_decision_required", "permission_blocked", "missing_external_input", "conflicting_constraints", "safety_confirmation"},
-		},
-		"required_from_user": map[string]any{
-			"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 200},
-			"description": "Concise plain-language inputs or decisions needed from the user, corresponding to questions. These are not question IDs or answer values.",
-		},
 		"evidence_refs": map[string]any{
 			"type": "array", "maxItems": 12, "items": map[string]any{"type": "string", "maxLength": 120},
-			"description": "Existing evidence identifiers supporting the question, such as the actual blocking tool call ID. Use an empty array when no relevant identifier is available; never invent one. References do not grant permission.",
+			"description": "Relevant existing tool-call IDs, or []. Never invent IDs; references do not grant permission.",
 		},
-	}, []string{"questions", "reason_code", "required_from_user", "evidence_refs"})
+	}, []string{"questions", "evidence_refs"})
+}
+
+// ValidateAskUserToolArgs accepts the compact model contract and the released v7
+// fields retained by pending interactions and frozen Turn tool surfaces. These
+// deprecated fields remain validated and preserved through v7; only a future
+// major release may remove their admission. They are not advertised to models.
+func ValidateAskUserToolArgs(definition map[string]any, args string) (map[string]any, error) {
+	schema, err := tools.NormalizeInputSchema(definition)
+	if err != nil {
+		return nil, err
+	}
+	properties := schema["properties"].(map[string]any)
+	// Extend only the canonical question shape. Custom controls keep their own
+	// schema, and frozen released definitions retain their original constraints.
+	questions, _ := properties["questions"].(map[string]any)
+	questionItem, _ := questions["items"].(map[string]any)
+	question, _ := questionItem["properties"].(map[string]any)
+	choices, _ := question["choices"].(map[string]any)
+	choiceItem, _ := choices["items"].(map[string]any)
+	choice, _ := choiceItem["properties"].(map[string]any)
+	if question != nil && choice != nil && question["response_mode"] != nil && properties["evidence_refs"] != nil {
+		add := func(properties map[string]any, key string, value map[string]any) {
+			if _, present := properties[key]; !present {
+				properties[key] = value
+			}
+		}
+		add(properties, "reason_code", tools.Enum("user_decision_required", "permission_blocked", "missing_external_input", "conflicting_constraints", "safety_confirmation"))
+		add(properties, "required_from_user", map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 200}})
+		add(question, "choices_exhaustive", map[string]any{"type": "boolean"})
+		add(choice, "kind", tools.Enum("select"))
+	}
+	return tools.Validate(schema, []byte(strings.TrimSpace(NormalizeAskUserToolArgs(args))))
 }
 
 const maxAskUserQuestions = 5

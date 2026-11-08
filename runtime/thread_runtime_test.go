@@ -1538,7 +1538,7 @@ func TestThreadServiceSecretInputIsEphemeralAndCanonicallyRedacted(t *testing.T)
 		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{
-			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-secret", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["token"],"evidence_refs":[],"questions":[{"id":"token","header":"Token","question":"Enter token","response_mode":"write","is_secret":true}]}`}}},
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-secret", Name: "ask_user", Args: `{"evidence_refs":[],"questions":[{"id":"token","header":"Token","question":"Enter token","response_mode":"write","is_secret":true}]}`}}},
 			{Type: provider.EventDone, Reason: "tool_calls"},
 		}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "used secret"}, {Type: provider.EventDone, Reason: "stop"}}},

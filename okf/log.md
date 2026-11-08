@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-08: Compact the model-facing ask-user contract while preserving
+  released v7 argument admission, frozen definitions and pending interactions.
+  Qualify compact restart and answers in blank release consumers.
+
 - 2026-11-06: Route malformed model arguments through the Engine-owned bounded
   correction episode; retain exact DeepSeek history, confirmed effects and
   canonical questions across restart, Retry and Fork.

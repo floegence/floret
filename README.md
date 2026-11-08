@@ -1906,6 +1906,18 @@ facts and execution:{phase:"resource_extraction",started:false} before effect
 authorization. Text and Structured expose the same JSON facts to the model and
 retained result. Activity keeps the typed code; this is not retry authority.
 
+## User input contract
+
+The built-in `ask_user` model definition contains `questions` and `evidence_refs`.
+Questions retain stable question/choice IDs, `write` and `select_or_write` modes,
+secret input and display hints. Choices always allow a separate custom answer.
+Evidence references identify existing tool calls; they never grant permission.
+
+The model no longer needs reason classification, duplicate required-input text,
+choice exhaustiveness or constant choice kinds. Released v7 arguments and pending
+interactions remain accepted and validated, with their source metadata and tool
+history preserved. Missing metadata stays absent. No store migration is required.
+
 ## Built-in tool names
 
 `runtime.WithAgentBuiltinToolNames(runtime.BuiltinToolNames{AskUser: "user_ask",

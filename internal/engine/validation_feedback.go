@@ -16,7 +16,7 @@ import (
 // after this boundary; their failures are engine contracts, not model feedback.
 func validateModelToolArguments(definitions []tools.ToolDefinition, call provider.ToolCall, inputNames ...string) error {
 	inputName := control.AskUserTool
-	if len(inputNames) > 0 {
+	if len(inputNames) > 0 && inputNames[0] != "" {
 		inputName = inputNames[0]
 	}
 	if !json.Valid([]byte(call.Args)) {
@@ -25,12 +25,11 @@ func validateModelToolArguments(definitions []tools.ToolDefinition, call provide
 	}
 	for _, definition := range definitions {
 		if definition.Name == call.Name {
-			_, err := tools.Validate(definition.InputSchema, []byte(call.Args))
-			if err != nil && strings.TrimSpace(call.Name) == inputName {
-				if normalized := control.NormalizeAskUserToolArgs(call.Args); normalized != call.Args {
-					_, err = tools.Validate(definition.InputSchema, []byte(normalized))
-				}
+			if strings.TrimSpace(call.Name) == inputName {
+				_, err := control.ValidateAskUserToolArgs(definition.InputSchema, call.Args)
+				return err
 			}
+			_, err := tools.Validate(definition.InputSchema, []byte(call.Args))
 			return err
 		}
 	}

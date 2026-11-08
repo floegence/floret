@@ -18,7 +18,7 @@ func TestCoreControlDefinitionsPreserveRequiredArrays(t *testing.T) {
 	if bytes.Contains(payload, []byte(`"required":null`)) {
 		t.Fatalf("provider schema contains a null required array: %s", payload)
 	}
-	if !bytes.Contains(payload, []byte(`"required":["evidence_refs","questions","reason_code","required_from_user"]`)) {
+	if !bytes.Contains(payload, []byte(`"required":["evidence_refs","questions"]`)) {
 		t.Fatalf("provider schema does not preserve required ask-user fields: %s", payload)
 	}
 	properties := definitions[0].InputSchema["properties"].(map[string]any)

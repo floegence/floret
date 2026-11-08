@@ -34,10 +34,8 @@ func TestThreadControlGuidanceReachesProvider(t *testing.T) {
 		schema        map[string]any
 		name, meaning string
 	}{
-		{ask, "required_from_user", "plain-language"},
-		{ask, "evidence_refs", "empty array"},
+		{ask, "evidence_refs", "[]"},
 		{question, "response_mode", "custom-text answer"},
-		{question, "choices_exhaustive", "false"},
 	} {
 		description, _ := field.schema[field.name].(map[string]any)["description"].(string)
 		if !strings.Contains(description, field.meaning) {

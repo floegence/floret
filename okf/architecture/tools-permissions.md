@@ -120,12 +120,19 @@ late interaction is ignored. Provider history pairs that failed call with one
 safe error result containing only the failed outcome, so later Turns remain
 valid without exposing arguments or validation details.
 
-The canonical control schema also owns model-facing field guidance.
-`required_from_user` describes the missing inputs or decisions in plain language;
-`questions` contains the actual prompts. `evidence_refs` carries existing
-identifiers such as a blocking tool call ID, or an empty array when none is
-available. These references grant no permission. Hosts consume this definition
-rather than maintaining a second schema that the Runtime never dispatches.
+The canonical control schema also owns model-facing field guidance. New model
+calls need only `questions` and `evidence_refs` at the root. Question/choice IDs,
+secret input, response modes and display hints retain their established meaning.
+`evidence_refs` carries existing tool-call identifiers or an empty array; it grants
+no permission and remains available for exact host provenance resolution.
+
+The model no longer supplies `reason_code`, `required_from_user`,
+`choices_exhaustive`, or the constant choice `kind`. The v7 validator still
+accepts and validates these released fields for frozen Turn surfaces and saved
+pending interactions, preserves their source values, and never invents missing
+metadata. Only a future major release may remove this admission. Model-visible
+schemas stay compact; historical call bytes, typed answers and permission
+boundaries do not change. Hosts consume the owner definition unchanged.
 
 The `ask_user` response modes offered to models are `write` and
 `select_or_write`. A legacy `select` value is normalized to `select_or_write`

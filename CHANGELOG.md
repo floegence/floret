@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compact the model-facing ask-user schema by retiring redundant reason, summary,
+  exhaustiveness and constant choice-kind fields. Preserve evidence references,
+  secrets, stable IDs and display hints. Validate released v7 inputs without
+  advertising them; preserve frozen surfaces, pending interactions and history.
+  Qualify selection/custom answers, restart, redaction and blank-module adoption.
+
 - Add optional built-in tool names while preserving published defaults and historical tool exchanges.
 - Preserve built-in semantic identity across Goal, input, Activity, restart and the schema 36 to 37 migration.
 
