@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-08: Close known-undispatched calls during approval recovery without
+  replaying effects; qualify released v7.107.9 histories and atomic rollback.
+
 - 2026-11-08: Compact the model-facing ask-user contract while preserving
   released v7 argument admission, frozen definitions and pending interactions.
   Qualify compact restart and answers in blank release consumers.

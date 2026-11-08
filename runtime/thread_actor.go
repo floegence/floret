@@ -29,6 +29,7 @@ type threadRuntimeState struct {
 	summaryTimeIndex      int
 	threadID              string
 	mu                    sync.Mutex
+	recoveryMu            sync.Mutex
 	closed                bool
 	deleting              bool
 	deleted               bool

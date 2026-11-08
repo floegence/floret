@@ -1,0 +1,16 @@
+{
+  "producer_module": "github.com/floegence/floret/v7",
+  "producer_version": "v7.107.9",
+  "producer_commit": "eef453e52cbf9917456cb89e9d8e5211576112e6",
+  "module_sum": "h1:sJ4NAMoL4B7mzeKlo1wZEgz0Z8oVqUe8JELBbyuO/dA=",
+  "purpose": "Synthetic old-name input and pending approval, consistent SQLite snapshot before owner shutdown; no user data.",
+  "sha256": {
+    "approval.sqlite": "fa515aadf172959bc664cfcc076ea69e718a513cc7043b4d736a8793a90f8c38",
+    "identities.json": "1b637643f7f7eb604e5cb3950c542d9d696da4accba678c4810f53632320c3b8",
+    "input.sqlite": "e482f2d860e00b737be36794821569b373f9782c8b4bb76b47d45947acc083d7",
+    "producer/go.mod.txt": "2e788b65ba6019abdcebbefb040a4366e0dfcee4c8ca6aab2e7e62ee2444e7ff",
+    "producer/go.sum.txt": "01148073f84c2529f864d66062180a6145f6dbd472b54a3f7011abd5961ad693",
+    "producer/main.go.txt": "c0df9040a10c7e6caa1867ab668a5d3482977e852403365898410100871edb8f"
+  },
+  "reproduce": "Copy producer/*.txt to an isolated directory, remove .txt suffixes, then GOWORK=off go run . <output-directory>. Requires Python sqlite3 for online snapshots."
+}

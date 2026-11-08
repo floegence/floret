@@ -2102,7 +2102,25 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 	if service.host.requireExecution() != nil {
 		return
 	}
+	actor := service.runtime(threadID)
+	// Hydration and an interaction response can request recovery concurrently.
+	// Serialize those requests without holding the actor lock over storage I/O.
+	actor.recoveryMu.Lock()
+	defer actor.recoveryMu.Unlock()
 	ctx := context.Background()
+	active := false
+	if err := actor.apply(ctx, func() error {
+		if actor.state.executionDone != nil {
+			select {
+			case <-actor.state.executionDone:
+			default:
+				active = true
+			}
+		}
+		return nil
+	}); err != nil || active {
+		return
+	}
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
 	if err != nil {
 		return
@@ -2126,29 +2144,38 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 	if service.failRecoveredUnknownEffectTurn(ctx, threadID, turnID, runID, entries) {
 		return
 	}
-	actor := service.runtime(threadID)
+	view := service.currentView(actor)
+	for _, interaction := range view.Interactions {
+		if interaction.TurnID == turnID && !interaction.Resolved {
+			return
+		}
+	}
+	repo, ok := service.host.store.repo.(sessiontree.RecoveredToolRepo)
+	if !ok {
+		service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
+		return
+	}
+	if err := repo.CancelPreparedToolCalls(ctx, threadID.String(), turnID.String(), runID.String()); err != nil {
+		if !errors.Is(err, sessiontree.ErrStaleAuthority) {
+			service.host.store.reportBackgroundError(err)
+		}
+		return
+	}
 	pendingSteering := false
 	_ = actor.apply(ctx, func() error { pendingSteering = len(actor.state.steering) > 0; return nil })
 	if pendingSteering {
 		service.continueCanonicalInput(actor, threadID, ThreadInteraction{ID: "recovered-steering:" + runID.String(), TurnID: turnID, RunID: runID}, InteractionResolution{}, nil, true)
 		return
 	}
-	view := service.currentView(actor)
 	for _, interaction := range view.Interactions {
-		if interaction.TurnID != turnID {
-			continue
-		}
-		if !interaction.Resolved {
-			return
-		}
-		if interaction.Kind != ThreadInteractionInput || interaction.Resolution == nil {
+		if interaction.TurnID != turnID || interaction.Kind != ThreadInteractionInput || interaction.Resolution == nil {
 			continue
 		}
 		if interaction.Resolution.Redacted {
 			service.restoreSecretInteraction(ctx, threadID, interaction, meta.LeafID)
 			return
 		}
-		service.continueCanonicalInput(service.runtime(threadID), threadID, interaction, *interaction.Resolution, nil)
+		service.continueCanonicalInput(actor, threadID, interaction, *interaction.Resolution, nil)
 		return
 	}
 	service.redispatchAcceptedTurn(ctx, threadID, turnID, runID)

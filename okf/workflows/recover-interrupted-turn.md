@@ -22,6 +22,12 @@ identity, following the wrong user, or replaying an irreversible effect.
    the acting host user or rebuild a provider transcript.
 4. Treat waiting approval or input as a pending interaction and surface it
    through the normal view; resolve it with `Respond` using a stable request key.
+   After process loss, approval does not resurrect an executor. Floret atomically
+   cancels a prepared effect and pairs its original tool call with a factual
+   not-executed result before provider continuation. A new call needs current
+   authorization; renamed tools never inherit an old call's approval. Concurrent
+   hydration and response recovery share one in-process owner and cannot replace
+   a live executor.
 5. If a dispatched effect outcome is unknown, Floret fails the turn during
    live execution or startup. Show the typed failure and never replay the tool.
 6. If the journal already contains a cancel request without its terminal,
@@ -59,3 +65,8 @@ installs its in-memory Run under one actor lock. AgentHarness consumes that
 admission without appending another marker. Stop during finalization therefore
 still targets the prior owner; Stop during preparation targets an already
 canonical successor. The same cancellation transaction closes both cases.
+
+Exact published v7.107.9 synthetic databases qualify approved and denied
+approvals, unchanged and renamed tools, pending input, retained call/result
+pairs, and zero replayed effects through ordinary and blank-module adoption
+tests. Settlement failure rolls back; a repeated restart does not append again.

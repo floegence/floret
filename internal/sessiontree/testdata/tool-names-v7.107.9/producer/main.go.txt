@@ -1,0 +1,98 @@
+// Generate synthetic historical data only with the exact published writer.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/tools"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		panic("usage: producer OUTPUT_DIRECTORY")
+	}
+	root := os.Args[1]
+	if err := os.MkdirAll(root, 0700); err != nil {
+		panic(err)
+	}
+	ctx := context.Background()
+	records := map[string]any{}
+	for _, mode := range []string{"input", "approval"} {
+		path := filepath.Join(root, mode+".sqlite")
+		if _, err := os.Stat(path); err == nil {
+			panic("fixture already exists")
+		}
+		first := provider.ToolCall{ID: "historical-read", Name: "read_file", Args: "{}"}
+		second := provider.ToolCall{ID: "historical-question", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}
+		if mode == "approval" {
+			second = provider.ToolCall{ID: "historical-approval", Name: "terminal.exec", Args: "{}"}
+		}
+		gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "fixture", StateCompatibilityKey: "fixture"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+			florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{first}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+			florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{second}}, {Type: provider.EventDone, Reason: "tool_calls"}}})
+		host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path + ".working")})
+		if err != nil {
+			panic(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			read := tools.Define[map[string]any](tools.Definition{Name: "read_file", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+				return tools.Result{Text: "retained released-writer fact"}, nil
+			})
+			command := tools.Define[map[string]any](tools.Definition{Name: "terminal.exec", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAsk}}, nil, nil, func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+				panic("pending effect must not run")
+			})
+			return runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "fixture", Name: "Fixture"}, SystemPrompt: "Inspect.", Context: config.ContextPolicy{ContextWindowTokens: 128000}}, gateway, runtime.WithAgentTools(read, command), runtime.WithAgentEffectAuthorization(runtime.EffectAuthorizationGateFunc(func(ctx context.Context, r runtime.EffectAuthorizationRequest, e runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+				return e(ctx, runtime.EffectAuthorizationProof{EffectAttemptID: r.EffectAttemptID, RequestFingerprint: r.RequestFingerprint, ThreadID: r.ThreadID, TurnID: r.TurnID, RunID: r.RunID, ToolCallID: r.ToolCallID, PolicyRevision: "fixture", AuditReference: "fixture", AuditHash: "fixture", AuthorizedAt: time.Now()})
+			})))
+		}))
+		if err != nil {
+			panic(err)
+		}
+		thread, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "create"})
+		if err != nil {
+			panic(err)
+		}
+		if _, err = service.Send(ctx, runtime.SendInput{ThreadID: thread.ThreadID, RequestKey: "send", Input: runtime.UserInput{Text: "Read the fixture and wait for explicit input."}}); err != nil {
+			panic(err)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			view, err := service.View(ctx, thread.ThreadID)
+			if err != nil {
+				panic(err)
+			}
+			if len(view.Interactions) == 1 {
+				records[mode] = map[string]string{"thread_id": string(thread.ThreadID), "interaction_id": view.Interactions[0].ID, "turn_id": string(view.TurnID)}
+				break
+			}
+			if time.Now().After(deadline) {
+				panic(fmt.Sprintf("no interaction: %+v", view))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err := exec.Command("python3", "-c", "import sqlite3,sys; source=sqlite3.connect(sys.argv[1]); target=sqlite3.connect(sys.argv[2]); source.backup(target); target.close(); source.close()", path+".working", path).Run(); err != nil {
+			panic(err)
+		}
+		if err := host.Shutdown(ctx); err != nil {
+			panic(err)
+		}
+		if err := os.Remove(path + ".working"); err != nil {
+			panic(err)
+		}
+	}
+	raw, _ := json.MarshalIndent(records, "", "  ")
+	if err := os.WriteFile(filepath.Join(root, "identities.json"), raw, 0600); err != nil {
+		panic(err)
+	}
+}

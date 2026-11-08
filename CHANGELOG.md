@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Pair recovered, known-undispatched tool calls with explicit canceled results
+  before continuing a resolved approval. Preserve call names and effect identity,
+  require fresh permission checks for any new call, and serialize concurrent
+  hydration/response recovery without touching live executors.
+
 - Compact the model-facing ask-user schema by retiring redundant reason, summary,
   exhaustiveness and constant choice-kind fields. Preserve evidence references,
   secrets, stable IDs and display hints. Validate released v7 inputs without

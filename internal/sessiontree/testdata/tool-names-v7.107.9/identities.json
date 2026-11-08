@@ -1,0 +1,12 @@
+{
+  "approval": {
+    "interaction_id": "approval:effect-1d61be01020bca8d40458079",
+    "thread_id": "thread-dc31f280aea2b261246ef7f30975968a",
+    "turn_id": "turn-c7c0c6dc7f7ae2c79c39befc9b452c15"
+  },
+  "input": {
+    "interaction_id": "historical-question",
+    "thread_id": "thread-005f847a6e404624166bcc598afa2306",
+    "turn_id": "turn-d7232d06862a2f7b8817b9a27306a083"
+  }
+}
