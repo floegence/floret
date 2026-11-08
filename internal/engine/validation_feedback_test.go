@@ -52,6 +52,13 @@ func TestInputValidationPreservesFrozenSchemaAndRejectsInvalidReleasedFields(t *
 	if err := validateModelToolArguments(custom, provider.ToolCall{Name: "ask_user", Args: `{"custom":"value"}`}, ""); err != nil {
 		t.Fatal(err)
 	}
+	// Released frozen definitions can explicitly accept the old select mode.
+	frozenSelect := control.ToolDefinitions()
+	question := frozenSelect[0].InputSchema["properties"].(map[string]any)["questions"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	question["response_mode"] = tools.Enum("select")
+	if err := validateModelToolArguments(frozenSelect, provider.ToolCall{Name: "ask_user", Args: strings.Replace(compact, `"response_mode":"write"`, `"response_mode":"select"`, 1)}); err != nil {
+		t.Fatalf("frozen accepted input was normalized before validation: %v", err)
+	}
 	frozen := control.ToolDefinitions()
 	frozen[0].InputSchema["properties"].(map[string]any)["reason_code"] = tools.Enum("missing_external_input")
 	frozen[0].InputSchema["required"] = []string{"questions", "evidence_refs", "reason_code"}

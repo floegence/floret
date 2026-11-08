@@ -141,7 +141,16 @@ func ValidateAskUserToolArgs(definition map[string]any, args string) (map[string
 		add(question, "choices_exhaustive", map[string]any{"type": "boolean"})
 		add(choice, "kind", tools.Enum("select"))
 	}
-	return tools.Validate(schema, []byte(strings.TrimSpace(NormalizeAskUserToolArgs(args))))
+	payload, err := tools.Validate(schema, []byte(strings.TrimSpace(args)))
+	if err == nil {
+		return payload, nil
+	}
+	// A frozen definition may already accept select. Only normalize after its
+	// original contract rejects the call, preserving released admission.
+	if normalized := NormalizeAskUserToolArgs(args); normalized != args {
+		return tools.Validate(schema, []byte(strings.TrimSpace(normalized)))
+	}
+	return nil, err
 }
 
 const maxAskUserQuestions = 5
