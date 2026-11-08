@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/floegence/floret/v7/internal/session"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
@@ -65,7 +66,7 @@ func (repo *BackendRepo) prepareActivitySummariesOwned(ctx context.Context, read
 	seen := map[string]bool{}
 	for _, entry := range entries {
 		ref, ok := entry.bodyFields["activity_json"]
-		if !ok || entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.ToolName == "goal" || seen[ref.SHA256] {
+		if !ok || entry.Type != EntryToolCall && entry.Type != EntryToolResult || session.IsGoalTool(entry.Message) || seen[ref.SHA256] {
 			continue
 		}
 		seen[ref.SHA256] = true

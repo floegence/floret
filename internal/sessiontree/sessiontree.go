@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/citation"
-	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
@@ -2561,10 +2560,17 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 			break
 		}
 		toolName := providerToolNameForCall(messages, interactionID)
-		if (len(resolution.Input) != 0 || resolution.Redacted) && toolName != control.AskUserTool {
+		isAskUser := false
+		for _, message := range messages {
+			if message.ToolCallID == interactionID && session.IsAskUserTool(message) {
+				isAskUser = true
+				break
+			}
+		}
+		if (len(resolution.Input) != 0 || resolution.Redacted) && !isAskUser {
 			return nil, fmt.Errorf("%w: interaction resolution %q has no matching ask_user call", ErrAuthorityCorrupt, entry.ID)
 		}
-		if toolName == control.AskUserTool && (len(resolution.Input) != 0 || resolution.Redacted || resolution.Outcome != "") {
+		if isAskUser && (len(resolution.Input) != 0 || resolution.Redacted || resolution.Outcome != "") {
 			content, err := json.Marshal(interactionResponseMessage{
 				Type:                  "interaction_response",
 				Answers:               resolution.Input,

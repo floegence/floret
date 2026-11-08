@@ -19,6 +19,7 @@ import (
 type Agent struct {
 	executionGate       func() error
 	goalsEnabled        bool
+	builtinToolNames    BuiltinToolNames
 	steering            *engine.SteeringControl
 	configuration       config.AgentConfig
 	gateway             provider.Gateway
@@ -90,6 +91,13 @@ func NewAgent(configuration config.AgentConfig, gateway provider.Gateway, option
 			return nil, fmt.Errorf("agent option %d: %w", index, err)
 		}
 		builder.seen[option.category] = struct{}{}
+	}
+	if builder.agent.builtinToolNames.AskUser != "" {
+		for _, definition := range builder.agent.tools.Definitions() {
+			if definition.Name == builder.agent.builtinToolNames.AskUser || builder.agent.goalsEnabled && (definition.Name == builder.agent.builtinToolNames.Goal || definition.Name == "goal") {
+				return nil, fmt.Errorf("tool name %q is reserved for engine ownership", definition.Name)
+			}
+		}
 	}
 	if err := validateAgentPolicies(builder.agent); err != nil {
 		return nil, err

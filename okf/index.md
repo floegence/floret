@@ -18,6 +18,7 @@ core contracts or explaining the project to another system.
 
 # Public API
 
+* [Built-in tool names](runtime/builtin-tool-names.md) - Callable names and durable semantics.
 * [Public API](api/) - Supported downstream packages and when to use them.
 
 # Workflows

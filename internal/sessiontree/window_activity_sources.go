@@ -49,12 +49,12 @@ func (state *windowToolSources) observe(entry Entry, member projectionSourceMemb
 	}
 	switch entry.Type {
 	case EntryToolCall:
-		if state.Count != 1 || entry.Message.ControlSignal != nil || entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindToolValidationError || entry.Message.ToolName == "goal" || entry.bodyFields["reasoning"].Bytes > 0 || entry.Message.Reasoning != "" {
+		if state.Count != 1 || entry.Message.ControlSignal != nil || entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindToolValidationError || session.IsGoalTool(entry.Message) || entry.bodyFields["reasoning"].Bytes > 0 || entry.Message.Reasoning != "" {
 			state.Unsafe = true
 		}
 	case EntryToolResult:
 		state.Result = member
-		if state.Count == 1 || entry.Message.ControlSignal != nil || entry.Message.Kind == "control_signal" || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil || entry.Message.ToolName == "goal" {
+		if state.Count == 1 || entry.Message.ControlSignal != nil || entry.Message.Kind == "control_signal" || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil || session.IsGoalTool(entry.Message) {
 			state.Unsafe = true
 		}
 	case EntryCustom:

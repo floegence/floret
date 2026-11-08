@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
@@ -242,10 +243,10 @@ func waitingPromptEntry(entry sessiontree.Entry) (string, bool) {
 	if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 		return entry.Message.ToolResult.InputRequired.Summary, true
 	}
-	if entry.Type != sessiontree.EntryToolCall || entry.Message.ToolName != "ask_user" {
+	if entry.Type != sessiontree.EntryToolCall || !session.IsAskUserTool(entry.Message) {
 		return "", false
 	}
-	if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
+	if signal, ok, err := control.Project(provider.ToolCall{Name: control.AskUserTool, Args: entry.Message.ToolArgs}); ok && err == nil {
 		return signal.Prompt, true
 	}
 	return "", true

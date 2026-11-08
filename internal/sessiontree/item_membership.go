@@ -19,6 +19,7 @@ type ItemMember struct {
 	Slot               int
 	Hidden             bool
 	ToolName           string
+	BuiltinTool        session.BuiltinTool
 	RangeFacts         ItemRangeFacts
 	ActivityPending    bool
 	AssistantResponse  bool
@@ -214,12 +215,13 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 				member.ActivityStatus = CanonicalToolStatus(entry)
 			}
 			member.ToolName = entry.Message.ToolName
+			member.BuiltinTool = entry.Message.BuiltinTool
 			if source, ok := p.approvals[key]; ok {
 				member.RangeFacts |= ItemRangeApproval
 				member.InteractionSource = source
 			}
 			member.RangeFacts &^= ItemRangeInput
-			if entry.Message.ToolName == "ask_user" || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+			if session.IsAskUserTool(entry.Message) || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 				member.RangeFacts |= ItemRangeInput
 			}
 			if !member.HostWorkFinal {

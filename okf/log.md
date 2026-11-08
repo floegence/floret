@@ -1939,3 +1939,5 @@ Document optional Goal management, same-context reflection, request-bound update
 
 - 2026-11-03: Clarify authorized Activity source fidelity and explicit row
   transformations separately from restricted diagnostic path projections.
+
+- 2026-11-08: Document configurable built-in names and byte-preserving schema 37 semantics.

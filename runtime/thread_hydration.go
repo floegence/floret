@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"github.com/floegence/floret/v7/internal/session"
 	"sort"
 
 	"github.com/floegence/floret/v7/identity"
@@ -144,13 +145,13 @@ func coldProjectionFields(source sessiontree.PathMetadata, contextSelected, cont
 	for _, body := range source.Bodies {
 		// Only ordinary local activity has an exact call/result reconstruction.
 		// Hosted tools and Goal keep their existing complete semantic reducer.
-		if body.Field == "activity_json" && localTool && source.Entry.Message.ToolName != "goal" {
+		if body.Field == "activity_json" && localTool && !session.IsGoalTool(source.Entry.Message) {
 			continue
 		}
 		// Ordinary local tool bodies affect neither presentation nor managed
 		// facts. Goal and control-pair validation retain their semantic inputs,
 		// including controls outside the selected retry path.
-		if localTool && !controlResult && source.Entry.Message.ControlSignal == nil && source.Entry.Message.ToolName != "goal" && (body.Field == "arguments" || body.Field == "content") {
+		if localTool && !controlResult && source.Entry.Message.ControlSignal == nil && !session.IsGoalTool(source.Entry.Message) && (body.Field == "arguments" || body.Field == "content") {
 			continue
 		}
 		fields = append(fields, body.Field)

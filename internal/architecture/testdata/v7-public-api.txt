@@ -749,6 +749,9 @@ field BindHostWorkInput.TurnID github.com/floegence/floret/v7/identity.TurnID
 field BindHostWorkInput.RunID github.com/floegence/floret/v7/identity.RunID
 field BindHostWorkInput.ToolCallID string
 field BindHostWorkInput.WorkID string
+type BuiltinToolNames struct
+field BuiltinToolNames.AskUser string
+field BuiltinToolNames.Goal string
 type CancelInput struct
 field CancelInput.IncludeDescendants bool tag="json:\"include_descendants,omitempty\""
 field CancelInput.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode,omitempty\""
@@ -2184,6 +2187,7 @@ field WaitThreadsInput.PendingParentEvents bool
 field WaitThreadsInput.Scope github.com/floegence/floret/v7/runtime.ThreadScope
 field WaitThreadsInput.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
 field WaitThreadsInput.Timeout time.Duration
+func WithAgentBuiltinToolNames func(names github.com/floegence/floret/v7/runtime.BuiltinToolNames) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runtime.CapabilityOptions) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v7/runtime.EffectAuthorizationGate) github.com/floegence/floret/v7/runtime.AgentOption

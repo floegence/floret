@@ -136,7 +136,7 @@ func modelContextSourcesFromMetadata(ctx context.Context, tx spi.ReadTx, meta Th
 				if body.Field == "activity_json" {
 					continue
 				}
-				if local && !control && entry.Message.ToolName != "goal" && (body.Field == "arguments" || body.Field == "content") {
+				if local && !control && !session.IsGoalTool(entry.Message) && (body.Field == "arguments" || body.Field == "content") {
 					continue
 				}
 				fields = append(fields, body.Field)

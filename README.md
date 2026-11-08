@@ -1905,3 +1905,19 @@ Message (and an optional wrapped Cause). The result retains structured error
 facts and execution:{phase:"resource_extraction",started:false} before effect
 authorization. Text and Structured expose the same JSON facts to the model and
 retained result. Activity keeps the typed code; this is not retry authority.
+
+## Built-in tool names
+
+`runtime.WithAgentBuiltinToolNames(runtime.BuiltinToolNames{AskUser: "user_ask",
+Goal: "goal_manage"})` selects callable names for the engine-owned input and
+optional Goal tools. Empty fields preserve `ask_user` and `goal`. Names must be
+distinct ASCII letters, digits, underscores or hyphens, at most 64 characters;
+the historical names remain reserved for their original semantic owners.
+The option installs no execution aliases. Static/dynamic collisions fail before
+provider dispatch. The engine owns semantic classification independently of the
+configured name, including input waits, Goal reviews, Activity and restart.
+
+Schema 37 adds this semantic identity for newly named built-ins through the
+contiguous 36 → 37 manifest edge. Historical journals, effect identities and
+provider signatures keep their original bytes and names. Hosts must not rewrite
+those records; changing an ordinary host-tool name is a separate host contract.

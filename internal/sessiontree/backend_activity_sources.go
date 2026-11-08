@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/session"
 	"sort"
 	"strings"
 
@@ -104,7 +105,7 @@ func persistActivitySelection(tx spi.WriteTx, thread, source string, state store
 	return tx.Put(itemMembershipNamespace, activitySourcesKey(thread, source), raw)
 }
 func appendActivitySources(ctx context.Context, tx spi.WriteTx, member ItemMember, entry Entry, fresh bool) error {
-	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
+	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || session.IsGoalTool(entry.Message) {
 		return nil
 	}
 	source, err := activeLocatedEntry(ctx, tx, ThreadMeta{ID: entry.ThreadID, LeafID: entry.ID}, entry.ID)
@@ -117,7 +118,7 @@ func appendActivitySourceMetadata(ctx context.Context, tx spi.WriteTx, member It
 	if member.HostWorkFinal && entry.Type == EntryToolResult {
 		return nil
 	}
-	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
+	if member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || session.IsGoalTool(entry.Message) {
 		return nil
 	}
 	var previous storedActivitySources
@@ -200,7 +201,7 @@ func storeActivitySources(ctx context.Context, tx spi.WriteTx, entries []Entry) 
 		if err != nil {
 			return nil, err
 		}
-		if step.Main == nil || step.Skip || step.Main.Member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
+		if step.Main == nil || step.Skip || step.Main.Member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || session.IsGoalTool(entry.Message) {
 			continue
 		}
 		key := step.Main.Member.SourceID
@@ -337,7 +338,7 @@ func itemActivityMember(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, id 
 	if err != nil || entry.RawHash != member.RawHash || uint64(entry.PathDepth) != member.CanonicalOrdinal || entry.TurnID != member.TurnID || entry.RunID != member.RunID {
 		return ItemMember{}, fmt.Errorf("item activity membership %q: %w", id, errors.Join(ErrAuthorityCorrupt, err))
 	}
-	if entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || entry.Message.ToolName == "goal" {
+	if entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork || session.IsGoalTool(entry.Message) {
 		return ItemMember{}, ErrUnsupportedStoreCapability
 	}
 	if member.ActivityPending {
@@ -585,7 +586,7 @@ func itemRangeActivityFacts(tx spi.ReadTx, thread string, member ItemMember) (It
 	if member.Kind != "tool" {
 		return 0, nil
 	}
-	if strings.HasPrefix(member.ID, "hosted:") || member.ActivityStatus == "" || member.ToolName == "goal" {
+	if strings.HasPrefix(member.ID, "hosted:") || member.ActivityStatus == "" || session.IsGoalTool(session.Message{ToolName: member.ToolName, BuiltinTool: member.BuiltinTool}) {
 		return ItemRangeUnknownActivity, nil
 	}
 	state, err := readStoredActivitySources(tx, thread, member.SourceID)

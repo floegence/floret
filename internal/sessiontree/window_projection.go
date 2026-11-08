@@ -180,7 +180,7 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 			if err != nil {
 				return WindowProjection{}, err
 			}
-			if source.Type != EntryToolCall && source.Type != EntryToolResult || source.Message.ToolName == "goal" {
+			if source.Type != EntryToolCall && source.Type != EntryToolResult || session.IsGoalTool(source.Message) {
 				continue
 			}
 			summary, err := readItemActivitySummary(ctx, tx, meta, member)

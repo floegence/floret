@@ -135,7 +135,7 @@ func deriveGoalSourceContext(ctx context.Context, tx spi.ReadTx, entry Entry, re
 			refs.Completion = source
 		}
 	}
-	if entry.Type == EntryToolCall && entry.Message.ToolName == "goal" {
+	if entry.Type == EntryToolCall && session.IsGoalTool(entry.Message) {
 		args := entry.Message.ToolArgs
 		if ref, ok := entry.bodyFields["arguments"]; ok {
 			args, err = readCanonicalBodyText(ctx, tx, ref, 0, ref.Bytes)
@@ -194,7 +194,7 @@ func attachGoalProjectionBefore(ctx context.Context, tx spi.ReadTx, thread strin
 // Review matching is bounded by the exact version/outcome/evidence identity and
 // the first result boundary, preserving the chronological Goal projector.
 func goalProjectionDependencies(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf entryLocator, entry Entry, visit func(Entry) error) error {
-	if entry.Type != EntryToolCall || entry.Message.ToolName != "goal" {
+	if entry.Type != EntryToolCall || !session.IsGoalTool(entry.Message) {
 		return nil
 	}
 	refs, err := readGoalSourceContext(tx, meta.ID, entry.ID)

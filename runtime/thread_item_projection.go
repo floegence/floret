@@ -399,7 +399,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				continue
 			}
 			activity := activityItemFromCanonicalEntry(entry, occurredAt)
-			if entry.Message.ToolName == "goal" {
+			if session.IsGoalTool(entry.Message) {
 				key := threadToolKey(turnID, runID, entry.Message.ToolCallID)
 				if entry.Type == sessiontree.EntryToolCall {
 					goalArguments[key] = entry.Message.ToolArgs
@@ -438,7 +438,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				items = appendItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
 			}
 			toolIndex := toolItemIndex[toolKey]
-			if entry.Message.ToolName != "goal" {
+			if !session.IsGoalTool(entry.Message) {
 				items[toolIndex].activityEntryIDs = append(items[toolIndex].activityEntryIDs, entry.ID)
 				if projection.deferActivity {
 					items[toolIndex].Activity.Presentation = nil

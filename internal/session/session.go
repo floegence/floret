@@ -50,6 +50,7 @@ type ActivityTargetRef = tools.ActivityTargetRef
 type ActivityPresentation = tools.ActivityPresentation
 
 type ControlSignalView struct {
+	Builtin     BuiltinTool    `json:"builtin,omitempty"`
 	Name        string         `json:"name,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
 	Disposition string         `json:"disposition,omitempty"`
@@ -108,6 +109,7 @@ type ModelContextPart struct {
 }
 
 type Message struct {
+	BuiltinTool          BuiltinTool        `json:"builtin_tool,omitempty"`
 	ContentSourceID      string             `json:"content_source_id,omitempty"`
 	ReasoningSourceID    string             `json:"reasoning_source_id,omitempty"`
 	GoalContextBaseline  string             `json:"goal_context_baseline,omitempty"`
@@ -201,6 +203,7 @@ func CloneControlSignalView(in *ControlSignalView) *ControlSignalView {
 		return nil
 	}
 	return &ControlSignalView{
+		Builtin:     in.Builtin,
 		Name:        in.Name,
 		CallID:      in.CallID,
 		Disposition: in.Disposition,

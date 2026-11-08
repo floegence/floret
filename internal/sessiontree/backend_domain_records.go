@@ -94,6 +94,8 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 				envelope = "sessiontree-v35-manifest"
 			case backendDomainV36Version:
 				envelope = "sessiontree-v36-manifest"
+			case backendDomainV37Version:
+				envelope = "sessiontree-v37-manifest"
 			}
 		}
 	}
@@ -124,6 +126,12 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v36-manifest")
 			if err == nil {
 				manifestVersion = backendDomainV36Version
+			}
+		}
+		if err != nil {
+			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v37-manifest")
+			if err == nil {
+				manifestVersion = backendDomainV37Version
 			}
 		}
 	}
@@ -416,7 +424,7 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 		}
 	}
 	validate := format.validate
-	if manifest.Version == backendDomainV35Version || manifest.Version == backendDomainV36Version {
+	if manifest.Version == backendDomainV35Version || manifest.Version == backendDomainV36Version || manifest.Version == backendDomainV37Version {
 		validate = validateBackendDomainV35Memory
 	}
 	if err := validate(memory); err != nil {

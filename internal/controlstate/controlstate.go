@@ -47,7 +47,7 @@ func Classify(signal *session.ControlSignalView) Classification {
 	if strings.TrimSpace(signal.Disposition) != "waiting" {
 		return Other
 	}
-	if strings.TrimSpace(signal.Name) != control.AskUserTool {
+	if !session.IsAskUserSignal(signal) {
 		return WaitingControl
 	}
 	if strings.TrimSpace(signal.CallID) != "" && validAskUserPayload(signal.Payload) {

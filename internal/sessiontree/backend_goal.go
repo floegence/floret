@@ -47,7 +47,7 @@ func readCanonicalGoalContext(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 			}
 			facts.reviewEntry = entry
 		}
-		if entry.Message.ToolName != "goal" {
+		if !session.IsGoalTool(entry.Message) {
 			if entry.Type == EntryToolCall {
 				facts.pending[entry.Message.ToolCallID] = true
 			}

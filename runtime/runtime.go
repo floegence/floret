@@ -311,6 +311,7 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 
 type providerHostOptions struct {
 	GoalsEnabled             bool
+	BuiltinToolNames         BuiltinToolNames
 	Config                   runtimeConfig
 	modelGateway             modelGateway
 	modelGatewayIdentity     modelGatewayIdentity
@@ -1385,6 +1386,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	runtimeSink := newRuntimeEventSink(opts.Sink)
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
 		GoalsEnabled:                 opts.GoalsEnabled,
+		BuiltinToolNames:             opts.BuiltinToolNames,
 		store:                        store,
 		Tools:                        opts.Tools,
 		EffectAuthorizationGate:      opts.EffectAuthorizationGate,
@@ -1851,6 +1853,7 @@ func turnResult(in agentharness.TurnResult, threadID string, timeline observatio
 
 type harnessOptions struct {
 	GoalsEnabled             bool
+	BuiltinToolNames         BuiltinToolNames
 	store                    *runtimeStore
 	Tools                    *tools.Registry
 	EffectAuthorizationGate  EffectAuthorizationGate
@@ -1930,6 +1933,7 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 	}
 	harness := agentharness.New(agentharness.Options{
 		GoalsEnabled:                 opts.GoalsEnabled,
+		BuiltinToolNames:             engine.BuiltinToolNames{AskUser: opts.BuiltinToolNames.AskUser, Goal: opts.BuiltinToolNames.Goal},
 		Provider:                     p,
 		ProviderName:                 cfg.Provider,
 		Model:                        cfg.Model,

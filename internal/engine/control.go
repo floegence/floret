@@ -24,6 +24,7 @@ const (
 )
 
 type ControlSignal struct {
+	Builtin     session.BuiltinTool
 	Disposition ControlDisposition
 	Name        string
 	CallID      string
@@ -48,6 +49,7 @@ func failedControlSignal(call provider.ToolCall) ControlSignal {
 }
 
 type ControlSpec struct {
+	inputName   string
 	Definitions []tools.ToolDefinition
 	Project     func(provider.ToolCall) (ControlSignal, bool, error)
 }
@@ -58,6 +60,7 @@ type controlProjectionContext struct {
 
 func DefaultControlSpec() ControlSpec {
 	return ControlSpec{
+		inputName:   control.AskUserTool,
 		Definitions: control.ToolDefinitions(),
 		Project: func(call provider.ToolCall) (ControlSignal, bool, error) {
 			sig, ok, err := control.Project(call)

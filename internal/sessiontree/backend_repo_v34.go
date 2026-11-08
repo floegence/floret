@@ -67,9 +67,19 @@ func migrateCurrentManifest(ctx context.Context, tx spi.WriteTx, source backendD
 		}
 	}
 	if source.Version == backendDomainV35Version {
-		return migrateBackendDomainV35ToV36(ctx, tx, source)
+		if err := migrateBackendDomainV35ToV36(ctx, tx, source); err != nil {
+			return err
+		}
+		var err error
+		source, err = readV32Manifest(tx)
+		if err != nil {
+			return err
+		}
 	}
-	if source.Version != backendDomainV36Version {
+	if source.Version == backendDomainV36Version {
+		return migrateBackendDomainV36ToV37(ctx, tx, source)
+	}
+	if source.Version != backendDomainV37Version {
 		return ErrAuthorityCorrupt
 	}
 	return ctx.Err()

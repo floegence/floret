@@ -20,6 +20,9 @@ const goalToolName = "goal"
 // host tool names and annotations cannot opt into this dispatch path.
 func (p *turnProjection) installGoals(options *engine.Options, stopHook engine.StopHook) engine.StopHook {
 	tool := goalTool(p)
+	if tool.Definition.Name != goalToolName {
+		options.GoalToolName = tool.Definition.Name
+	}
 	dispatch := options.EffectDispatcher
 	finalize := options.EffectResultFinalizer
 	options.ToolSurfaceProvider = p.goalSurface(options.ToolSurfaceProvider, p.thread.harness.options.Tools, tool)
@@ -84,6 +87,10 @@ func decodeGoalToolInput(raw []byte) (goalToolInput, error) {
 }
 
 func goalTool(p *turnProjection) tools.Tool {
+	name := goalToolName
+	if p != nil && p.thread != nil && p.thread.harness != nil {
+		name = p.thread.harness.options.BuiltinToolNames.GoalName()
+	}
 	schema := map[string]any{"type": "object", "properties": map[string]any{
 		"operation":        map[string]any{"type": "string", "enum": []string{"set", "delete", "review"}, "description": "set updates the desired result; delete removes an obsolete Goal; review records whether current work meets it."},
 		"expected_version": map[string]any{"type": "integer", "minimum": 0, "description": "Exact current version from Goal runtime facts or the latest tool result, including when the Goal is absent."},
@@ -93,7 +100,7 @@ func goalTool(p *turnProjection) tools.Tool {
 		"evidence":         map[string]any{"type": "string", "description": "Required nonempty evidence for review: observed results and checks, remaining work, or the concrete blocker."},
 		"new_task":         map[string]any{"type": "boolean", "description": "For set after user deletion, true only for a genuinely new user task; not an answer, approval, retry or restart."},
 	}, "required": []string{"operation", "expected_version"}, "additionalProperties": false}
-	return tools.Define[goalToolInput](tools.Definition{Name: goalToolName, Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, Annotations: map[string]any{"source": "floret"}, Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+	return tools.Define[goalToolInput](tools.Definition{Name: name, Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, Annotations: map[string]any{"source": "floret"}, Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 		path, err := p.goalPath(context.Background())
 		if err != nil {
 			return nil, err
@@ -159,6 +166,18 @@ func (p *turnProjection) goalSurface(base engine.ToolSurfaceProvider, registry *
 		if source == nil {
 			source = tools.NewRegistry()
 		}
+		if tool.Definition.Name != goalToolName {
+			for _, definition := range source.Definitions() {
+				if definition.Name == goalToolName {
+					return surface, tools.ErrDuplicate
+				}
+			}
+			for _, definition := range surface.ToolDefinitions {
+				if definition.Name == goalToolName {
+					return surface, tools.ErrDuplicate
+				}
+			}
+		}
 		// A host registry cannot replace the installed handler, even with the
 		// same name or annotations. Seal the independent composed registry.
 		surface.Tools, err = source.WithTools(tool)
@@ -183,7 +202,7 @@ func (p *turnProjection) goalSurface(base engine.ToolSurfaceProvider, registry *
 		if surface.SystemPrompt == "" {
 			surface.SystemPrompt = p.thread.harness.options.SystemPrompt
 		}
-		surface.SystemPrompt += goalInstructions
+		surface.SystemPrompt += strings.ReplaceAll(goalInstructions, "ask_user", p.thread.harness.options.BuiltinToolNames.InputName())
 		return surface, nil
 	}
 }

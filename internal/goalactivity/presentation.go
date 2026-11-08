@@ -3,6 +3,7 @@ package goalactivity
 
 import (
 	"encoding/json"
+	"github.com/floegence/floret/v7/internal/session"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/event"
@@ -41,7 +42,7 @@ func (projector *Projector) Observe(entry sessiontree.Entry) {
 		projector.versions[change.State.Version] = change.State.Text
 		projector.mutations[mutationIdentity{entry.TurnID, entry.RunID, entry.RequestKey}] = true
 	case sessiontree.EntryToolCall:
-		if entry.Message.ToolName != "goal" {
+		if !session.IsGoalTool(entry.Message) {
 			return
 		}
 		if projector.open == nil {

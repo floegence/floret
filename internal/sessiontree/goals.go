@@ -100,7 +100,7 @@ func GoalFromPath(path []Entry) (session.GoalState, error) {
 func GoalWorkBoundary(path []Entry) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		e := path[i]
-		if e.Type == EntryToolCall && e.Message.ToolName != "goal" || e.Type == EntryToolResult && e.Message.ToolName != "goal" || e.Type == EntryUserMessage && e.Message.Kind == session.MessageKindNormal || e.Type == EntrySteeringApplied || e.Type == EntryInteractionDone {
+		if e.Type == EntryToolCall && !session.IsGoalTool(e.Message) || e.Type == EntryToolResult && !session.IsGoalTool(e.Message) || e.Type == EntryUserMessage && e.Message.Kind == session.MessageKindNormal || e.Type == EntrySteeringApplied || e.Type == EntryInteractionDone {
 			return e.ID
 		}
 	}
@@ -228,7 +228,7 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 	}
 	pending := map[string]bool{}
 	for _, entry := range path {
-		if entry.TurnID != turnID || entry.RunID != runID || entry.Message.ToolName == "goal" {
+		if entry.TurnID != turnID || entry.RunID != runID || session.IsGoalTool(entry.Message) {
 			continue
 		}
 		if entry.Type == EntryToolCall {

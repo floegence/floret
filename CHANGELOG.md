@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add optional built-in tool names while preserving published defaults and historical tool exchanges.
+- Preserve built-in semantic identity across Goal, input, Activity, restart and the schema 36 to 37 migration.
+
+## Unreleased
+
 - Route malformed non-empty model tool arguments through the existing bounded
   Engine correction episode. Preserve raw DeepSeek call history and confirmed
   effects through restart, Retry and Fork; reject invalid identities and broken

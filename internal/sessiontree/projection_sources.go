@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/session"
 	"strings"
 )
 
@@ -60,7 +61,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 	case EntryHostWork, EntryToolCall, EntryToolResult:
 		add("tool", entry.TurnID, entry.RunID, entry.Message.ToolCallID)
 		add("invocation", entry.TurnID, "", entry.Message.ToolCallID)
-		if entry.Message.ToolName == "goal" {
+		if session.IsGoalTool(entry.Message) {
 			add("goal", "", "", "history")
 		}
 		if entry.Message.ControlSignal != nil {

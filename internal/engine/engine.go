@@ -174,7 +174,8 @@ type EffectResultFinalizationResult struct {
 type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
 
 type Options struct {
-	Steering *SteeringControl
+	GoalToolName string
+	Steering     *SteeringControl
 	// RetrySourceEntryID is supplied only by the canonical harness retry admission.
 	RetrySourceEntryID    string
 	RunID                 string
@@ -1254,7 +1255,7 @@ steps:
 		validationErrors := map[string]error{}
 		if len(controlCalls) > 0 {
 			for _, call := range controlCalls {
-				validationErr := validateModelToolArguments(opts.ControlSpec.Definitions, call)
+				validationErr := validateModelToolArguments(opts.ControlSpec.Definitions, call, opts.ControlSpec.inputName)
 				if len(classifiedCalls.Ordinary) > 0 {
 					validationErr = errors.New("submit the control call separately after receiving the ordinary tool results")
 				}
@@ -1390,6 +1391,9 @@ steps:
 			if projectedSignal != nil && repeatRejections[call.ID] == nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
 				msg.ControlSignal = sessionControlSignalView(projectedSignal)
 			}
+			if opts.GoalToolName != "" && call.Name == opts.GoalToolName {
+				msg.BuiltinTool = session.BuiltinGoal
+			}
 			callMessages[index] = msg
 		}
 		responseStart := len(activeHistory)
@@ -1523,6 +1527,7 @@ steps:
 				// Engine feedback has no tool output projection or effect result.
 				// Commit once before publishing observation and applying the transcript.
 				msg := stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(calls[i], validationErr))
+				msg.BuiltinTool = callMessages[i].BuiltinTool
 				if opts.CommitMessages != nil {
 					messages, err := opts.CommitMessages(ctx, []session.Message{msg})
 					if err != nil {
@@ -1586,6 +1591,9 @@ steps:
 			resultView.EffectOutcome = result.EffectOutcome
 			resultView.ObservedHostWork = result.ObservedHostWork
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
+			if opts.GoalToolName != "" && result.Name == opts.GoalToolName {
+				toolMessages[i].BuiltinTool = session.BuiltinGoal
+			}
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
 				failureActivity := effectFinalizationErrorActivityPresentation(
@@ -4460,6 +4468,7 @@ func validateHostedToolEvent(call provider.ToolCall, allowed map[string]struct{}
 func persistedControlSignal(msg session.Message) (ControlSignal, bool) {
 	if view := msg.ControlSignal; view != nil {
 		return ControlSignal{
+			Builtin:     view.Builtin,
 			Disposition: ControlDisposition(view.Disposition),
 			ErrorCode:   view.ErrorCode,
 			Name:        view.Name,
@@ -4496,6 +4505,7 @@ func sessionControlSignalView(signal *ControlSignal) *session.ControlSignalView 
 		return nil
 	}
 	return &session.ControlSignalView{
+		Builtin:     signal.Builtin,
 		Name:        strings.TrimSpace(signal.Name),
 		CallID:      strings.TrimSpace(signal.CallID),
 		Disposition: string(signal.Disposition),

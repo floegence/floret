@@ -14,7 +14,11 @@ import (
 
 // Only provider arguments are correctable. Activity and control projectors run
 // after this boundary; their failures are engine contracts, not model feedback.
-func validateModelToolArguments(definitions []tools.ToolDefinition, call provider.ToolCall) error {
+func validateModelToolArguments(definitions []tools.ToolDefinition, call provider.ToolCall, inputNames ...string) error {
+	inputName := control.AskUserTool
+	if len(inputNames) > 0 {
+		inputName = inputNames[0]
+	}
 	if !json.Valid([]byte(call.Args)) {
 		_, err := tools.Validate(nil, []byte(call.Args))
 		return err
@@ -22,7 +26,7 @@ func validateModelToolArguments(definitions []tools.ToolDefinition, call provide
 	for _, definition := range definitions {
 		if definition.Name == call.Name {
 			_, err := tools.Validate(definition.InputSchema, []byte(call.Args))
-			if err != nil && control.IsControlTool(strings.TrimSpace(call.Name)) {
+			if err != nil && strings.TrimSpace(call.Name) == inputName {
 				if normalized := control.NormalizeAskUserToolArgs(call.Args); normalized != call.Args {
 					_, err = tools.Validate(definition.InputSchema, []byte(normalized))
 				}

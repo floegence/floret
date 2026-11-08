@@ -90,6 +90,7 @@ type Options struct {
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	StopHook                 engine.StopHook
 	GoalsEnabled             bool
+	BuiltinToolNames         engine.BuiltinToolNames
 	CompactionGenerator      compaction.SummaryGenerator
 	CompactionPrompt         compaction.PromptOptions
 	CompactionPromptIdentity string
@@ -830,6 +831,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
+	if name := t.harness.options.BuiltinToolNames.AskUser; name != "" {
+		engineOptions.ControlSpec = engine.NamedControlSpec(name)
+	}
 	// ThreadRuntime owns approval interactions. Effect dispatch retains
 	// only the narrow prepared/dispatching/result safety boundary.
 	engineOptions.EffectBatchPreflight = nil
@@ -2480,13 +2484,14 @@ func terminalTurnClosureToolResult(call session.Message, status engine.Status, c
 	activity := session.CloneActivityPresentation(call.Activity)
 	activity = activityview.WithTerminalStatus(activity, resultStatus, text)
 	return session.Message{
-		Role:       session.Tool,
-		Kind:       call.Kind,
-		Content:    text,
-		ToolCallID: strings.TrimSpace(call.ToolCallID),
-		ToolName:   strings.TrimSpace(call.ToolName),
-		ToolResult: &session.ToolResultView{Status: resultStatus},
-		Activity:   activity,
+		Role:        session.Tool,
+		Kind:        call.Kind,
+		Content:     text,
+		ToolCallID:  strings.TrimSpace(call.ToolCallID),
+		ToolName:    strings.TrimSpace(call.ToolName),
+		BuiltinTool: call.BuiltinTool,
+		ToolResult:  &session.ToolResultView{Status: resultStatus},
+		Activity:    activity,
 	}
 }
 
