@@ -480,7 +480,12 @@ release the backend between pages; a missing manifest hides partial metadata.
 Concurrent canonical changes invalidate the candidate before publication. No
 text terms, postings, or durable query snapshots are introduced.
 
-Logical storage 11 recognizes this resumable state. Host readiness is an
+Logical storage 12 fences the schema 37 manifest from older runtimes. Exact
+logical 11 stores remain supported; domain admission and logical publication
+commit atomically. A future incompatible domain envelope must advance the
+logical fence so old runtimes return `ErrStoreTooNew` before decoding it. The
+release adoption gates run an exact v7.107.9 reader against a current writer and
+assert that rejection preserves all canonical records. Host readiness is an
 in-process observation of the canonical owner, not another durable lifecycle.
 Monolithic v2–v5 sources use the production worker in
 [backend_snapshot_prepare.go](../../internal/sessiontree/backend_snapshot_prepare.go).

@@ -18,7 +18,10 @@ in-process actor for each active thread.
 ## Storage startup
 
 `runtime.Open` returns a Host after bounded storage-source preparation and
-logical-schema inspection. Domain migration, derived-index preparation and
+logical-schema inspection. Logical 12 fences the incompatible domain 37
+manifest; exact logical 11 stores upgrade atomically without rewriting current
+canonical records. Older readers return `ErrStoreTooNew` before domain decoding.
+Domain migration, derived-index preparation and
 migration verification run in a Host-owned worker. Current stores reuse durable
 thread readiness anchors and only rebuild missing/stale metadata; they do not
 audit complete prepared histories at every restart. Explicit `InspectSQLite`

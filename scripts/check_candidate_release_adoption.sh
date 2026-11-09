@@ -78,6 +78,7 @@ done
 go get "${module_path}@${version}"
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...
+"${repository_root}/scripts/check_logical_storage_fence.sh" "${version}"
 
 if [[ -n $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]; then
   printf 'candidate release adoption: consumer resolved a replacement module\n' >&2

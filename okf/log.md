@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-08: Fence schema 37 with logical storage 12; preserve exact logical 11
+  migration, bounded restart and atomic rollback. Release gates qualify old
+  reader rejection without canonical mutation.
+
 - 2026-11-08: Close known-undispatched calls during approval recovery without
   replaying effects; qualify released v7.107.9 histories and atomic rollback.
 

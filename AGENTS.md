@@ -267,9 +267,11 @@ Rules:
   not reconstruct, patch, or migrate Floret domain records themselves.
 - SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 use transactional metadata/layout
   changes only and must not copy or clear canonical records. Logical storage
-  7 -> 8 -> 9 -> 10 -> 11 migrates through Host-owned transactions and the permanent
+  7 -> 8 -> 9 -> 10 -> 11 -> 12 migrates through Host-owned transactions and the permanent
   session-tree lineage. A logical format marker identifies the migration owner;
-  it does not assert that every historical thread is already prepared. Prompt
+  it does not assert that every historical thread is already prepared. An
+  incompatible domain envelope must advance this logical fence so released older
+  runtimes return `ErrStoreTooNew` before decoding domain authority. Prompt
   history uses append-ordered scope/category records; the global v1 snapshot
   reader belongs exclusively to migration. Do not reintroduce whole-cache
   snapshots, runtime dual reads, or checkpoint writes for unrelated scopes.

@@ -24,11 +24,16 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
+// IMPORTANT: An incompatible domain envelope must advance the logical fence.
+// Older runtimes must reject it as ErrStoreTooNew before interpreting domain
+// records; publish the new marker only with validated domain admission.
 const (
 	logicalSchemaNamespace            = "floret.system"
 	logicalSchemaKey                  = "logical-schema"
-	logicalSchemaVersion              = "11"
-	logicalSchemaFingerprint          = "sha256:8c7b5edf140b2950900551ebf83cc70475a970109feba1c9148a6384691cf75a"
+	logicalSchemaVersion              = "12"
+	logicalSchemaFingerprint          = "sha256:a086704adeda17c8d74919ca5f62c961d50d8be247058829215c6b465999dea9"
+	legacyV11LogicalSchemaVersion     = "11"
+	legacyV11LogicalSchemaFingerprint = "sha256:8c7b5edf140b2950900551ebf83cc70475a970109feba1c9148a6384691cf75a"
 	legacyV10LogicalSchemaVersion     = "10"
 	legacyV10LogicalSchemaFingerprint = "sha256:fc7461f9beda89a3ee63809596469cfdf44365dabec30c52c4d8568261fd9ce7"
 	legacyV9LogicalSchemaVersion      = "9"
@@ -286,7 +291,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		if inspectErr != nil {
 			return inspectErr
 		}
-		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
+		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
 			var current bool
 			currentKernel, current, inspectErr = internalstorage.NewCurrentBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents)
 			if !current {
@@ -776,6 +781,7 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV11     logicalSchemaState = "v11"
 	logicalSchemaV10     logicalSchemaState = "v10"
 	logicalSchemaV7      logicalSchemaState = "v7"
 	logicalSchemaV8      logicalSchemaState = "v8"
@@ -818,6 +824,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV11LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV11LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 11 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV11, nil
 	}
 	if envelope.Version == legacyV10LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV10LogicalSchemaFingerprint {

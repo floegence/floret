@@ -62,6 +62,7 @@ done
 go get "${module_path}@${tag}"
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...
+"${repository_root}/scripts/check_logical_storage_fence.sh" "${tag}"
 go mod verify
 
 if [[ -n $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]; then

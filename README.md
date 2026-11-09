@@ -1355,7 +1355,10 @@ reconstruction uses fixed metadata windows; it does not retain transcript bodies
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
 prompt history and the permanent session-tree lineage. Logical storage version
-11 recognizes resumable domain schema 32 preparation. Source recognition and
+12 fences domain schema 37 from older runtimes while preserving the exact
+logical 11 migration path and bounded resumable preparation. Incompatible domain
+envelopes must advance the logical fence; released old readers return
+`ErrStoreTooNew` before interpreting newer domain authority. Source recognition and
 logical publication commit together; each complete thread then publishes in its
 own transaction, and retained sources are removed only after full inventory
 verification. Released KV term documents are removed; current metadata uses its
