@@ -43,6 +43,19 @@ transactions. DisplayReady still certifies complete browsing preparation;
 canonical Ready is independent. Explicit preparation includes retained branches,
 honors cancellation and joins shutdown. Prepared restarts reuse metadata.
 
+## Autonomous input policy
+
+`runtime.WithAgentUserInput(false)` removes the engine-owned input definition
+and projector from new Turns. The default remains enabled, including
+renamed built-ins. An undeclared ask-user call cannot create an interaction.
+Existing frozen Turn definitions remain unchanged unless the host explicitly
+opts into `RefreshProviderSurface`; refreshed continuations omit input too.
+The policy is independent of Goal opt-in and effect authorization; approvals
+remain enforced. Existing pending questions remain answerable after restart,
+and their identity, source arguments and paired results are preserved.
+Evidence: `runtime/user_input_policy_external_test.go`, also exercised by the
+candidate and published blank-module adoption gates.
+
 ## Thread goals
 
 Opt in with `runtime.WithAgentGoals()`. The optional

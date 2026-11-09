@@ -2203,6 +2203,7 @@ func WithAgentRunLabels func(labels github.com/floegence/floret/v7/runtime.RunLa
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v7/runtime.ThreadTitleMode) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentTools func(items ...github.com/floegence/floret/v7/tools.Tool) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentUserInput func(enabled bool) github.com/floegence/floret/v7/runtime.AgentOption
 type WorkspaceSubscription struct
 method *WorkspaceSubscription.Next func(ctx context.Context) (github.com/floegence/floret/v7/runtime.ThreadView, error)
 method *WorkspaceSubscription.Close func()

@@ -576,9 +576,10 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 		return nil, err
 	}
 	provider, err := newProviderHost(providerHostOptions{
-		GoalsEnabled:     opts.goalsEnabled,
-		BuiltinToolNames: opts.builtinToolNames,
-		Config:           opts.config, modelGateway: opts.modelGateway, modelGatewayIdentity: opts.modelGatewayIdentity,
+		GoalsEnabled:      opts.goalsEnabled,
+		UserInputDisabled: opts.userInputDisabled,
+		BuiltinToolNames:  opts.builtinToolNames,
+		Config:            opts.config, modelGateway: opts.modelGateway, modelGatewayIdentity: opts.modelGatewayIdentity,
 		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
 		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
 		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
@@ -912,8 +913,9 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		attachmentMode = modelGatewayAttachmentPayloadExpanded
 	}
 	return turnExecutionOptions{
-		goalsEnabled:     agent.goalsEnabled,
-		builtinToolNames: agent.builtinToolNames,
+		goalsEnabled:      agent.goalsEnabled,
+		userInputDisabled: agent.userInputDisabled,
+		builtinToolNames:  agent.builtinToolNames,
 		config: runtimeConfig{
 			SystemPrompt:  agent.configuration.SystemPrompt,
 			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,

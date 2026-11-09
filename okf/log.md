@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-09: Define optional autonomous input policy at the Agent boundary;
+  retain historical questions and independent authorization controls.
+
 - 2026-11-08: Fence schema 37 with logical storage 12; preserve exact logical 11
   migration, bounded restart and atomic rollback. Release gates qualify old
   reader rejection without canonical mutation.

@@ -90,6 +90,7 @@ type Options struct {
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	StopHook                 engine.StopHook
 	GoalsEnabled             bool
+	UserInputDisabled        bool
 	BuiltinToolNames         engine.BuiltinToolNames
 	CompactionGenerator      compaction.SummaryGenerator
 	CompactionPrompt         compaction.PromptOptions
@@ -831,7 +832,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
-	if name := t.harness.options.BuiltinToolNames.AskUser; name != "" {
+	if t.harness.options.UserInputDisabled {
+		engineOptions.ControlSpec = engine.ControlSpec{Definitions: []tools.ToolDefinition{}, Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) { return engine.ControlSignal{}, false, nil }}
+	} else if name := t.harness.options.BuiltinToolNames.AskUser; name != "" {
 		engineOptions.ControlSpec = engine.NamedControlSpec(name)
 	}
 	// ThreadRuntime owns approval interactions. Effect dispatch retains

@@ -2688,6 +2688,10 @@ func applyAgentExecutionPolicy(request *turnExecutionRequest, agent *Agent) {
 	if request == nil {
 		return
 	}
+	if agent != nil && agent.userInputDisabled {
+		request.Signals = TurnSignalSpec{}
+		return
+	}
 	request.Signals = TurnSignalSpec{
 		Definitions: CoreControlDefinitions(),
 		Project:     ProjectCoreControlSignal,

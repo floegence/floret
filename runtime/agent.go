@@ -19,6 +19,7 @@ import (
 type Agent struct {
 	executionGate       func() error
 	goalsEnabled        bool
+	userInputDisabled   bool
 	builtinToolNames    BuiltinToolNames
 	steering            *engine.SteeringControl
 	configuration       config.AgentConfig
@@ -297,4 +298,16 @@ func cloneAgentConfig(configuration config.AgentConfig) config.AgentConfig {
 // WithAgentGoals enables canonical thread goals and natural-stop reflection.
 func WithAgentGoals() AgentOption {
 	return AgentOption{category: "goals", apply: func(builder *agentBuilder) error { builder.agent.goalsEnabled = true; return nil }}
+}
+
+// WithAgentUserInput controls the engine-owned ask-user capability for new
+// executions. Input is enabled by default. Disabling it omits the definition
+// and projector without rewriting historical interactions or tool exchanges.
+// Existing frozen Turn surfaces remain unchanged unless the host opts into
+// RefreshProviderSurface through WithAgentDynamicToolSurface.
+func WithAgentUserInput(enabled bool) AgentOption {
+	return AgentOption{category: "user_input", apply: func(builder *agentBuilder) error {
+		builder.agent.userInputDisabled = !enabled
+		return nil
+	}}
 }

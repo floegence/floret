@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `runtime.WithAgentUserInput` for autonomous executions. Preserve enabled
+  defaults, named built-ins, independent Goal and effect-approval policy, and
+  pending interaction history across restart. Qualify the final provider and
+  interaction boundaries in candidate and published downstream consumers.
+
 - Advance logical storage to 12 so older runtimes classify domain 37 as requiring
   an update instead of corrupt authority. Preserve exact logical 11 migration,
   current canonical records and bounded startup; qualify atomic rollback and an

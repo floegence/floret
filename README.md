@@ -1911,6 +1911,17 @@ retained result. Activity keeps the typed code; this is not retry authority.
 
 ## User input contract
 
+`runtime.WithAgentUserInput(false)` disables the engine-owned ask-user tool for
+new Turns, including renamed built-ins.
+Input is enabled by default; `WithAgentUserInput(true)` makes that explicit.
+Disabling input removes the new provider definition and input projector;
+undeclared calls cannot create input interactions. Existing pending questions,
+answers, original calls and history remain readable and answerable after
+restart. Existing frozen Turn surfaces retain their original definitions unless
+`WithAgentDynamicToolSurface` explicitly requests `RefreshProviderSurface`.
+This option does not disable effect approvals or enable/disable Goals.
+
+
 The built-in `ask_user` model definition contains `questions` and `evidence_refs`.
 Questions retain stable question/choice IDs, `write` and `select_or_write` modes,
 secret input and display hints. Choices always allow a separate custom answer.
