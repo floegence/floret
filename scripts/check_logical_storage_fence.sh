@@ -15,6 +15,7 @@ go mod init example.com/logical-fence-writer
 cp "${repository_root}/scripts/testdata/logical-storage-fence/writer.go" main.go
 go get "github.com/floegence/floret/v7@${version}"
 go mod tidy
+go mod verify
 [[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == "${version}" ]]
 [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
 go run . "${root}/history.sqlite"
@@ -23,6 +24,7 @@ go mod init example.com/logical-fence-reader
 cp "${repository_root}/scripts/testdata/logical-storage-fence/reader.go" main.go
 go get github.com/floegence/floret/v7@v7.107.9
 go mod tidy
+go mod verify
 [[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.107.9 ]]
 [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
 go run . "${root}/history.sqlite"

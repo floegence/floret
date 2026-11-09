@@ -5,7 +5,9 @@
 - Advance logical storage to 12 so older runtimes classify domain 37 as requiring
   an update instead of corrupt authority. Preserve exact logical 11 migration,
   current canonical records and bounded startup; qualify atomic rollback and an
-  exact released reader in candidate and published adoption gates.
+  exact released reader in candidate and published adoption gates. Candidate
+  module zips now omit directory entries so their extracted files pass Go module
+  checksum verification.
 
 - Pair recovered, known-undispatched tool calls with explicit canceled results
   before continuing a resolved approval. Preserve call names and effect identity,

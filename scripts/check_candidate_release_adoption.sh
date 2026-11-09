@@ -20,7 +20,19 @@ trap cleanup EXIT
 readonly proxy_root="${adoption_root}/proxy"
 readonly version_dir="${proxy_root}/${module_path}/@v"
 mkdir -p "${version_dir}" "${adoption_root}/consumer"
-git archive --format=zip --prefix="${module_path}@${version}/" HEAD -o "${version_dir}/${version}.zip"
+git archive --format=zip --prefix="${module_path}@${version}/" HEAD -o "${adoption_root}/archive.zip"
+# IMPORTANT: Module zip hashes include file names. Raw git archives also contain
+# directory entries, making their HashZip differ from the extracted HashDir.
+# Keep committed file bytes unchanged and omit only those directory entries.
+python3 - "${adoption_root}/archive.zip" "${version_dir}/${version}.zip" <<'PYZIP'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], "w") as target:
+    for entry in source.infolist():
+        if not entry.is_dir():
+            target.writestr(entry, source.read(entry))
+PYZIP
 cp "${repository_root}/go.mod" "${version_dir}/${version}.mod"
 printf '{"Version":"%s","Time":"1970-01-01T00:00:00Z"}\n' "${version}" >"${version_dir}/${version}.info"
 printf '%s\n' "${version}" >"${version_dir}/list"
@@ -77,6 +89,7 @@ for fixture in "${repository_root}"/internal/sessiontree/testdata/compaction-v*;
 done
 go get "${module_path}@${version}"
 go mod tidy
+go mod verify
 GOFLAGS=-mod=readonly go test ./...
 "${repository_root}/scripts/check_logical_storage_fence.sh" "${version}"
 
