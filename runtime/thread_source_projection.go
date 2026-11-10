@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -130,8 +131,54 @@ type sourceWindowRequest struct {
 	lifetime *windowInterestLifetime
 }
 type frozenSourceWindow struct {
-	view canonicalThreadView
-	page threadSourceProjection
+	input        ThreadWindowInput
+	snapshot     ThreadWindowSnapshot
+	turns        []ThreadTurn
+	interactions []ThreadInteraction
+	err          error
+}
+
+// prepareSourceWindow fixes membership, locators and turn references together.
+// It runs after the canonical read, outside execution/publication locks. Next
+// consumes the same prepared snapshot and cannot choose a different interval.
+func (service *threadRuntimeService) prepareSourceWindow(ctx context.Context, request sourceWindowRequest, view canonicalThreadView, page threadSourceProjection) frozenSourceWindow {
+	input := normalizeWindowInput(request.input)
+	input.RequestID = ""
+	result := frozenSourceWindow{input: input}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(request.lifetime.ctx, cancel)
+	defer stop()
+	defer cancel()
+	if request.lifetime.ctx.Err() != nil {
+		result.err = context.Canceled
+		return result
+	}
+	reader := &threadRuntimeState{threadID: input.ThreadID.String(), service: service}
+	limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(view.Items))-(utf8.UTFMax-1), windowTextLimit(input))
+	items := make([]ThreadItem, len(view.Items))
+	for i, item := range view.Items {
+		if err := ctx.Err(); err != nil {
+			result.err = err
+			return result
+		}
+		value, err := reader.windowItemMode(ctx, item, limit, input.ActivityFields)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		items[i] = value
+	}
+	snapshot, err := boundWindowSnapshot(ThreadWindowSnapshot{ViewVersion: ^uint64(0), resolvedAnchor: page.resolvedAnchor, ThreadID: input.ThreadID, LeafID: page.leaf, HasBefore: page.hasBefore, HasAfter: page.hasAfter, ItemSelection: input.ItemIDs != nil || input.SkipRange != nil || len(input.RetainItemIDs) > 0, AnchorUnavailable: page.anchorUnavailable, SkippedRange: page.skippedRange, Items: items}, input)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	// Reserve the largest version encoding before the actor assigns its version.
+	snapshot.ViewVersion = 0
+	result.snapshot = snapshot
+	result.turns = selectedWindowTurns(snapshot.Items, view.Turns)
+	result.interactions = selectedWindowInteractions(snapshot.Items, view.Interactions)
+	return result
 }
 
 func (service *threadRuntimeService) loadSourceWindowAt(ctx context.Context, input ThreadWindowInput, leaf string, omitMissing ...bool) (canonicalThreadView, threadSourceProjection, error) {
@@ -174,9 +221,9 @@ func (service *threadRuntimeService) loadSourceWindowWithInterests(ctx context.C
 		if err != nil {
 			return canonicalThreadView{}, threadSourceProjection{}, err
 		}
-		value.ThreadView = ThreadView{ThreadID: value.ThreadID, Items: value.Items, Turns: value.Turns, Interactions: value.Interactions}
-		selected.input = normalizeWindowInput(interest.input)
-		page.companions[interest.lifetime] = frozenSourceWindow{view: value, page: selected}
+		// Finish budget selection outside the actor before any interest can adopt
+		// these identities. A failed detail read belongs only to this interest.
+		page.companions[interest.lifetime] = service.prepareSourceWindow(ctx, interest, value, selected)
 	}
 	return view, page, nil
 }

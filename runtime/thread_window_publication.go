@@ -23,12 +23,6 @@ type windowPublication struct {
 	interest *windowInterestLifetime
 	limit    int
 	fields   bool
-	source   *sourceWindowPublication
-}
-
-type sourceWindowPublication struct {
-	input  ThreadWindowInput
-	frozen frozenSourceWindow
 }
 
 func withoutWindowDetail(update ThreadUpdate) ThreadUpdate {
@@ -68,23 +62,6 @@ func (work *windowPublication) read(ctx context.Context, update ThreadUpdate) (T
 	defer cancel()
 	if work.interest.ctx.Err() != nil {
 		return ThreadUpdate{}, context.Canceled
-	}
-	if work.source != nil {
-		input := work.source.input
-		view, page := work.source.frozen.view, work.source.frozen.page
-
-		limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(view.Items))-(utf8.UTFMax-1), windowTextLimit(input))
-		items, err := work.actor.cloneWindowItemsMode(ctx, view.Items, limit, input.ActivityFields)
-		if err != nil {
-			return ThreadUpdate{}, err
-		}
-		snapshot, err := boundWindowSnapshot(ThreadWindowSnapshot{resolvedAnchor: page.resolvedAnchor, ThreadID: input.ThreadID, LeafID: page.leaf, ViewVersion: update.ViewVersion, HasBefore: page.hasBefore, HasAfter: page.hasAfter, ItemSelection: input.ItemIDs != nil, AnchorUnavailable: page.anchorUnavailable, Items: items}, input)
-		if err != nil {
-			return ThreadUpdate{}, err
-		}
-		update.Window = &ThreadComponent[*ThreadWindowSnapshot]{Value: &snapshot}
-		update.Turns = &ThreadComponent[[]ThreadTurn]{Value: view.Turns}
-		update.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: selectedWindowInteractions(snapshot.Items, view.Interactions)}
 	}
 	hydrate := func(item ThreadItem) (ThreadItem, error) {
 		return work.actor.windowItemMode(ctx, item, work.limit, work.fields)
@@ -139,7 +116,7 @@ func (work *windowPublication) read(ctx context.Context, update ThreadUpdate) (T
 	return update, nil
 }
 
-func (subscription *ThreadUpdateSubscription) enqueueWindowLocked(actor *threadRuntimeState, update ThreadUpdate, sources ...*sourceWindowPublication) bool {
+func (subscription *ThreadUpdateSubscription) enqueueWindowLocked(actor *threadRuntimeState, update ThreadUpdate) bool {
 	interest := subscription.windows[update.ThreadID.String()]
 	var work *windowPublication
 	limit := windowTextLimit(interest.sourceInput)
@@ -147,33 +124,6 @@ func (subscription *ThreadUpdateSubscription) enqueueWindowLocked(actor *threadR
 		limit = min(limit, threadDisplayPreviewBytes/max(1, len(update.Window.Value.Items))-(utf8.UTFMax-1))
 	}
 	reserve := 0
-	if len(sources) > 0 && sources[0] != nil {
-		if interest.lifetime == nil {
-			interest.lifetime = newWindowInterestLifetime()
-			subscription.windows[update.ThreadID.String()] = interest
-		}
-		work = &windowPublication{actor: actor, interest: interest.lifetime, limit: limit, fields: interest.activityFields, source: sources[0]}
-		// Charge the frozen interval instead of a full maximum-size page for
-		// every tiny update. Source summaries and previews are included below.
-		raw, err := json.Marshal(sources[0].frozen.view)
-		if err != nil {
-			subscription.finishLocked(ErrThreadUpdateInvalidated)
-			return false
-		}
-		reserve = len(raw)
-		for _, item := range sources[0].frozen.view.Items {
-			if item.activitySummary != nil {
-				raw, _ := json.Marshal(item.activitySummary)
-				reserve += len(raw)
-			}
-			if item.textOmitted {
-				reserve += min(threadDisplayTextBytes, item.textBytes)
-			}
-			for _, id := range item.activityEntryIDs {
-				reserve += len(id) + 16
-			}
-		}
-	}
 	inspect := func(item ThreadItem) {
 		if !interest.activityFields || !item.textOmitted && !item.activityOmitted {
 			return

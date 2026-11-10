@@ -128,12 +128,12 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 						coldView = &value
 					} else {
 						for _, frozen := range cold.companions {
-							if sameWindowInterval(input, frozen.page.input) {
-								value := frozen.view
+							if frozen.err == nil && sameWindowInterval(input, frozen.input) {
+								value := canonicalThreadView{ThreadView: ThreadView{Items: frozen.snapshot.Items, Turns: frozen.turns, Interactions: frozen.interactions}}
 								coldView = &value
-								coldBefore, coldAfter = frozen.page.hasBefore, frozen.page.hasAfter
-								coldAnchor = frozen.page.resolvedAnchor
-								skippedRange = frozen.page.skippedRange
+								coldBefore, coldAfter = frozen.snapshot.HasBefore, frozen.snapshot.HasAfter
+								coldAnchor = frozen.snapshot.resolvedAnchor
+								skippedRange = frozen.snapshot.SkippedRange
 								break
 							}
 						}
@@ -223,11 +223,7 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			if actor.sourceWindow == nil {
 				turns, interactions = actor.windowTurns(selected), actor.windowInteractions(selected)
 			} else {
-				turns = cloneThreadTurns(turns)
-				for i := range turns {
-					turns[i].IntermediateItemIDs = selectedThreadIDs(turns[i].IntermediateItemIDs, selected)
-					turns[i].FinalItemIDs = selectedThreadIDs(turns[i].FinalItemIDs, selected)
-				}
+				turns = selectedWindowTurns(snapshot.Items, turns)
 				interactions = selectedWindowInteractions(snapshot.Items, interactions)
 			}
 			actor.service.flushUpdateLocked(actor)
@@ -371,6 +367,21 @@ func (actor *threadRuntimeState) freezeWindowItem(item ThreadItem, limit int, fi
 		}
 	}
 	return cloneWindowItemsLimit([]ThreadItem{item}, limit)[0]
+}
+
+// Canonical turn facts stay complete; only their display references follow the
+// exact final window, after encoding budgets have selected its members.
+func selectedWindowTurns(items []ThreadItem, turns []ThreadTurn) []ThreadTurn {
+	selected := make(map[string]bool, len(items))
+	for _, item := range items {
+		selected[item.ID] = true
+	}
+	out := cloneThreadTurns(turns)
+	for i := range out {
+		out[i].IntermediateItemIDs = selectedThreadIDs(out[i].IntermediateItemIDs, selected)
+		out[i].FinalItemIDs = selectedThreadIDs(out[i].FinalItemIDs, selected)
+	}
+	return out
 }
 
 func selectedWindowInteractions(items []ThreadItem, interactions []ThreadInteraction) []ThreadInteraction {

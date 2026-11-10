@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-09: Finalize source window budgets before publication and install the
+  same membership for items, turns, locators and subsequent deltas.
+
 - 2026-11-09: Expose per-turn canonical failure facts for historical diagnostics
   without changing journal storage or adding host-owned persistence.
 

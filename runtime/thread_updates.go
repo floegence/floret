@@ -737,28 +737,9 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			continue
 		}
 		if !subscription.closed && subscription.windowed {
-			var source *sourceWindowPublication
-			if interest, reading := subscription.windows[update.ThreadID.String()]; reading && actor.sourceWindow != nil && update.ItemOrder != nil {
-				if frozen, ok := actor.sourceWindow.companions[interest.lifetime]; ok {
-					source = &sourceWindowPublication{input: interest.sourceInput, frozen: frozen}
-				}
-			}
 			projected, deliver := subscription.projectWindowUpdate(actor, update)
 			if deliver {
-				if source != nil {
-					interest := subscription.windows[update.ThreadID.String()]
-					interest.items = make(map[string]bool, len(source.frozen.view.Items))
-					for _, item := range source.frozen.view.Items {
-						interest.items[item.ID] = true
-					}
-					interest.bodies = windowBodyLocators(source.frozen.view.Items)
-					interest.anchor = ""
-					if len(source.frozen.view.Items) > 0 {
-						interest.anchor = source.frozen.view.Items[0].ID
-					}
-					subscription.windows[update.ThreadID.String()] = interest
-				}
-				subscription.enqueueWindowLocked(actor, projected, source)
+				subscription.enqueueWindowLocked(actor, projected)
 			}
 			if subscription.closed {
 				delete(service.updateSubscribers, subscription)

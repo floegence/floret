@@ -601,11 +601,16 @@ baseline and installing its interest. Replacement, clearing and closing cancel
 in-flight reading without cancelling execution. An append-only live source can
 reuse an accepted prefix and advertise the current unread extent instead of
 restarting on every output append. Failed reads retain the prior interest.
-ActivityFields publication captures bounded immutable sources and hydrates them
-in Next outside actor, service and subscription locks. The existing queue owns
-ordering and charges queued plus in-flight data; caller cancellation retains the
-undelivered mutation. Replacing or clearing an interest cancels its body read and
-removes obsolete detail without dropping versioned semantic facts.
+Automatic source replacements prepare bounded previews and encoded membership
+outside the actor before publication. Explicit reads, resident replacements and
+source replacements install items, body locators, anchor and window-local turn
+references from the final selected snapshot. Source preparation failures affect
+only their owning detail interest. Queue consumption may hydrate or shorten a
+resident preview but never evicts a committed member; already queued deltas use
+that same membership. Canonical turn facts and pending controls remain complete.
+The budget/membership regressions cover all directions, slow consumers, explicit
+selection failures and two readers refreshing a real SQLite source window.
+
 All queued window detail carries its interest ownership, including resident
 mutations that need no hydration. Retirement removes the entire remaining
 detail dependency chain (items, automatic windows, selected turns and order),

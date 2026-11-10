@@ -1196,7 +1196,9 @@ known. Replacing an interest consistently withdraws its undelivered item, turn
 and order detail, including resident mutations, while preserving semantic
 components and accepted explicit baselines in order. Obsolete source reads are
 canceled without canceling execution or adding historical reads.
-Pages select at most 150 items and 512 KiB encoded item data. Text previews
+Pages select at most 150 items and 512 KiB encoded item data. Budget selection
+finishes before installing observation membership; items, turn references and
+subsequent deltas share that selection. Queue reads never evict committed members. Text previews
 are exact UTF-8 prefixes of at most 64 KiB; partial text is raw preview, never a
 standalone Markdown document. Committed text locators resolve through the body
 reader or manifest. Live text is borrowed from the Engine attempt's output owner.

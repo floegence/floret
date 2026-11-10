@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Finalize source-window membership before installing observation interests.
+  Budget eviction no longer publishes dangling turn references or subsequent
+  replacements for unseen items. Preserve canonical history and pending controls.
+
 - Bound Activity text after credential redaction so expanded markers cannot drop
   file names and diffs. Preserve explicit diff truncation through execution,
   canonical history, restart and Fork without rewriting stored records.

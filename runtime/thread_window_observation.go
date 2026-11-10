@@ -487,31 +487,31 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 			}
 		}
 	}
-	if actor.sourceWindow != nil {
-		// A sparse actor does not own the other observers' selected items. Each
-		// queued baseline reads its bounded interval at this exact accepted leaf.
-		base := update.BaseVersion
-		update = actor.windowBaseline()
-		update.BaseVersion = base
-		interest.version = update.ViewVersion
-		subscription.windows[update.ThreadID.String()] = interest
-		return update, true
-	}
 	var snapshot ThreadWindowSnapshot
+	var turns []ThreadTurn
+	var interactions []ThreadInteraction
 	var err error
-	if !interest.tail && interest.selection == nil && actor.itemIndexByID(interest.anchor) < 0 {
+	if actor.sourceWindow != nil {
+		frozen, ok := actor.sourceWindow.companions[interest.lifetime]
+		if !ok {
+			err = ErrThreadUpdateInvalidated
+		} else {
+			snapshot, turns, interactions, err = frozen.snapshot, frozen.turns, frozen.interactions, frozen.err
+			snapshot.ViewVersion = actor.state.view.ViewVersion
+		}
+	} else if !interest.tail && interest.selection == nil && actor.itemIndexByID(interest.anchor) < 0 {
 		err = errThreadWindowAnchorUnavailable
 	} else if input.ItemIDs != nil && len(input.ItemIDs) == 0 {
 		snapshot = ThreadWindowSnapshot{ThreadID: update.ThreadID, ViewVersion: actor.state.view.ViewVersion, ItemSelection: true, Items: []ThreadItem{}}
 	} else {
 		snapshot, err = actor.publicationWindowSnapshot(input)
 	}
-	if errors.Is(err, errThreadWindowAnchorUnavailable) {
+	if actor.sourceWindow == nil && errors.Is(err, errThreadWindowAnchorUnavailable) {
 		snapshot, err = actor.publicationWindowSnapshot(ThreadWindowInput{ThreadID: update.ThreadID, PreviewBytes: interest.sourceInput.PreviewBytes, Limit: interest.limit, ActivityFields: interest.activityFields})
 		snapshot.AnchorUnavailable = true
 	}
 	if err != nil {
-		subscription.finishLocked(ErrThreadUpdateInvalidated)
+		subscription.finishLocked(errors.Join(ErrThreadUpdateInvalidated, err))
 		return ThreadUpdate{}, false
 	}
 	interest.items = make(map[string]bool, len(snapshot.Items))
@@ -529,8 +529,11 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 	subscription.windows[update.ThreadID.String()] = interest
 	update.Items, update.ItemOrder = nil, nil
 	update.Window = &ThreadComponent[*ThreadWindowSnapshot]{Value: &snapshot}
-	update.Turns = &ThreadComponent[[]ThreadTurn]{Value: actor.windowTurns(interest.items)}
-	update.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: actor.windowInteractions(interest.items)}
+	if actor.sourceWindow == nil {
+		turns, interactions = actor.windowTurns(interest.items), actor.windowInteractions(interest.items)
+	}
+	update.Turns = &ThreadComponent[[]ThreadTurn]{Value: turns}
+	update.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: interactions}
 	return update, true
 }
 

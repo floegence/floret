@@ -79,8 +79,8 @@ func (service *threadRuntimeService) hydrateThreadWindow(ctx context.Context, in
 		if changed {
 			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
 		}
-		// Every interest has its own bounded interval. Publication schedules its
-		// frozen source read outside the actor instead of slicing this interval.
+		// Every interest already has its own prepared bounded interval.
+		// Publication installs it without storage reads or membership changes.
 		actor.mutations.order = changed && accepted != nil
 		return nil
 	})
