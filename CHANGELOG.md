@@ -12,6 +12,13 @@
   reads. Preserve Goal, Todo, queue and usage; fence prompt lineage and historical
   writers through domain 37 → 38 and logical 12 → 13.
 
+- Add optional exact TurnID/RunID cancellation preconditions and stable replay
+  semantics so delayed Stop cannot cancel replacement executions. Preserve the
+  default v7 cancellation contract and queue behavior. Project canonical terminal
+  interruption context for subsequent model requests while retaining streamed
+  partial output; qualify restart, Fork, Retry, compaction and released cache
+  lineage without rewriting historical conversations or changing host UI.
+
 - Add `runtime.WithAgentUserInput` for autonomous executions. Preserve enabled
   defaults, named built-ins, independent Goal and effect-approval policy, and
   pending interaction history across restart. Qualify the final provider and

@@ -36,7 +36,7 @@ func threadCancellationForTurn(entries []sessiontree.Entry, turnID identity.Turn
 	return nil
 }
 
-func (service *threadRuntimeService) requestGracefulCancellationResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, key string, mode threadResultMode) (ThreadView, error) {
+func (service *threadRuntimeService) requestGracefulCancellationResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, key string, mode threadResultMode, exact *exactCancellation) (ThreadView, error) {
 	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
@@ -48,6 +48,9 @@ func (service *threadRuntimeService) requestGracefulCancellationResult(ctx conte
 	var deadline time.Time
 	var sealedExecution <-chan struct{}
 	err := actor.apply(ctx, func() error {
+		if replayed, err := service.checkExactCancellation(ctx, actor, exact, key); err != nil || replayed {
+			return err
+		}
 		if actor.state.turnID != turnID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
 			return nil
 		}
@@ -65,6 +68,12 @@ func (service *threadRuntimeService) requestGracefulCancellationResult(ctx conte
 		}{threadID, turnID, CancelModeGraceful})
 		if err != nil {
 			return err
+		}
+		if exact != nil && exact.Input.ExpectedRunID != "" {
+			fingerprint, err = exactCancellationFingerprint(exact.Input)
+			if err != nil {
+				return err
+			}
 		}
 		request = cancellationRequest{EntryID: "cancel:" + key, RequestKey: key, RequestFingerprint: fingerprint}
 		now := time.Now().UTC()
@@ -102,7 +111,7 @@ func (service *threadRuntimeService) requestGracefulCancellationResult(ctx conte
 			return ThreadView{}, ctx.Err()
 		case <-sealedExecution:
 		}
-		return service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, key, mode)
+		return service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, key, mode, exact)
 	}
 	current := service.currentResult(actor, mode)
 	if deadline.IsZero() {

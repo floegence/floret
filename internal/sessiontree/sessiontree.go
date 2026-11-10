@@ -2350,7 +2350,23 @@ func projectCheckpointWithSource(history []session.Message, entry Entry, userSou
 			first = i
 		}
 	}
-	if cut < 0 || entry.FirstKeptEntryID != "" && first == len(eligible) || first != cut+1 {
+	missingFirst := entry.FirstKeptEntryID != "" && first == len(eligible)
+	// Released checkpoints predate derived interruption facts. Their exact cut
+	// and first-kept sources remain authoritative; retain only newly projected
+	// terminal facts in that gap instead of rewriting historical checkpoints.
+	if cut >= 0 && first > cut+1 {
+		derivedOnly := true
+		for _, message := range eligible[cut+1 : first] {
+			if message.Kind != session.MessageKindTurnInterruption {
+				derivedOnly = false
+				break
+			}
+		}
+		if derivedOnly {
+			first = cut + 1
+		}
+	}
+	if cut < 0 || missingFirst || first != cut+1 {
 		return nil, fmt.Errorf("%w: compaction %q has missing or conflicting canonical boundaries", ErrAuthorityCorrupt, entry.ID)
 	}
 	var baseline *session.ModelContextSnapshot
@@ -2512,6 +2528,25 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
+	case EntryTurnMarker:
+		if entry.TurnStatus == TurnAborted {
+			outcome := "cancelled"
+			if entry.Metadata["recoverable"] == "true" || entry.Metadata[TurnFailureCodeMetadataKey] == TurnFailureInterrupted {
+				outcome = "interrupted"
+			}
+			content, err := json.Marshal(struct {
+				Type    string `json:"type"`
+				TurnID  string `json:"turn_id"`
+				RunID   string `json:"run_id"`
+				Outcome string `json:"outcome"`
+				Message string `json:"message"`
+			}{"turn_interruption", entry.TurnID, entry.RunID, outcome,
+				"This execution stopped before normal completion. Retained assistant output may be incomplete. Use recorded tool results to determine confirmed outcomes; do not infer completion or retry safety from partial output."})
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, session.Message{Role: session.User, Kind: session.MessageKindTurnInterruption, Content: string(content), EntryID: entry.ID, ParentEntryID: entry.ParentID})
+		}
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryHostWorkAdmitted, EntryGoalContext:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)

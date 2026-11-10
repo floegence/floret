@@ -66,7 +66,7 @@ func (service *threadRuntimeService) sendQueuedNowCommand(ctx context.Context, i
 		return ThreadView{}, err
 	}
 	// Subscribe before accepting Stop so a fast terminal update cannot be missed.
-	stopped, err := service.requestGracefulCancellationResult(ctx, actor, in.ThreadID, view.TurnID, "send-queue-stop:"+key, mode)
+	stopped, err := service.requestGracefulCancellationResult(ctx, actor, in.ThreadID, view.TurnID, "send-queue-stop:"+key, mode, &exactCancellation{Input: CancelInput{ThreadID: in.ThreadID, ExpectedTurnID: view.TurnID, ExpectedRunID: view.RunID, Mode: CancelModeGraceful}})
 	if err != nil {
 		subscription.Close()
 		return ThreadView{}, err

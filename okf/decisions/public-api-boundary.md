@@ -70,3 +70,14 @@ Cause; wrapped errors retain classification. Registry owns the unstarted
 execution fact and never invokes authorization or the handler on failure.
 Untyped errors retain their published text result. No new stored schema,
 recovery policy, callback framework or host-specific dependency is introduced.
+
+## Exact cancellation preconditions
+
+`CancelInput.ExpectedTurnID` and `ExpectedRunID` are additive runtime fields for
+hosts that must bind a user action to the displayed execution. Both are optional
+as a pair; the established unbound API remains supported within v7. Existing
+`ErrRequestConflict` communicates stale targets and conflicting reuse. No new
+lifecycle receipt, host-owned journal, or stored interruption message is added.
+The internal terminal projection is not an exported provider-message contract.
+Behavior is qualified in `runtime/stream_stop_external_test.go` through the
+published provider boundary and in the candidate/published adoption gates.

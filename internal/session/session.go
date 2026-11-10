@@ -27,6 +27,8 @@ const (
 	MessageKindToolValidationError MessageKind = "tool_validation_error"
 	MessageKindCompactionSummary   MessageKind = "compaction_summary"
 	MessageKindControlSignal       MessageKind = "control_signal"
+	// MessageKindTurnInterruption is derived from a canonical terminal, never stored as a message.
+	MessageKindTurnInterruption MessageKind = "turn_interruption"
 )
 
 type ToolResultView struct {

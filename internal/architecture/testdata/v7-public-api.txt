@@ -753,6 +753,8 @@ type BuiltinToolNames struct
 field BuiltinToolNames.AskUser string
 field BuiltinToolNames.Goal string
 type CancelInput struct
+field CancelInput.ExpectedTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"expected_turn_id,omitempty\""
+field CancelInput.ExpectedRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"expected_run_id,omitempty\""
 field CancelInput.IncludeDescendants bool tag="json:\"include_descendants,omitempty\""
 field CancelInput.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode,omitempty\""
 field CancelInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""

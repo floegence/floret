@@ -168,6 +168,12 @@ type ThreadCancellation struct {
 }
 
 type CancelInput struct {
+	// ExpectedTurnID and ExpectedRunID optionally bind Stop to one execution.
+	// Supply both or neither. A stale target returns ErrRequestConflict without
+	// changing the thread or descendants. Exact retries of an admitted request
+	// return the current view without stopping a replacement execution.
+	ExpectedTurnID identity.TurnID `json:"expected_turn_id,omitempty"`
+	ExpectedRunID  identity.RunID  `json:"expected_run_id,omitempty"`
 	// IncludeDescendants also admits a stop for every existing child in the
 	// selected subtree. Independent threads and pending inputs are preserved.
 	IncludeDescendants bool `json:"include_descendants,omitempty"`
@@ -1461,8 +1467,12 @@ func (service *threadRuntimeService) cancelCommand(ctx context.Context, in Cance
 	if in.Mode != "" && in.Mode != CancelModeImmediate && in.Mode != CancelModeGraceful {
 		return ThreadView{}, fmt.Errorf("invalid cancellation mode %q", in.Mode)
 	}
+	if (in.ExpectedTurnID == "") != (in.ExpectedRunID == "") {
+		return ThreadView{}, errors.New("expected turn and run identities must be supplied together")
+	}
 	if !in.IncludeDescendants {
-		return service.cancelResult(ctx, in.ThreadID, key, in.Mode, mode)
+		view, _, err := service.cancelResult(ctx, in, key, mode)
+		return view, err
 	}
 	// Serialize the subtree snapshot and stop admission with child creation.
 	// No provider work or effect settlement is awaited under this lock.
@@ -1472,15 +1482,46 @@ func (service *threadRuntimeService) cancelCommand(ctx context.Context, in Cance
 	if err != nil {
 		return ThreadView{}, err
 	}
-	view, err := service.cancelResult(ctx, in.ThreadID, key, in.Mode, mode)
+	// Freeze descendant execution identities before root admission. A child that
+	// advances while Stop is being admitted must not lose its replacement run.
+	children := make(map[identity.ThreadID]CancelInput)
+	if in.ExpectedRunID != "" {
+		for _, id := range ids {
+			if id == in.ThreadID {
+				continue
+			}
+			child, err := service.viewResult(ctx, id, threadAckResult)
+			if err != nil {
+				return ThreadView{}, err
+			}
+			if child.Activity == ThreadActivityActive {
+				children[id] = CancelInput{ThreadID: id, Mode: in.Mode, ExpectedTurnID: child.TurnID, ExpectedRunID: child.RunID}
+			}
+		}
+	}
+	view, replayed, err := service.cancelResult(ctx, in, key, mode)
 	if err != nil {
 		return ThreadView{}, err
+	}
+	if replayed {
+		return view, nil
 	}
 	for _, id := range ids {
 		if id == in.ThreadID {
 			continue
 		}
-		if _, err := service.cancelResult(ctx, id, key+":child:"+id.String(), in.Mode, threadAckResult); err != nil {
+		child := CancelInput{ThreadID: id, Mode: in.Mode}
+		if in.ExpectedRunID != "" {
+			var found bool
+			child, found = children[id]
+			if !found {
+				continue
+			}
+		}
+		if _, _, err := service.cancelResult(ctx, child, key+":child:"+id.String(), threadAckResult); err != nil {
+			if in.ExpectedRunID != "" && errors.Is(err, ErrRequestConflict) {
+				continue
+			}
 			return ThreadView{}, err
 		}
 	}
@@ -3464,9 +3505,10 @@ func applyThreadInteractionsToItems(items []ThreadItem, interactions []ThreadInt
 	}
 }
 
-func (service *threadRuntimeService) cancelResult(ctx context.Context, threadID identity.ThreadID, requestKey string, mode CancelMode, resultMode threadResultMode) (ThreadView, error) {
+func (service *threadRuntimeService) cancelResult(ctx context.Context, in CancelInput, requestKey string, resultMode threadResultMode) (ThreadView, bool, error) {
+	threadID := in.ThreadID
 	if _, err := service.ensureThread(ctx, threadID); err != nil {
-		return ThreadView{}, err
+		return ThreadView{}, false, err
 	}
 	actor := service.runtime(threadID)
 	current := service.currentResult(actor, resultMode)
@@ -3475,17 +3517,30 @@ func (service *threadRuntimeService) cancelResult(ctx context.Context, threadID 
 		var err error
 		current, err = service.viewResult(ctx, threadID, resultMode)
 		if err != nil {
-			return ThreadView{}, err
+			return ThreadView{}, false, err
 		}
+	}
+	target := &exactCancellation{Input: in}
+	var replayed bool
+	if err := actor.apply(ctx, func() error {
+		var err error
+		replayed, err = service.checkExactCancellation(ctx, actor, target, requestKey)
+		current = threadResult(actor.state.view, resultMode)
+		return err
+	}); err != nil {
+		return ThreadView{}, false, err
+	}
+	if replayed {
+		return service.currentResult(actor, resultMode), true, nil
 	}
 	if current.Activity != ThreadActivityActive {
 		if repo, ok := service.host.store.repo.(sessiontree.HostWorkRepo); ok {
 			if err := repo.StopHostWork(ctx, threadID.String()); err != nil {
-				return ThreadView{}, runtimeHostError(err)
+				return ThreadView{}, false, runtimeHostError(err)
 			}
 			service.refreshCanonical(threadID, "")
 		}
-		return current, nil
+		return current, false, nil
 	}
 	turnID := current.TurnID
 	fingerprint, err := stableFingerprint(struct {
@@ -3493,17 +3548,66 @@ func (service *threadRuntimeService) cancelResult(ctx context.Context, threadID 
 		TurnID   identity.TurnID   `json:"turn_id"`
 	}{threadID, turnID})
 	if err != nil {
-		return ThreadView{}, err
+		return ThreadView{}, false, err
 	}
-	if mode == CancelModeGraceful {
-		return service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, requestKey, resultMode)
+	if in.ExpectedRunID != "" {
+		fingerprint, err = exactCancellationFingerprint(in)
+		if err != nil {
+			return ThreadView{}, false, err
+		}
 	}
-	return service.settleCancellationResult(ctx, actor, threadID, turnID, "", cancellationRequest{
-		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint,
+	if in.Mode == CancelModeGraceful {
+		view, err := service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, requestKey, resultMode, target)
+		return view, target.replayed, err
+	}
+	view, err := service.settleCancellationResult(ctx, actor, threadID, turnID, in.ExpectedRunID, cancellationRequest{
+		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint, ExactTarget: target,
 	}, "user_stop", "user requested stop", resultMode)
+	return view, target.replayed, err
+}
+
+type exactCancellation struct {
+	Input    CancelInput
+	replayed bool
+}
+
+func exactCancellationFingerprint(in CancelInput) (string, error) {
+	in.RequestKey = ""
+	if in.Mode == "" {
+		in.Mode = CancelModeImmediate
+	}
+	return stableFingerprint(in)
+}
+
+// Called only under the execution owner's lock, including the final admission.
+func (service *threadRuntimeService) checkExactCancellation(ctx context.Context, actor *threadRuntimeState, target *exactCancellation, key string) (bool, error) {
+	if target == nil || target.Input.ExpectedRunID == "" {
+		return false, nil
+	}
+	in := target.Input
+	entry, err := service.host.store.repo.Entry(ctx, in.ThreadID.String(), "cancel:"+key)
+	if err == nil {
+		fingerprint, err := exactCancellationFingerprint(in)
+		if err != nil {
+			return false, err
+		}
+		if entry.Type != sessiontree.EntryCancelRequested || entry.TurnID != in.ExpectedTurnID.String() || entry.RunID != in.ExpectedRunID.String() || entry.RequestFingerprint != fingerprint {
+			return false, ErrRequestConflict
+		}
+		target.replayed = true
+		return true, nil
+	}
+	if !errors.Is(err, sessiontree.ErrEntryNotFound) {
+		return false, runtimeHostError(err)
+	}
+	if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != in.ExpectedTurnID || actor.state.runID != in.ExpectedRunID {
+		return false, ErrRequestConflict
+	}
+	return false, nil
 }
 
 type cancellationRequest struct {
+	ExactTarget        *exactCancellation
 	EntryID            string
 	RequestKey         string
 	RequestFingerprint string
@@ -3526,7 +3630,11 @@ func (service *threadRuntimeService) settleCancellationResult(ctx context.Contex
 	var runCancel context.CancelCauseFunc
 	var waiters []chan InteractionResolution
 	unknownEffectFailure := false
+	settled := false
 	err = actor.apply(ctx, func() error {
+		if replayed, err := service.checkExactCancellation(ctx, actor, request.ExactTarget, request.RequestKey); err != nil || replayed {
+			return err
+		}
 		if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != turnID || runID != "" && actor.state.runID != runID {
 			return nil
 		}
@@ -3600,10 +3708,14 @@ func (service *threadRuntimeService) settleCancellationResult(ctx context.Contex
 		}
 		actor.state.requestKeys[request.RequestKey] = threadRuntimeRequest{fingerprint: request.RequestFingerprint}
 		runCancel = actor.state.cancel
+		settled = true
 		return nil
 	})
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
+	}
+	if !settled {
+		return service.currentResult(actor, mode), nil
 	}
 	if runCancel != nil {
 		service.recordCancellation(threadID, turnID, runID, source, reason)

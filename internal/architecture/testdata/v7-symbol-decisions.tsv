@@ -59,3 +59,4 @@ tools.Registry.WithTools	add	independent registry snapshot	install runtime-owned
 runtime.ThreadTurnFailureToolArgumentCorrectionExhausted	add	ThreadTurnFailure.Reason	Redeven Flower needs a safe canonical correction-exhaustion reason for current and released historical failures without parsing raw errors
 provider.TransportObservation	add	Redeven transport adapters	optional typed non-semantic protocol facts owned by adapters
 observation.ProviderTransportProgress	add	Engine events and ThreadRunProgress	attempt-bound memory-only transport presentation
+runtime.CancelInput.ExpectedTurnID/ExpectedRunID	add	ThreadService.Cancel	optional exact execution preconditions prevent stale Stop from affecting replacement runs; omitted pair preserves v7 callers

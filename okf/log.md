@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-09: Bind optional Stop preconditions to exact executions and project
+  terminal interruption facts into model context; preserve historical checkpoint
+  boundaries, canonical records, and unchanged host presentation.
+
 - 2026-11-09: Define optional autonomous input policy at the Agent boundary;
   retain historical questions and independent authorization controls.
 

@@ -145,9 +145,9 @@ methods:
   - method: ThreadService.Cancel
     errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
     errors_as: [RequestConflictError]
-    retryability: exact or new cancellation requests are idempotent
+    retryability: unbound requests remain idempotent; exact admitted request replay succeeds, stale targets and changed target/mode/scope conflict
     commit: marks cancellation immediately, clears pending interactions, and emits one terminal outcome
-    replay: cancel is successful in preparing, active, waiting, terminal, and handler-absent states
+    replay: unbound cancel succeeds in preparing, active, waiting, terminal, and handler-absent states; exact replay never stops replacement executions
     concurrency: late provider output is discarded by the process-local execution token
     cancellation: command acceptance is independent of provider cancellation latency
     closing: Host shutdown uses the same cancellation boundary

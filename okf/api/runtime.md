@@ -241,6 +241,27 @@ disconnection and restart; it never starts queued input automatically. Historic
 records without provenance do not acquire an inferred source. Stopping does not
 undo effects that already occurred.
 
+Interactive hosts should pass both `CancelInput.ExpectedTurnID` and
+`ExpectedRunID` from the execution displayed when Stop is clicked, together with
+one stable `RequestKey` for retries of that action. The runtime verifies both
+identities under the execution owner before admitting cancellation. A stale,
+terminal, or replaced target returns `ErrRequestConflict` without stopping a new
+execution or its descendants. An exact replay of an admitted stop returns the
+current view without applying Stop again. Reusing its key with different target,
+mode, or descendant scope conflicts. Omitting both fields preserves the existing
+thread-wide contract. Exact subtree cancellation snapshots existing active child
+executions and skips children that have already advanced.
+
+Cancelled and interrupted terminal facts produce typed model-only interruption
+context after retained partial assistant output. It states that output may be
+incomplete and tool results remain authoritative; it makes no unsupported claim
+about background processes. The same projection serves continuation, restart,
+Fork, Retry and compaction. Retrying from an earlier savepoint excludes discarded
+output and its terminal fact. Projection revision `provider-context.v12` explicitly
+resets prior rendered cache lineage; canonical bytes and released checkpoint
+boundaries remain unchanged. This requires no domain schema migration and adds
+no UI message or second transcript.
+
 ## Queued message controls
 
 The service returned by `Host.ThreadService` also implements the optional
