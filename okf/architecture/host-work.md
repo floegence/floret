@@ -9,6 +9,12 @@ timestamp: 2026-11-02T00:00:00Z
 
 # Summary
 
+Failed-turn retries may admit a completed host-work notice after their canonical
+checkpoint. The retry boundary accepts that typed, canonically identified fact
+without moving the checkpoint or replaying the tool. Ordinary user/assistant
+suffixes still fail lineage validation. The notice and confirmed result survive
+restart and subsequent turns ([regression](../../runtime/thread_retry_host_work_test.go)).
+
 The host owns the OS process and text capture. Floret owns retained text, the
 authorized invocation, immutable completion facts, notice admission and continuation eligibility.
 `ThreadHostWorkService` adds four host methods without adding model tool names.

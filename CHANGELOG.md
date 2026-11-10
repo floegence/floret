@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve canonical completed host-work notices admitted after a failed-turn retry checkpoint. Retry and restart retain the confirmed tool result without replaying its effect, while ordinary message suffixes still fail prefix validation.
+
 - Read latest editable input through cancellable, bounded metadata pages and
   materialize only that input. Preserve frozen-path, unknown-effect, steering,
   child and immutable-revision checks without loading unrelated history bodies.

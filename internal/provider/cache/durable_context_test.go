@@ -80,8 +80,8 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 	}
 }
 
-func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
-	for _, kind := range []session.MessageKind{session.MessageKindModelContext, session.MessageKindGoalContext, session.MessageKindNormal} {
+func TestCanonicalRetryAllowsOnlyAdmittedFactsAfterSource(t *testing.T) {
+	for _, kind := range []session.MessageKind{session.MessageKindModelContext, session.MessageKindGoalContext, session.MessageKindHostWork, session.MessageKindNormal} {
 		store := NewMemoryStore()
 		history := []session.Message{{Role: session.User, EntryID: "source", Content: "input"}}
 		first := lineagePlan("test", "model", "ns", "source")
@@ -100,6 +100,12 @@ func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
 		}
 		if kind == session.MessageKindNormal && !errors.Is(err, ErrContextPrefixDrift) {
 			t.Fatalf("ordinary suffix accepted: %v", err)
+		}
+		if kind == session.MessageKindHostWork {
+			next[len(next)-1].EntryID = ""
+			if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next); !errors.Is(err, ErrContextPrefixDrift) {
+				t.Fatalf("host work without canonical identity accepted: %v", err)
+			}
 		}
 	}
 }
