@@ -223,7 +223,7 @@ func (s *threadRuntimeService) EditLastUserMessage(ctx context.Context, in EditL
 				return
 			}
 			defer subscription.Close()
-			if _, err = s.requestGracefulCancellationResult(transition, actor, in.ThreadID, turn, "message-edit-stop:"+key, threadAckResult); err != nil {
+			if _, err = s.requestGracefulCancellationResult(transition, actor, in.ThreadID, turn, "message-edit-stop:"+key, threadAckResult, nil); err != nil {
 				done <- result{err: err}
 				return
 			}
