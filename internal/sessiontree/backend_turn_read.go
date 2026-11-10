@@ -81,25 +81,7 @@ func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, tur
 }
 
 func validateCanonicalTurnLinks(ctx context.Context, tx spi.ReadTx, threadID string, entries []Entry) error {
-	for index := 1; index < len(entries); index++ {
-		entry, previous := entries[index], entries[index-1]
-		if isCanonicalPostTerminalTurnEntry(entry) {
-			continue
-		}
-		parentID, depth := entry.ParentID, entry.PathDepth
-		for parentID != previous.ID {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			parent, err := readCanonicalEntryMetadata(tx, threadID, parentID)
-			if err != nil {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			if parent.TurnID != "" || parent.PathDepth <= previous.PathDepth || parent.PathDepth >= depth {
-				return ErrAuthorityCorrupt
-			}
-			parentID, depth = parent.ParentID, parent.PathDepth
-		}
-	}
-	return nil
+	return validateCanonicalTurnLinksWithReader(ctx, entries, func(id string) (Entry, error) {
+		return readCanonicalEntryMetadata(tx, threadID, id)
+	})
 }

@@ -28,6 +28,14 @@ configuration. `Result.ObservedHostWork` suppresses a duplicate notice after an
 explicit observation has already returned the final result. A final Activity
 updates the original tool item through existing canonical field sources.
 
+A final fact can arrive while a later user turn is executing. It retains the
+original invocation's turn and run, while occupying its actual chronological
+journal position. Canonical turn reads validate and traverse these intervening
+settlement facts without assigning them to the newer turn or rejecting that
+turn's final response. Same-turn omissions, ordinary foreign execution entries,
+invalid settlement facts and broken ancestry remain errors. Current-store reads
+and restart need no record rewrite or schema migration.
+
 # Shutdown and uncertain effects
 
 `Host.SuspendExecution` rejects new executions, provider dispatch and local tool
@@ -50,6 +58,7 @@ rewrite Floret-owned records.
 # Evidence
 
 - [Public boundary and tests](../../runtime/thread_host_work_test.go)
+- [Overlapping-turn read and restart](../../internal/sessiontree/canonical_turn_host_work_test.go)
 - [Transactional settlement and fork](../../internal/sessiontree/host_work_test.go)
 - [Migration preservation and rollback](../../internal/sessiontree/backend_repo_v35_test.go)
 

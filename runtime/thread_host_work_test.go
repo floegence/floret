@@ -15,13 +15,17 @@ import (
 )
 
 func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
-	for _, mode := range []string{"unknown", "completed", "stopped", "suspended"} {
+	for _, mode := range []string{"unknown", "completed", "stopped", "suspended", "overlapping"} {
 		complete := mode != "unknown"
 		t.Run(mode, func(t *testing.T) {
+			var completionGate chan struct{}
+			if mode == "overlapping" {
+				completionGate = make(chan struct{})
+			}
 			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "host-work", StateCompatibilityKey: "host-work"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 				florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "shell-1", Name: "shell", Args: "{}"}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
 				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "The command is running."}, {Type: provider.EventDone, Reason: "stop"}}},
-				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Observed completion."}, {Type: provider.EventDone, Reason: "stop"}}},
+				florettest.Step{BlockUntil: completionGate, Events: []provider.Event{{Type: provider.EventDelta, Text: "Observed completion."}, {Type: provider.EventDone, Reason: "stop"}}},
 				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Retained result."}, {Type: provider.EventDone, Reason: "stop"}}})
 			var service ThreadService
 			var binding BindHostWorkInput
@@ -87,13 +91,26 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if mode == "overlapping" {
+				if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "overlap", Input: UserInput{Text: "continue while the command runs"}}); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if err := gateway.WaitForRequests(ctx, 3); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if complete {
 				output := "sealed UTF-8 output 中文"
-				in := CompleteHostWorkInput{ThreadID: created.ThreadID, WorkID: "process-1", Notice: "process-1 completed: 7319", Notify: mode != "suspended", Output: &output}
+				in := CompleteHostWorkInput{ThreadID: created.ThreadID, WorkID: "process-1", Notice: "process-1 completed: 7319", Notify: mode != "suspended" && mode != "overlapping", Output: &output}
 				if err := service.(ThreadHostWorkService).CompleteHostWork(t.Context(), in); err != nil {
 					t.Fatal(err)
 				}
-				if mode != "stopped" && mode != "suspended" {
+				if mode == "overlapping" {
+					close(completionGate)
+					wait(3)
+				} else if mode != "stopped" && mode != "suspended" {
 					wait(3)
 				} else {
 					time.Sleep(30 * time.Millisecond)

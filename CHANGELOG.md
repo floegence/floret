@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve successful turn completion when a previous turn's host work settles
+  during execution. Canonical readers validate the intervening settlement while
+  retaining its original turn identity; qualify memory, SQLite, runtime final
+  responses and restart without rewriting stored history.
+
 - Add `runtime.WithAgentUserInput` for autonomous executions. Preserve enabled
   defaults, named built-ins, independent Goal and effect-approval policy, and
   pending interaction history across restart. Qualify the final provider and

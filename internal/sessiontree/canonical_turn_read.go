@@ -290,3 +290,32 @@ func canonicalTurnUserEntryCount(entries []CanonicalTurnPathEntry) int {
 	}
 	return count
 }
+
+// A projection omits thread-scoped facts and settlements from earlier turns.
+// Both stores enforce the same ancestry and membership boundary.
+func validateCanonicalTurnLinksWithReader(ctx context.Context, entries []Entry, read func(string) (Entry, error)) error {
+	for index := 1; index < len(entries); index++ {
+		entry, previous := entries[index], entries[index-1]
+		if isCanonicalPostTerminalTurnEntry(entry) {
+			continue
+		}
+		parentID, depth := entry.ParentID, entry.PathDepth
+		for parentID != previous.ID {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			parent, err := read(parentID)
+			if err != nil {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			// A late settlement retains its original turn. Missing same-turn
+			// members and ordinary foreign execution facts remain invalid gaps.
+			foreignSettlement := parent.TurnID != entry.TurnID && isCanonicalPostTerminalTurnEntry(parent)
+			if parent.ThreadID != entry.ThreadID || parent.TurnID != "" && !foreignSettlement || parent.PathDepth <= previous.PathDepth || parent.PathDepth >= depth {
+				return ErrAuthorityCorrupt
+			}
+			parentID, depth = parent.ParentID, parent.PathDepth
+		}
+	}
+	return nil
+}

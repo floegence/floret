@@ -1380,25 +1380,10 @@ func (r *MemoryRepo) CanonicalTurnEntries(_ context.Context, threadID, turnID, r
 }
 
 func (r *MemoryRepo) validateCanonicalTurnLinksLocked(threadID string, entries []Entry) error {
-	for index := 1; index < len(entries); index++ {
-		entry, previous := entries[index], entries[index-1]
-		if isCanonicalPostTerminalTurnEntry(entry) {
-			continue
-		}
-		parentID := entry.ParentID
-		depth := entry.PathDepth
-		for parentID != previous.ID {
-			parent, _, err := r.canonicalTurnEntryLocked(threadID, parentID)
-			if err != nil {
-				return ErrAuthorityCorrupt
-			}
-			if parent.TurnID != "" || parent.PathDepth <= previous.PathDepth || parent.PathDepth >= depth {
-				return ErrAuthorityCorrupt
-			}
-			parentID, depth = parent.ParentID, parent.PathDepth
-		}
-	}
-	return nil
+	return validateCanonicalTurnLinksWithReader(context.Background(), entries, func(id string) (Entry, error) {
+		entry, _, err := r.canonicalTurnEntryLocked(threadID, id)
+		return entry, err
+	})
 }
 
 // CanonicalTurnEntriesForRead excludes retry/fork structural closures when the

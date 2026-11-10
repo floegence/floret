@@ -1955,3 +1955,5 @@ Document optional Goal management, same-context reflection, request-bound update
   transformations separately from restricted diagnostic path projections.
 
 - 2026-11-08: Document configurable built-in names and byte-preserving schema 37 semantics.
+
+- 2026-11-09: document canonical reads across earlier-turn host-work settlement and restart qualification.
