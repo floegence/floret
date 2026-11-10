@@ -405,3 +405,20 @@ access counts, not product latency. Source-thread filters can still inspect
 unmatched receipts, selected canonical report records contain their report
 text, and historical preparation is not bounded by page size. Do not describe
 all parent-event browsing or first-upgrade reading as fully bounded.
+
+## Latest editable input
+
+`GOWORK=off go test ./runtime -run 'Test(LatestEditableMessage|MessageEdit)' -count=1`
+qualifies edit lookup together with immutable edit, Stop, shutdown, compaction,
+restart and Fork behavior. Lookup scans backwards in 128-entry body-free pages,
+releasing the storage transaction between pages and stopping at the first user
+input or canonical rejection. Only the selected complete input is hydrated;
+its exact frozen leaf is revalidated before delivery. Distinct discarded turn
+identities preserve open-child restrictions, including subsequent non-user turns.
+The released custom JournalRepo adapter retains its complete-read contract.
+
+This removes history-body amplification and long single-transaction blocking.
+Metadata work still scales with the tail since the latest user input, and child
+eligibility still reads thread metadata. It is not a constant-time claim.
+Product qualification must include automatic edit eligibility alongside cold
+opening, warm switching and cancellation, rather than timing history alone.

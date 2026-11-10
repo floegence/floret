@@ -53,11 +53,7 @@ func (s *threadRuntimeService) LatestEditableMessage(ctx context.Context, id ide
 	if _, err := s.ensureThread(ctx, id); err != nil {
 		return EditableMessage{}, err
 	}
-	path, err := s.host.store.repo.Path(ctx, id.String(), "")
-	if err != nil {
-		return EditableMessage{}, runtimeHostError(err)
-	}
-	e, err := sessiontree.LatestEditableInput(path)
+	e, discardedTurns, revisionKey, err := s.latestEditableInput(ctx, id)
 	if err != nil {
 		return EditableMessage{}, runtimeHostError(err)
 	}
@@ -66,18 +62,94 @@ func (s *threadRuntimeService) LatestEditableMessage(ctx context.Context, id ide
 		return EditableMessage{}, runtimeHostError(err)
 	}
 	for _, child := range children {
-		if sessiontree.MessageRevisionRejectsChild(path, e.ID, child) {
+		if child.ParentThreadID != id.String() || child.Lifecycle == sessiontree.ThreadLifecycleClosed {
+			continue
+		}
+		_, discarded := discardedTurns[child.ParentTurnID]
+		if child.ParentTurnID == "" || discarded {
 			return EditableMessage{}, ErrThreadBusy
 		}
 	}
-	result := EditableMessage{ItemID: e.ID, TurnID: identity.TurnID(e.TurnID), Input: turnInputFromSessionMessage(e.Message)}
-	for index, entry := range path {
-		if entry.ID == e.ParentID && index > 0 && path[index-1].Type == sessiontree.EntryMessageRevision {
-			result.RevisionRequestKey = RequestKey(path[index-1].RequestKey)
-		}
-	}
-	return result, nil
+	return EditableMessage{ItemID: e.ID, TurnID: identity.TurnID(e.TurnID), Input: turnInputFromSessionMessage(e.Message), RevisionRequestKey: revisionKey}, nil
 }
+
+// Read one frozen path backwards in bounded, body-free transactions. Only the
+// selected input is materialized. Retain distinct discarded turn identities for
+// child admission, not the intervening tool/assistant history. Revision ancestry
+// uses the same frozen boundary and never authorizes a superseded branch.
+func (s *threadRuntimeService) latestEditableInput(ctx context.Context, id identity.ThreadID) (sessiontree.Entry, map[string]struct{}, RequestKey, error) {
+	reader, paged := s.host.store.repo.(sessiontree.PathWindowReader)
+	complete, exact := s.host.store.repo.(sessiontree.PathEntriesWindowReader)
+	if !paged || !exact {
+		// Released custom JournalRepo adapters retain their complete-read contract.
+		path, err := s.host.store.repo.Path(ctx, id.String(), "")
+		if err != nil {
+			return sessiontree.Entry{}, nil, "", err
+		}
+		entry, err := sessiontree.LatestEditableInput(path)
+		if err != nil {
+			return sessiontree.Entry{}, nil, "", err
+		}
+		var key RequestKey
+		for i, parent := range path {
+			if parent.ID == entry.ParentID && i > 0 && path[i-1].Type == sessiontree.EntryMessageRevision {
+				key = RequestKey(path[i-1].RequestKey)
+			}
+		}
+		discarded := make(map[string]struct{})
+		found := false
+		for _, source := range path {
+			found = found || source.ID == entry.ID
+			if found && source.TurnID != "" {
+				discarded[source.TurnID] = struct{}{}
+			}
+		}
+		return entry, discarded, key, nil
+	}
+	options := sessiontree.PathWindowOptions{ThreadID: id.String(), Direction: sessiontree.PathWindowBefore, Limit: 128}
+	turns := map[string]struct{}{}
+	for {
+		page, err := reader.PathMetadataWindow(ctx, options)
+		if err != nil {
+			return sessiontree.Entry{}, nil, "", err
+		}
+		options.LeafID = page.LeafID
+		for i := len(page.Entries) - 1; i >= 0; i-- {
+			entry := page.Entries[i].Entry
+			candidate, err := sessiontree.LatestEditableInput([]sessiontree.Entry{entry})
+			if err != nil && !errors.Is(err, sessiontree.ErrEntryNotFound) {
+				return sessiontree.Entry{}, nil, "", err
+			}
+			if entry.TurnID != "" {
+				turns[entry.TurnID] = struct{}{}
+			}
+			if err != nil {
+				continue
+			}
+			parents, err := reader.PathMetadataWindow(ctx, sessiontree.PathWindowOptions{ThreadID: id.String(), LeafID: page.LeafID, AnchorID: candidate.ID, Direction: sessiontree.PathWindowBefore, Limit: 2})
+			if err != nil {
+				return sessiontree.Entry{}, nil, "", err
+			}
+			var key RequestKey
+			if len(parents.Entries) == 2 && parents.Entries[1].Entry.ID == candidate.ParentID && parents.Entries[0].Entry.Type == sessiontree.EntryMessageRevision {
+				key = RequestKey(parents.Entries[0].Entry.RequestKey)
+			}
+			selected, err := complete.PathEntriesWindow(ctx, sessiontree.PathWindowOptions{ThreadID: id.String(), LeafID: page.LeafID, AnchorID: candidate.ID, Direction: sessiontree.PathWindowAround, Limit: 1})
+			if err != nil {
+				return sessiontree.Entry{}, nil, "", err
+			}
+			if len(selected.Entries) != 1 || selected.Entries[0].ID != candidate.ID {
+				return sessiontree.Entry{}, nil, "", ErrAuthorityCorrupt
+			}
+			return selected.Entries[0], turns, key, nil
+		}
+		if !page.HasBefore {
+			return sessiontree.Entry{}, nil, "", sessiontree.ErrEntryNotFound
+		}
+		options.AnchorID = page.FirstEntryID
+	}
+}
+
 func (s *threadRuntimeService) LookupMessageEdit(ctx context.Context, in LookupMessageEditInput) (MessageEdit, bool, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {

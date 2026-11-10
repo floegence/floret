@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Read latest editable input through cancellable, bounded metadata pages and
+  materialize only that input. Preserve frozen-path, unknown-effect, steering,
+  child and immutable-revision checks without loading unrelated history bodies.
+
 - Finalize source-window membership before installing observation interests.
   Budget eviction no longer publishes dangling turn references or subsequent
   replacements for unseen items. Preserve canonical history and pending controls.
