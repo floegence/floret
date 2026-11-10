@@ -56,7 +56,10 @@ func latestGoalInput(path []Entry) string {
 
 // GoalProjection is the canonical chronological Goal reducer. It retains one
 // current fact; full reads and incremental presentation share its validation.
-type GoalProjection struct{ State session.GoalState }
+type GoalProjection struct {
+	State               session.GoalState
+	revisionSourceInput string
+}
 
 func (projection *GoalProjection) Observe(e Entry) error {
 	state := projection.State
@@ -76,6 +79,13 @@ func (projection *GoalProjection) Observe(e Entry) error {
 			return err
 		}
 		state = revision.Goal
+		projection.revisionSourceInput = revision.SourceEntryID
+	}
+	if e.Type == EntryUserMessage && projection.revisionSourceInput != "" {
+		if state.SuppressedAtInput == projection.revisionSourceInput {
+			state.SuppressedAtInput = e.ID
+		}
+		projection.revisionSourceInput = ""
 	}
 	if e.Type == EntryGoal {
 		var change GoalChange
@@ -263,6 +273,21 @@ func validateGoalRecords(memory *MemoryRepo) error {
 			return err
 		}
 		for _, e := range memory.entries[id] {
+			if e.Type == EntryMessageRevision {
+				revision, err := DecodeMessageRevision(e)
+				if err != nil {
+					return err
+				}
+				if revision.SourceThreadID == id {
+					source, err := memory.canonicalPathLocked(context.Background(), id, revision.PreviousLeafID)
+					if err != nil {
+						return err
+					}
+					if err := ValidateMessageRevisionSource(e, source); err != nil {
+						return err
+					}
+				}
+			}
 			if e.Type == EntryGoalReview {
 				var review GoalReview
 				if json.Unmarshal(e.Payload, &review) != nil || review.Version < 0 || review.Outcome != "completed" && review.Outcome != "continue" && review.Outcome != "blocked" || strings.TrimSpace(review.Evidence) == "" {

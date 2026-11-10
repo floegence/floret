@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -20,6 +21,7 @@ func TestMessageRevisionAtomicHistoryAndReplay(t *testing.T) {
 			var repo interface {
 				JournalRepo
 				RuntimeTurnRepo
+				CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
 			} = memory
 			if durable {
 				_, backend := openV31ReviewFixture(t, memory)
@@ -178,5 +180,95 @@ func TestMessageRevisionEligibilityAndUsage(t *testing.T) {
 	snapshot, err := projection.Snapshot(time.Time{})
 	if err != nil || !reflect.DeepEqual(snapshot.UsageTotals, totals) {
 		t.Fatalf("projection %+v %v", snapshot, err)
+	}
+}
+
+func TestMessageRevisionChildAuthorityAndSourceValidation(t *testing.T) {
+	for _, durable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "memory", true: "backend"}[durable], func(t *testing.T) {
+			memory := newMemoryRepo(time.Now)
+			_, _ = memory.CreateThread(t.Context(), ThreadMeta{ID: "parent"})
+			var repo interface {
+				JournalRepo
+				RuntimeTurnRepo
+				CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
+			} = memory
+			if durable {
+				_, backend := openV31ReviewFixture(t, memory)
+				repo = backend
+			}
+			original := AcceptTurnRequest{ThreadID: "parent", TurnID: "old", RunID: "old-run", LogicalRequestID: "old", RequestFingerprint: "old", Input: session.Message{Role: session.User, Content: "old"}}
+			first, err := repo.AcceptTurn(t.Context(), original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = repo.Append(t.Context(), Entry{ID: "end", ThreadID: "parent", TurnID: "old", RunID: "old-run", Type: EntryTurnMarker, TurnStatus: TurnCompleted}, AppendOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, _ := repo.Path(t.Context(), "parent", "")
+			req := AcceptTurnRequest{ThreadID: "parent", TurnID: "new", RunID: "new-run", LogicalRequestID: "new", RequestFingerprint: "new", Input: session.Message{Role: session.User, Content: "new"}, EditSourceEntryID: first.UserMessage.ID, EditExpectedInput: original.Input}
+			revision, err := prepareMessageRevision(path, req, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateMessageRevisionSource(revision, path); err != nil {
+				t.Fatal(err)
+			}
+			decoded, _ := DecodeMessageRevision(revision)
+			decoded.Goal.Text = "forged"
+			revision.Payload, _ = json.Marshal(decoded)
+			if !errors.Is(ValidateMessageRevisionSource(revision, path), ErrAuthorityCorrupt) {
+				t.Fatal("accepted forged source facts")
+			}
+			_, err = repo.CreateThread(t.Context(), ThreadMeta{ID: "child", ParentThreadID: "parent", ParentTurnID: "old", TaskName: "child", HostProfileRef: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := repo.Entries(t.Context(), "parent")
+			if _, err = repo.AcceptTurn(t.Context(), req); !errors.Is(err, ErrActiveTurn) {
+				t.Fatalf("open child: %v", err)
+			}
+			after, _ := repo.Entries(t.Context(), "parent")
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("blocked revision mutated history")
+			}
+		})
+	}
+}
+func TestMessageRevisionForkPreservesDeletedGoalSuppression(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	_, _ = memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"})
+	first, err := memory.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "old", RunID: "run", LogicalRequestID: "old", RequestFingerprint: "old", Input: session.Message{Role: session.User, Content: "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = memory.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", RequestKey: "delete", Actor: "user", Operation: "delete"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = memory.Append(t.Context(), Entry{ThreadID: "thread", TurnID: "old", RunID: "run", Type: EntryTurnMarker, TurnStatus: TurnCompleted}, AppendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := memory.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "new", RunID: "new-run", LogicalRequestID: "edit", RequestFingerprint: "edit", Input: session.Message{Role: session.User, Content: "new"}, EditSourceEntryID: first.UserMessage.ID, EditExpectedInput: first.UserMessage.Message})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := memory.Path(t.Context(), "thread", "")
+	goal, err := GoalFromPath(path)
+	if err != nil || goal.SuppressedAtInput != replacement.UserMessage.ID {
+		t.Fatalf("suppression: %+v %v", goal, err)
+	}
+	fork, err := memory.Fork(t.Context(), ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err = memory.Path(t.Context(), fork.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err = GoalFromPath(path)
+	if err != nil || goal.SuppressedAtInput != latestGoalInput(path) {
+		t.Fatalf("fork suppression %+v %v", goal, err)
 	}
 }

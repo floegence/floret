@@ -30,3 +30,5 @@ never auto-submits a draft. Existing runtime recovery owns admitted turns.
 Sources: [public contract](../../runtime/thread_message_edit.go),
 [admission](../../internal/sessiontree/message_revision.go),
 [acceptance tests](../../runtime/thread_message_edit_external_test.go).
+
+An open child owned by the discarded turn prevents editing until its own lifecycle closes. Editing never cancels or detaches that child. Goal deletion suppression follows the replacement input, including across Fork. Revision source identity, branch boundary, Goal and usage facts are validated against the immutable previous path.

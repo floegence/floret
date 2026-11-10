@@ -61,6 +61,15 @@ func (s *threadRuntimeService) LatestEditableMessage(ctx context.Context, id ide
 	if err != nil {
 		return EditableMessage{}, runtimeHostError(err)
 	}
+	children, err := sessiontree.ListThreads(ctx, s.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		return EditableMessage{}, runtimeHostError(err)
+	}
+	for _, child := range children {
+		if sessiontree.MessageRevisionRejectsChild(path, e.ID, child) {
+			return EditableMessage{}, ErrThreadBusy
+		}
+	}
 	result := EditableMessage{ItemID: e.ID, TurnID: identity.TurnID(e.TurnID), Input: turnInputFromSessionMessage(e.Message)}
 	for index, entry := range path {
 		if entry.ID == e.ParentID && index > 0 && path[index-1].Type == sessiontree.EntryMessageRevision {
@@ -90,6 +99,13 @@ func (s *threadRuntimeService) LookupMessageEdit(ctx context.Context, in LookupM
 	}
 	if revision.SourceThreadID != in.ThreadID.String() {
 		return MessageEdit{}, false, ErrRequestConflict
+	}
+	sourcePath, err := s.host.store.repo.Path(ctx, revision.SourceThreadID, revision.PreviousLeafID)
+	if err != nil {
+		return MessageEdit{}, false, runtimeHostError(err)
+	}
+	if err := sessiontree.ValidateMessageRevisionSource(entry, sourcePath); err != nil {
+		return MessageEdit{}, false, runtimeHostError(err)
 	}
 	source, err := s.host.store.repo.Entry(ctx, revision.SourceThreadID, revision.SourceEntryID)
 	if err != nil {

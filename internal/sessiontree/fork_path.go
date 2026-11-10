@@ -61,8 +61,8 @@ func projectForkPath(ctx context.Context, path []Entry, meta ThreadMeta, now tim
 		}
 		next.PathDepth = int64(len(forkedEntries) + 1)
 		rewriteReference := func(id string) (string, error) {
-			if id == "" {
-				return "", nil
+			if id == "" || id == "before-first-input" {
+				return id, nil
 			}
 			if mapped := oldToNew[id]; mapped != "" {
 				return mapped, nil
@@ -103,6 +103,19 @@ func projectForkPath(ctx context.Context, path []Entry, meta ThreadMeta, now tim
 					return ThreadMeta{}, nil, nil, refErr
 				}
 			}
+		}
+		if entry.Type == EntryMessageRevision {
+			revision, err := DecodeMessageRevision(entry)
+			if err != nil {
+				return ThreadMeta{}, nil, nil, err
+			}
+			if revision.Goal.SuppressedAtInput != revision.SourceEntryID {
+				revision.Goal.SuppressedAtInput, refErr = rewriteReference(revision.Goal.SuppressedAtInput)
+				if refErr != nil {
+					return ThreadMeta{}, nil, nil, refErr
+				}
+			}
+			next.Payload, _ = json.Marshal(revision)
 		}
 		if entry.Type == EntryGoal {
 			var change GoalChange

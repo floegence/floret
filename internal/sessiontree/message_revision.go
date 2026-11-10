@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"time"
 
@@ -107,4 +108,46 @@ func prepareMessageRevision(path []Entry, req AcceptTurnRequest, now time.Time) 
 	revision.Raw = rawForEntry(revision)
 	revision.RawHash = stableHash(revision.Raw)
 	return revision, nil
+}
+
+// ValidateMessageRevisionSource verifies the immutable facts of an owned revision.
+// A copied fork boundary retains provenance but has no authority to read its source.
+func ValidateMessageRevisionSource(entry Entry, path []Entry) error {
+	revision, err := DecodeMessageRevision(entry)
+	if err != nil {
+		return err
+	}
+	if revision.SourceThreadID != entry.ThreadID {
+		return ErrAuthorityCorrupt
+	}
+	source, err := LatestEditableInput(path)
+	if err != nil {
+		return ErrAuthorityCorrupt
+	}
+	expected, err := prepareMessageRevision(path, AcceptTurnRequest{ThreadID: entry.ThreadID, LogicalRequestID: entry.RequestKey, InputRequestFingerprint: entry.RequestFingerprint, EditSourceEntryID: source.ID, EditExpectedInput: source.Message}, entry.CreatedAt)
+	if err != nil || expected.ParentID != entry.ParentID || !reflect.DeepEqual(expected.Payload, entry.Payload) {
+		return ErrAuthorityCorrupt
+	}
+	return nil
+}
+
+// An open child from the discarded portion can still publish work to its parent.
+// Editing does not cancel that separately owned work or silently detach it.
+func MessageRevisionRejectsChild(path []Entry, sourceID string, child ThreadMeta) bool {
+	if len(path) == 0 || child.ParentThreadID != path[0].ThreadID || child.Lifecycle == ThreadLifecycleClosed {
+		return false
+	}
+	if child.ParentTurnID == "" {
+		return true
+	}
+	discarded := false
+	for _, entry := range path {
+		if entry.ID == sourceID {
+			discarded = true
+		}
+		if discarded && entry.TurnID == child.ParentTurnID {
+			return true
+		}
+	}
+	return false
 }

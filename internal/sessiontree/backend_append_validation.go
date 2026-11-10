@@ -140,6 +140,21 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 	if err := validateTurnKindEntries(meta.ID, validation, true); err != nil {
 		return err
 	}
+	if entry.Type == EntryMessageRevision {
+		revision, err := DecodeMessageRevision(entry)
+		if err != nil {
+			return err
+		}
+		if revision.SourceThreadID == entry.ThreadID {
+			source, err := canonicalCompletePath(ctx, tx, entry.ThreadID, revision.PreviousLeafID)
+			if err != nil {
+				return err
+			}
+			if err := ValidateMessageRevisionSource(entry, source); err != nil {
+				return err
+			}
+		}
+	}
 	switch entry.Type {
 	case EntryMessageRevision, EntryGoal, EntryGoalReview, EntryGoalContext:
 		goal := GoalProjection{}

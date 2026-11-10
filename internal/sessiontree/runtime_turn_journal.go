@@ -83,6 +83,11 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 		if err != nil {
 			return AcceptTurnResult{}, err
 		}
+		for _, child := range r.threads {
+			if MessageRevisionRejectsChild(path, req.EditSourceEntryID, child) {
+				return AcceptTurnResult{}, ErrActiveTurn
+			}
+		}
 		value, err := prepareMessageRevision(path, req, now)
 		if err != nil {
 			return AcceptTurnResult{}, err

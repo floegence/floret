@@ -321,6 +321,14 @@ func (mutation *canonicalJournalMutation) acceptTurn(req AcceptTurnRequest, resu
 		if err != nil {
 			return err
 		}
+		if err := mutation.repo.visitThreadMetadata(ctx, mutation.tx, func(child ThreadMeta) error {
+			if MessageRevisionRejectsChild(path, req.EditSourceEntryID, child) {
+				return ErrActiveTurn
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 		revision, err := prepareMessageRevision(path, req, now)
 		if err != nil {
 			return err
