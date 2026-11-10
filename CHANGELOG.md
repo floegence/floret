@@ -8,6 +8,9 @@
 - Keep bounded Goal reads consistent with immutable message revisions, including
   deleted-Goal suppression after restart and Fork. Resolve the replacement input
   through validated ancestry without changing stored history or metadata.
+- Preserve preparing progress and exact interaction attention in cold active-thread
+  windows and source-tail admission. Reuse the actor normalization used by live
+  execution; deferred read-only hosts retain history without starting execution.
 
 - Preserve successful turn completion when a previous turn's host work settles
   during execution. Canonical readers validate the intervening settlement while

@@ -70,6 +70,12 @@ attempt fences and side-effect settlement remain unchanged.
 
 # Baseline and continuity
 
+Cold active-thread windows and source-tail admission use the same actor progress
+normalization as execution. Without pending interaction, accepted active work
+reports `preparing` until an advancing run publishes a more specific phase.
+Pending approval or input instead reports exact attention and no run progress.
+This presentation does not activate deferred execution or append canonical state.
+
 Subscribe first, then obtain `ThreadService.View`. Discard updates whose
 `ViewVersion` is at or below that snapshot. Each subsequent update must name the
 thread and match the current version through `BaseVersion`; apply its entire

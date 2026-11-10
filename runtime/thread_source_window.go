@@ -74,6 +74,7 @@ func (service *threadRuntimeService) hydrateThreadWindow(ctx context.Context, in
 		page.input = normalizeWindowInput(input)
 		actor.sourceWindow = &page
 		actor.interactionIndex = nil
+		actor.normalizeRunProgress()
 		actor.invalidateItemIndex()
 		if changed {
 			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
@@ -185,6 +186,7 @@ func (service *threadRuntimeService) installSourceTail(actor *threadRuntimeState
 	actor.state.view = canonical.ThreadView
 	actor.sourceWindow = &page
 	actor.interactionIndex = nil
+	actor.normalizeRunProgress()
 	actor.invalidateItemIndex()
 	actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
 }

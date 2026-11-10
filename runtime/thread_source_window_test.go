@@ -167,6 +167,9 @@ func testSourceWindowBrowsingDuringRecovery(t *testing.T, appendDuringRead bool)
 			update, err = sub.Next(read)
 		}
 		cancel()
+		if update.Facts.RunProgress == nil || update.Facts.RunProgress.Phase != ThreadRunPhasePreparing {
+			t.Fatalf("browsing %q lost preparing progress while recovery waited: %+v", anchor, update.Facts)
+		}
 		if err != nil || update.Window == nil || len(update.Window.Value.Items) != 20 {
 			t.Fatalf("browsing %q did not publish a complete window: %+v, %v", anchor, update, err)
 		}
@@ -582,5 +585,67 @@ func TestShutdownJoinsDisplayAndCompletePreparation(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("shutdown left an owned preparation running")
 		}
+	}
+}
+
+func TestColdActiveWindowPublishesPreparingWithoutExecution(t *testing.T) {
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(t.TempDir() + "/cold.sqlite"), DeferExecution: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	public, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) {
+		t.Error("read-only window started execution")
+		return nil, errors.New("unexpected execution")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id identity.ThreadID = "cold-active-progress"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []sessiontree.Entry{
+		{ID: "started", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
+		{ID: "user", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained request"}},
+	} {
+		entry.ThreadID, entry.TurnID, entry.RunID = id.String(), "turn", "run"
+		if _, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := public.(*threadRuntimeService).ensureThread(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, baseline := coldWindowBaseline(t, public, id)
+	if baseline.Facts.Activity != ThreadActivityActive || baseline.Facts.RunProgress == nil || baseline.Facts.RunProgress.Phase != ThreadRunPhasePreparing {
+		t.Fatalf("cold active window omitted canonical preparing progress: %+v", baseline.Facts)
+	}
+	after, err := public.(*threadRuntimeService).ensureThread(t.Context(), id)
+	if err != nil || after.LeafID != before.LeafID {
+		t.Fatalf("read changed canonical history: %v", err)
+	}
+}
+
+func TestSourceTailProgressUsesCurrentInteractionAttention(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		interactions []ThreadInteraction
+		want         AttentionSummary
+	}{
+		{name: "advancing"},
+		{name: "approval", interactions: []ThreadInteraction{{ID: "approval", Kind: ThreadInteractionApproval}}, want: AttentionSummary{ApprovalCount: 1}},
+		{name: "input", interactions: []ThreadInteraction{{ID: "input", Kind: ThreadInteractionInput}}, want: AttentionSummary{InputCount: 1}},
+		{name: "resolved", interactions: []ThreadInteraction{{ID: "input", Kind: ThreadInteractionInput, Resolved: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{Activity: ThreadActivityActive}}}
+			canonical := canonicalThreadView{ThreadView: ThreadView{Activity: ThreadActivityActive, Interactions: tc.interactions}}
+			(&threadRuntimeService{}).installSourceTail(actor, canonical, threadSourceProjection{})
+			if actor.state.view.Attention != tc.want || (actor.state.view.RunProgress == nil) != (tc.want != (AttentionSummary{})) {
+				t.Fatalf("attention=%+v progress=%+v", actor.state.view.Attention, actor.state.view.RunProgress)
+			}
+		})
 	}
 }
