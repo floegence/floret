@@ -18,7 +18,12 @@ func (p *turnProjection) admitParentEvents(ctx context.Context) (session.Message
 	if p.err != nil {
 		return session.Message{}, p.err
 	}
-	if err := p.err; err != nil {
+	// Empty request boundaries need only the bounded canonical receipt query.
+	// Do not scan the growing turn for tool settlement when there is nothing
+	// to admit. A later receipt remains eligible at the next request boundary;
+	// non-empty admission still revalidates authority atomically in the repo.
+	pending, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: p.thread.id, PendingOnly: true, Limit: 1})
+	if err != nil || len(pending.Events) == 0 {
 		return session.Message{}, err
 	}
 	entry, err := repo.AdmitParentEvents(ctx, p.thread.id, p.turnID, p.runID)

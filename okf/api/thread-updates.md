@@ -70,6 +70,12 @@ attempt fences and side-effect settlement remain unchanged.
 
 # Baseline and continuity
 
+At provider request boundaries, the harness checks one pending canonical parent
+receipt through the existing bounded reader. An empty result needs no admission
+transaction or scan of prior tools. The next request checks again; a non-empty
+result uses the original atomic admission and authority checks. No receipt
+state is cached and normal completion does not create another provider request.
+
 Cold active-thread windows and source-tail admission use the same actor progress
 normalization as execution. Without pending interaction, accepted active work
 reports `preparing` until an advancing run publishes a more specific phase.

@@ -8,6 +8,10 @@
 - Keep bounded Goal reads consistent with immutable message revisions, including
   deleted-Goal suppression after restart and Fork. Resolve the replacement input
   through validated ancestry without changing stored history or metadata.
+- Check one pending canonical parent receipt before request-boundary admission.
+  Empty boundaries no longer scan the growing tool journal; non-empty admission
+  retains its atomic authority, pending-tool checks and exact event rendering.
+
 - Preserve preparing progress and exact interaction attention in cold active-thread
   windows and source-tail admission. Reuse the actor normalization used by live
   execution; deferred read-only hosts retain history without starting execution.
