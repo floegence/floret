@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,16 +20,24 @@ import (
 func TestActivityNavigationSurvivesExecutionHistoryForkAndRestart(t *testing.T) {
 	for _, renderer := range []tools.ActivityRenderer{tools.ActivityRendererFile, tools.ActivityRendererStructured, tools.ActivityRendererPatch} {
 		t.Run(string(renderer), func(t *testing.T) {
+			diff := "@@ -1 +1 @@\n+token=x\n"
+			diff += strings.Repeat("x", 8000-len(diff))
+			checkDiff := func(value string) {
+				t.Helper()
+				if !strings.Contains(value, "token=[REDACTED]") || len(value) != 8000 {
+					t.Fatal("bounded protected edit diff disappeared")
+				}
+			}
 			target := tools.ActivityTargetRef{Kind: "file", Label: "report.go", Path: "/private/workspace/report.go", Line: 12, ResourceRef: "host-resource:report"}
 			presentation := func() *tools.ActivityPresentation {
 				activity := &tools.ActivityPresentation{Renderer: renderer, TargetRefs: []tools.ActivityTargetRef{target}}
 				switch renderer {
 				case tools.ActivityRendererFile:
-					activity.Payload = tools.FileActivityPayload{Operation: "write", Additions: 518, Truncated: true}
+					activity.Payload = tools.FileActivityPayload{Operation: "write", DisplayName: "report.go", Additions: 518, UnifiedDiff: diff}
 				case tools.ActivityRendererStructured:
 					activity.Payload = tools.StructuredActivityPayload{Inputs: []tools.StructuredActivityRow{{Title: "Input", Target: &target}}, Rows: []tools.StructuredActivityRow{{Title: "Result", Target: &target}}}
 				case tools.ActivityRendererPatch:
-					mutations := tools.FileMutationActivityPayloads{{Target: &target, DisplayName: "report.go", Additions: 518, Truncated: true}}
+					mutations := tools.FileMutationActivityPayloads{{Target: &target, DisplayName: "report.go", Additions: 518, UnifiedDiff: diff}}
 					activity.Payload = tools.PatchActivityPayload{Mutations: &mutations}
 				}
 				return activity
@@ -50,10 +59,12 @@ func TestActivityNavigationSurvivesExecutionHistoryForkAndRestart(t *testing.T) 
 					if payload.Mutations == nil || len(*payload.Mutations) != 1 || !reflect.DeepEqual((*payload.Mutations)[0].Target, &target) || (*payload.Mutations)[0].Additions != 518 || !(*payload.Mutations)[0].Truncated {
 						t.Fatalf("patch target changed: %+v", payload)
 					}
+					checkDiff((*payload.Mutations)[0].UnifiedDiff)
 				case tools.FileActivityPayload:
 					if payload.Additions != 518 || !payload.Truncated {
 						t.Fatalf("file preview changed: %+v", payload)
 					}
+					checkDiff(payload.UnifiedDiff)
 				default:
 					t.Fatalf("unexpected payload %T", payload)
 				}

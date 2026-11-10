@@ -166,8 +166,12 @@ arguments and results, provider payloads, reasoning, and local paths in display
 text and metadata. Authorized host-authored Activity content is a separate
 presentation surface: preserve source text and whitespace without guessing
 paths in prose or code. Structured rows report credential redaction and invalid
-UTF-8 replacement independently of truncation. Explicit ActivityTargetRef Path and URI values remain exact
-resource facts for authorized host navigation, including top-level targets,
+UTF-8 replacement independently of truncation.
+Display text limits apply after credential redaction, including labels and file
+diffs. Expanding a redaction marker cannot invalidate an otherwise valid Activity.
+File and patch mutation diffs retain their truncation fact through repeated
+normalization, canonical history, restart and Fork.
+Explicit ActivityTargetRef Path and URI values remain exact resource facts for authorized host navigation, including top-level targets,
 structured inputs/rows, and patch mutations. They never grant access. Diagnostic
 trace sinks redact these navigation paths too, without mutating canonical data.
 

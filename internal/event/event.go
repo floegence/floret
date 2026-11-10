@@ -449,7 +449,9 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation b
 		payload.DisplayName = sanitizeText(payload.DisplayName)
 		payload.Content = sanitizeText(payload.Content)
 		payload.ChangeType = sanitizeText(payload.ChangeType)
-		payload.UnifiedDiff = sanitizeText(payload.UnifiedDiff)
+		diff, truncated := boundedActivityDisplayText(payload.UnifiedDiff, 8_000, preserveNavigation)
+		payload.UnifiedDiff = diff
+		payload.Truncated = payload.Truncated || truncated
 		payload.DiffUnavailableReason = sanitizeText(payload.DiffUnavailableReason)
 		payload.Error = sanitizeError(payload.Error)
 		return payload
@@ -467,7 +469,9 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation b
 				(*payload.Mutations)[i].Target = sanitizeActivityTarget((*payload.Mutations)[i].Target, preserveNavigation)
 				(*payload.Mutations)[i].DisplayName = sanitizeText((*payload.Mutations)[i].DisplayName)
 				(*payload.Mutations)[i].ChangeType = sanitizeText((*payload.Mutations)[i].ChangeType)
-				(*payload.Mutations)[i].UnifiedDiff = sanitizeText((*payload.Mutations)[i].UnifiedDiff)
+				diff, truncated := boundedActivityDisplayText((*payload.Mutations)[i].UnifiedDiff, 8_000, preserveNavigation)
+				(*payload.Mutations)[i].UnifiedDiff = diff
+				(*payload.Mutations)[i].Truncated = (*payload.Mutations)[i].Truncated || truncated
 				(*payload.Mutations)[i].DiffUnavailableReason = sanitizeText((*payload.Mutations)[i].DiffUnavailableReason)
 			}
 		}
@@ -599,27 +603,26 @@ func activitySourceText(value string, preserveContent bool) string {
 // Authorized display preserves host-authored text; diagnostic sinks retain
 // their restricted path projection. Neither projection mutates the source.
 func activityDisplayText(value string, limit int, preserveContent bool) string {
-	if !preserveContent {
-		return safeActivityText(value, limit)
-	}
-	value = strings.ToValidUTF8(value, "\uFFFD")
-	if limit > 0 && len([]rune(value)) > limit {
-		value = string([]rune(value)[:limit])
-	}
-	return Redact(value)
+	text, _ := boundedActivityDisplayText(value, limit, preserveContent)
+	return text
 }
 
 func safeActivityText(value string, limit int) string {
+	return activityDisplayText(value, limit, false)
+}
+
+func boundedActivityDisplayText(value string, limit int, preserveContent bool) (string, bool) {
 	value = strings.ToValidUTF8(value, "\uFFFD")
-	value = strings.TrimSpace(SafePathRefsText(value))
-	if value == "" {
-		return ""
+	if !preserveContent {
+		value = strings.TrimSpace(SafePathRefsText(value))
 	}
+	// Credential replacement may expand the text. Enforce the display contract
+	// on the protected result so a valid payload cannot disappear at validation.
+	value = Redact(value)
 	if limit > 0 && len([]rune(value)) > limit {
-		runes := []rune(value)
-		value = string(runes[:limit])
+		return string([]rune(value)[:limit]), true
 	}
-	return Redact(value)
+	return value, false
 }
 
 func sanitizeActivityChips(in []tools.ActivityChip, preserveContent bool) []tools.ActivityChip {

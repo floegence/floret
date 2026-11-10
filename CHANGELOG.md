@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound Activity text after credential redaction so expanded markers cannot drop
+  file names and diffs. Preserve explicit diff truncation through execution,
+  canonical history, restart and Fork without rewriting stored records.
+
 - Expose canonical `ThreadTurn.HasFailure` and authorized
   `ThreadTurnFailureReader.ReadTurnFailure` for historical failed/interrupted
   turns after continuation and restart, without adding storage or placing
