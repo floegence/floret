@@ -142,3 +142,68 @@ func TestGoalSourceMetadataRejectsOmittedAndDamagedReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestGoalSourceMessageRevisionRemapsSuppression(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	backend, repo := openV31ReviewFixture(t, memory)
+	first, err := repo.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "old", RunID: "old-run", LogicalRequestID: "old", RequestFingerprint: "old", Input: session.Message{Role: session.User, Content: "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", RequestKey: "delete", Actor: "user", Operation: "delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Append(t.Context(), Entry{ThreadID: "thread", TurnID: "old", RunID: "old-run", Type: EntryTurnMarker, TurnStatus: TurnCompleted}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := repo.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "new", RunID: "new-run", LogicalRequestID: "edit", RequestFingerprint: "edit", Input: session.Message{Role: session.User, Content: "new"}, EditSourceEntryID: first.UserMessage.ID, EditExpectedInput: first.UserMessage.Message})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(thread string) {
+		t.Helper()
+		path, err := repo.Path(t.Context(), thread, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := GoalFromPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want.SuppressedAtInput != latestGoalInput(path) {
+			t.Fatalf("full projection lost suppression: %+v", want)
+		}
+		got, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: thread, Limit: 1}, func(PathMetadata, bool) []string { return nil })
+		if err != nil || got.Facts.Goal == nil || !reflect.DeepEqual(*got.Facts.Goal, want) {
+			t.Fatalf("bounded=%+v full=%+v err=%v", got.Facts.Goal, want, err)
+		}
+	}
+	check("thread")
+	if _, err := repo.Append(t.Context(), Entry{ThreadID: "thread", TurnID: "new", RunID: "new-run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "answer"}}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	check("thread")
+	repo = reopenCurrentStartupRepo(t, backend, false)
+	check("thread")
+	if _, err := repo.Fork(t.Context(), ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"}); err != nil {
+		t.Fatal(err)
+	}
+	check("fork")
+	repo = reopenCurrentStartupRepo(t, backend, false)
+	check("fork")
+	// A subsequent Goal mutation must use the same remapped authoritative input.
+	if _, err := repo.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", RequestKey: "set-after-edit", Actor: "user", Operation: "set", ExpectedVersion: 1, Text: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(t.Context(), "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err := GoalFromPath(path)
+	if err != nil || goal.Text != "next" {
+		t.Fatalf("next Goal %+v %v (replacement %s)", goal, err, replacement.UserMessage.ID)
+	}
+}

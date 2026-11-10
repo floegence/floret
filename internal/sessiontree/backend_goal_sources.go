@@ -72,6 +72,35 @@ func goalSourceState(ctx context.Context, tx spi.ReadTx, thread string, leaf ent
 				return state, err
 			}
 			state = revision.Goal
+			// The boundary carries the old input identity until its replacement
+			// user entry is present. Resolve that exact successor through the
+			// active ancestry; sparse readers must match the full projector.
+			if state.SuppressedAtInput == revision.SourceEntryID && leaf.Depth >= refs.Change.Depth+2 {
+				startNode, err := entryAncestor(ctx, tx, thread, leaf, refs.Change.Depth+1)
+				if err != nil {
+					return state, err
+				}
+				start, err := readLocatedEntry(tx, backendDomainV32Format, thread, startNode)
+				if err != nil {
+					return state, err
+				}
+				userNode, err := entryAncestor(ctx, tx, thread, leaf, refs.Change.Depth+2)
+				if err != nil {
+					return state, err
+				}
+				user, err := readLocatedEntry(tx, backendDomainV32Format, thread, userNode)
+				if err != nil {
+					return state, err
+				}
+				if start.ParentID != entry.ID || start.Type != EntryTurnMarker || start.TurnStatus != TurnStarted || user.ParentID != start.ID || user.Type != EntryUserMessage || user.TurnID != start.TurnID || user.RunID != start.RunID {
+					return state, ErrAuthorityCorrupt
+				}
+				projection := GoalProjection{State: state, revisionSourceInput: revision.SourceEntryID}
+				if err := projection.Observe(user); err != nil {
+					return state, err
+				}
+				state = projection.State
+			}
 		} else {
 			var change GoalChange
 			if json.Unmarshal(entry.Payload, &change) != nil || change.State.Version < 1 {

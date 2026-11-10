@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep bounded Goal reads consistent with immutable message revisions, including
+  deleted-Goal suppression after restart and Fork. Resolve the replacement input
+  through validated ancestry without changing stored history or metadata.
+
 - Preserve successful turn completion when a previous turn's host work settles
   during execution. Canonical readers validate the intervening settlement while
   retaining its original turn identity; qualify memory, SQLite, runtime final
