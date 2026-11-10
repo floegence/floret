@@ -168,13 +168,11 @@ func (service *threadRuntimeService) prepareSourceWindow(ctx context.Context, re
 		}
 		items[i] = value
 	}
-	snapshot, err := boundWindowSnapshot(ThreadWindowSnapshot{ViewVersion: ^uint64(0), resolvedAnchor: page.resolvedAnchor, ThreadID: input.ThreadID, LeafID: page.leaf, HasBefore: page.hasBefore, HasAfter: page.hasAfter, ItemSelection: input.ItemIDs != nil || input.SkipRange != nil || len(input.RetainItemIDs) > 0, AnchorUnavailable: page.anchorUnavailable, SkippedRange: page.skippedRange, Items: items}, input)
+	snapshot, err := boundWindowSnapshot(ThreadWindowSnapshot{resolvedAnchor: page.resolvedAnchor, ThreadID: input.ThreadID, LeafID: page.leaf, HasBefore: page.hasBefore, HasAfter: page.hasAfter, ItemSelection: input.ItemIDs != nil || input.SkipRange != nil || len(input.RetainItemIDs) > 0, AnchorUnavailable: page.anchorUnavailable, SkippedRange: page.skippedRange, Items: items}, input)
 	if err != nil {
 		result.err = err
 		return result
 	}
-	// Reserve the largest version encoding before the actor assigns its version.
-	snapshot.ViewVersion = 0
 	result.snapshot = snapshot
 	result.turns = selectedWindowTurns(snapshot.Items, view.Turns)
 	result.interactions = selectedWindowInteractions(snapshot.Items, view.Interactions)

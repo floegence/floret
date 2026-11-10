@@ -496,8 +496,19 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 		if !ok {
 			err = ErrThreadUpdateInvalidated
 		} else {
-			snapshot, turns, interactions, err = frozen.snapshot, frozen.turns, frozen.interactions, frozen.err
-			snapshot.ViewVersion = actor.state.view.ViewVersion
+			snapshot, err = frozen.snapshot, frozen.err
+			if err == nil {
+				// Preparation handles the expensive selection outside the actor.
+				// Bind the actual version before the final budget check, without
+				// rejecting exact selections for a hypothetical larger version.
+				snapshot.Items = cloneThreadItems(snapshot.Items)
+				snapshot.ViewVersion = actor.state.view.ViewVersion
+				snapshot, err = boundWindowSnapshot(snapshot, frozen.input)
+				if err == nil {
+					turns = selectedWindowTurns(snapshot.Items, frozen.turns)
+					interactions = selectedWindowInteractions(snapshot.Items, frozen.interactions)
+				}
+			}
 		}
 	} else if !interest.tail && interest.selection == nil && actor.itemIndexByID(interest.anchor) < 0 {
 		err = errThreadWindowAnchorUnavailable
