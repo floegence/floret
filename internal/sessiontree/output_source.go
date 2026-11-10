@@ -412,7 +412,7 @@ func releaseOutputSource(ctx context.Context, tx spi.WriteTx, id string) error {
 }
 
 func storeCanonicalArtifact(ctx context.Context, tx spi.WriteTx, record artifact.Record) error {
-	if record.OutputSourceID == "" && len(record.Text) > OutputSourceChunkBytes {
+	if record.OutputSourceID == "" {
 		source, err := writeOutputSource(ctx, tx, outputSourceID(record.ThreadID, record.Ref.ID), record.Text)
 		if err != nil {
 			return err

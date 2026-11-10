@@ -56,6 +56,8 @@ all bytes the host observed. No process is adopted or replayed.
 
 Each source retains at most 64 MiB and a backend retains at most 1 GiB of source
 text. These are logical UTF-8 byte limits, not physical database size limits.
+Every newly archived artifact uses this owner, including small bodies. Historical
+inline artifacts remain unchanged and are not retroactively scanned or evicted.
 Quota exhaustion preserves the prefix and reports `output_limit` or
 `storage_limit`; it never evicts another referenced source. Failure to retain a
 whole-result artifact rolls back that source and admits the already observed

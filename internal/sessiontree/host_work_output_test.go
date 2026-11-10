@@ -162,6 +162,19 @@ func TestHostWorkStreamAppendRollbackAndCorruptPage(t *testing.T) {
 	}
 }
 
+func TestSmallArchivedOutputUsesSourceQuota(t *testing.T) {
+	backend, repo, attempt := canonicalSettlementFixture(t, true)
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return putOutputRecord(tx, outputUsageKey(), outputStoreMaxBytes) }); err != nil {
+		t.Fatal(err)
+	}
+	req := canonicalEffectRequest(attempt)
+	req.FullOutput = &artifact.FullOutput{Text: "small retained source"}
+	got, err := repo.FinishEffectDispatch(t.Context(), req)
+	if err != nil || got.Artifact != nil || got.Result.Message.ToolResult.OutputUnavailable != "storage_limit" || got.Attempt.State != EffectAttemptCompleted {
+		t.Fatalf("small artifact bypassed quota: %+v %v", got, err)
+	}
+}
+
 func TestArtifactQuotaFailurePreservesConfirmedEffect(t *testing.T) {
 	backend, repo, attempt := canonicalSettlementFixture(t, true)
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return putOutputRecord(tx, outputUsageKey(), outputStoreMaxBytes) }); err != nil {
