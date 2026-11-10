@@ -194,3 +194,45 @@ func TestMessageEditRetainsQueueDuringStop(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMessageEditAdmissionHonorsHostShutdownFence(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "old", Input: UserInput{Text: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-gateway.started
+	close(gateway.release)
+	waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+	editor := service.(ThreadMessageEditor)
+	target, err := editor.LatestEditableMessage(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold shutdown after its public fence, before storage/actor closure. A
+	// transition already waiting for Stop must recheck at canonical admission.
+	host.closeMu.Lock()
+	host.closing = true
+	host.closeMu.Unlock()
+	defer func() { host.closeMu.Lock(); host.closing = false; host.closeMu.Unlock() }()
+	runtime := service.(*threadRuntimeService)
+	_, err = runtime.admitMessageEdit(t.Context(), runtime.runtime(created.ThreadID), EditLastUserMessageInput{ThreadID: created.ThreadID, ItemID: target.ItemID, ExpectedInput: target.Input, Input: UserInput{Text: "new"}, RequestKey: "edit"})
+	if !errors.Is(err, ErrHostClosed) {
+		t.Fatalf("shutdown admitted replacement: %v", err)
+	}
+	after, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("shutdown changed canonical history")
+	}
+}

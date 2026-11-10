@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recheck message-edit admission under the Host shutdown boundary after Stop;
+  shutdown cannot miss a replacement execution or admit it after its fence.
+
 - Keep bounded Goal reads consistent with immutable message revisions, including
   deleted-Goal suppression after restart and Fork. Resolve the replacement input
   through validated ancestry without changing stored history or metadata.

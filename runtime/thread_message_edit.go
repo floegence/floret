@@ -259,6 +259,13 @@ func (s *threadRuntimeService) EditLastUserMessage(ctx context.Context, in EditL
 	}
 }
 func (s *threadRuntimeService) admitMessageEdit(ctx context.Context, actor *threadRuntimeState, in EditLastUserMessageInput) (ThreadCommandAck, error) {
+	// Stop may outlive the caller and race Host shutdown. Publish canonical
+	// admission and its execution owner under the existing shutdown boundary.
+	s.host.mutationMu.Lock()
+	defer s.host.mutationMu.Unlock()
+	if err := s.host.requireExecution(); err != nil {
+		return ThreadCommandAck{}, err
+	}
 	turn, run, err := s.host.nextTurnRunIDs()
 	if err != nil {
 		return ThreadCommandAck{}, err
