@@ -7,6 +7,11 @@
   retaining its original turn identity; qualify memory, SQLite, runtime final
   responses and restart without rewriting stored history.
 
+- Add optional latest-user-message editing with atomic same-thread branch admission,
+  graceful stop, exact input conflicts, durable replay lookup and immutable version
+  reads. Preserve Goal, Todo, queue and usage; fence prompt lineage and historical
+  writers through domain 37 → 38 and logical 12 → 13.
+
 - Add `runtime.WithAgentUserInput` for autonomous executions. Preserve enabled
   defaults, named built-ins, independent Goal and effect-approval policy, and
   pending interaction history across restart. Qualify the final provider and

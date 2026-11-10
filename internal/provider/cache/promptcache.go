@@ -101,6 +101,7 @@ func (r PromptScopeRef) validate() error {
 }
 
 type RawPlan struct {
+	MessageRevisionID string                `json:"message_revision_id,omitempty"`
 	MeasurementPrefix requestmeasure.Prefix `json:"measurement_prefix,omitzero"`
 	// These transient fields come from validated canonical retry admission, never a host hint.
 	RetrySourceEntryID         string                        `json:"-"`
@@ -206,6 +207,7 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
+	MessageRevisionID          string                        `json:"message_revision_id,omitempty"`
 	MeasurementPrefix          requestmeasure.Prefix         `json:"measurement_prefix,omitzero"`
 	ModelContextEntryID        string                        `json:"model_context_entry_id,omitempty"`
 	ID                         string                        `json:"id"`
@@ -1006,6 +1008,13 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	if !found {
 		return nil
 	}
+	if previous.MessageRevisionID != plan.MessageRevisionID {
+		if plan.MessageRevisionID == "" {
+			return fmt.Errorf("%w: missing canonical message revision", ErrContextPrefixDrift)
+		}
+		plan.CanonicalLineageReset = true
+		return nil
+	}
 	if plan.RetrySourceEntryID != "" && plan.RetryRunID != "" && previous.RunID != plan.RetryRunID {
 		// Managed facts may be admitted after the retry checkpoint. They are
 		// typed context messages, never a replacement for its canonical source.
@@ -1588,6 +1597,7 @@ func RecordRequest(ctx context.Context, store Store, ref PromptScopeRef, step in
 		CanonicalHistoryPrefixHash: plan.CanonicalHistoryPrefixHash,
 		RenderLineageKey:           plan.RenderLineageKey,
 		ContextProjectionRevision:  plan.ContextProjectionRevision,
+		MessageRevisionID:          plan.MessageRevisionID,
 		RequestEstimate:            plan.RequestEstimate,
 		ProjectedPressure:          plan.ProjectedPressure,
 		RequestShape:               plan.RequestShape,
@@ -1659,6 +1669,7 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		CanonicalHistoryPrefixHash: req.RawPlan.CanonicalHistoryPrefixHash,
 		RenderLineageKey:           req.RawPlan.RenderLineageKey,
 		ContextProjectionRevision:  req.RawPlan.ContextProjectionRevision,
+		MessageRevisionID:          req.RawPlan.MessageRevisionID,
 		TurnSurface:                req.TurnSurface,
 		RequestEstimate:            req.RawPlan.RequestEstimate,
 		ProjectedPressure:          req.RawPlan.ProjectedPressure,

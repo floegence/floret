@@ -65,6 +65,17 @@ func (projection *ThreadContextProjection) Observe(entry Entry) error {
 		projection.sources.Compactions = map[string]contextCompactionSources{}
 	}
 	out := &projection.state
+	if entry.Type == EntryMessageRevision {
+		revision, err := DecodeMessageRevision(entry)
+		if err != nil {
+			return err
+		}
+		out.UsageTotals = nil
+		if revision.UsageTotals != nil {
+			totals := *revision.UsageTotals
+			out.UsageTotals = &totals
+		}
+	}
 	compactions := out.Compactions
 	defer func() { out.Compactions = compactions }()
 

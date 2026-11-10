@@ -463,6 +463,8 @@ type Entry struct {
 }
 
 type AppendOptions struct {
+	// Root starts a new root branch in a nonempty immutable journal.
+	Root     bool
 	ID       string
 	ParentID string
 	Now      time.Time
@@ -2942,6 +2944,11 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 }
 
 func ValidateEntryIntegrity(entry Entry) error {
+	if entry.Type == EntryMessageRevision {
+		if _, err := DecodeMessageRevision(entry); err != nil {
+			return err
+		}
+	}
 	if err := validateHostWorkEntry(entry); err != nil {
 		return err
 	}

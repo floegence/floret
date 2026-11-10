@@ -68,7 +68,7 @@ func (projection *threadCanonicalProjection) append(entries []sessiontree.Entry)
 		if entry.Type == sessiontree.EntryTurnMarker {
 			projection.contextChanged = true
 		}
-		if entry.Type == sessiontree.EntryGoal || entry.Type == sessiontree.EntryTurnMarker {
+		if entry.Type == sessiontree.EntryMessageRevision || entry.Type == sessiontree.EntryGoal || entry.Type == sessiontree.EntryTurnMarker {
 			projection.goalChanged = true
 		}
 		if canonicalEntryChangesModel(entry) {

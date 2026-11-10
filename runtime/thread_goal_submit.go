@@ -76,6 +76,9 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 	var submission sessiontree.GoalSubmissionResult
 	start := false
 	err = actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		var err error
 		submission, err = repo.SubmitGoal(ctx, sessiontree.GoalSubmission{Mutation: sessiontree.GoalMutation{ThreadID: in.ThreadID.String(), RequestKey: string(in.RequestKey), ExpectedVersion: in.ExpectedVersion, Actor: "user", Operation: "set", Text: in.Text}, Turn: canonical})
 		if err != nil {

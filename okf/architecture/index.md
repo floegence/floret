@@ -8,3 +8,5 @@
 * [Observation and Events](observation-events.md) - Sanitized event streams and host-facing observation DTOs.
 
 - [Canonical host work](host-work.md): asynchronous effect facts and completion delivery.
+
+* [Message revisions](message-revisions.md) — Atomic latest-input replacement and historical version reads.

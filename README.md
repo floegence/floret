@@ -1355,7 +1355,7 @@ reconstruction uses fixed metadata windows; it does not retain transcript bodies
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
 prompt history and the permanent session-tree lineage. Logical storage version
-12 fences domain schema 37 from older runtimes while preserving the exact
+13 fences domain schema 38 from older runtimes while preserving the exact
 logical 11 migration path and bounded resumable preparation. Incompatible domain
 envelopes must advance the logical fence; released old readers return
 `ErrStoreTooNew` before interpreting newer domain authority. Source recognition and
@@ -1947,3 +1947,28 @@ Schema 37 adds this semantic identity for newly named built-ins through the
 contiguous 36 → 37 manifest edge. Historical journals, effect identities and
 provider signatures keep their original bytes and names. Hosts must not rewrite
 those records; changing an ordinary host-tool name is a separate host contract.
+
+### Edit the latest user message
+
+`runtime.ThreadMessageEditor` is an optional capability of `Host.ThreadService`.
+Read `LatestEditableMessage` to obtain the complete canonical input and exact
+item identity. Submit `EditLastUserMessage` with that expected input, a complete
+replacement, and a stable request key. `StopActive` explicitly authorizes a
+graceful stop before admission. Opening an editor does not mutate the thread.
+
+The single thread actor fences competing admissions while stopping. Admission
+atomically selects a replacement branch and starts a new Turn/Run in the same
+Thread. Old inputs, tool exchanges and answers remain immutable.
+`LookupMessageEdit` resolves an uncertain transport result before resource
+resolution or another stop; `ReadMessageEditHistory` reads the prior version.
+Hosts authorize every read and execution independently. Effects are not undone.
+
+Only the latest ordinary input is eligible. Applied steering, Goal submissions,
+unknown effects and unsettled host work are not silently bypassed. Queue inputs
+use `ThreadQueueController`. Goal, Todo and queued inputs retain their current
+facts; usage includes superseded execution. Invalidated compaction and provider
+continuation cannot enter the replacement request. Prompt request audit stays
+intact with an explicit canonical message-revision lineage boundary. A crash
+before admission never resubmits an editor draft; admitted work uses ordinary
+restart, Retry and Fork. Schema 37 → 38 and logical 12 → 13 fence older writers
+without rewriting historical canonical records.

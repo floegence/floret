@@ -76,7 +76,20 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	}
 	baseLeafID := meta.LeafID
 	var promotion *Entry
+	var revision *Entry
 	now := canonicalTime(req.Now, r.now)
+	if req.EditSourceEntryID != "" {
+		path, err := r.canonicalPathLocked(context.Background(), meta.ID, meta.LeafID)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+		value, err := prepareMessageRevision(path, req, now)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+		revision = &value
+		baseLeafID = value.ID
+	}
 	if req.PromotedQueueID != "" {
 		if req.PromotionRequestKey == "" || req.PromotionRequestFingerprint == "" {
 			return AcceptTurnResult{}, ErrRequestConflict
@@ -129,9 +142,16 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	}
 	started.Raw = rawForEntry(started)
 	started.RawHash = stableHash(started.Raw)
-	admissionBaseLeafID, err := r.runtimeAdmissionBaseLeafLocked(started, promotion)
-	if err != nil {
-		return AcceptTurnResult{}, err
+	admissionBaseLeafID := baseLeafID
+	if revision == nil {
+		var err error
+		admissionBaseLeafID, err = r.runtimeAdmissionBaseLeafLocked(started, promotion)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+	}
+	if revision != nil {
+		r.appendIndexedEntriesLocked(meta.ID, *revision)
 	}
 	if promotion != nil {
 		r.appendIndexedEntriesLocked(meta.ID, *promotion)

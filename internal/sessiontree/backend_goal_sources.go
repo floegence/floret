@@ -63,20 +63,28 @@ func goalSourceState(ctx context.Context, tx spi.ReadTx, thread string, leaf ent
 	}
 	if refs.Change.ID != "" {
 		entry, err := read(refs.Change)
-		if err != nil || entry.Type != EntryGoal {
+		if err != nil || (entry.Type != EntryGoal && entry.Type != EntryMessageRevision) {
 			return state, errors.Join(ErrAuthorityCorrupt, err)
 		}
-		var change GoalChange
-		if json.Unmarshal(entry.Payload, &change) != nil || change.State.Version < 1 {
-			return state, ErrAuthorityCorrupt
+		if entry.Type == EntryMessageRevision {
+			revision, err := DecodeMessageRevision(entry)
+			if err != nil {
+				return state, err
+			}
+			state = revision.Goal
+		} else {
+			var change GoalChange
+			if json.Unmarshal(entry.Payload, &change) != nil || change.State.Version < 1 {
+				return state, ErrAuthorityCorrupt
+			}
+			// Continuity was validated when this source was admitted or prepared.
+			// Requested sources are independently validated again on each read.
+			projection := GoalProjection{State: session.GoalState{Version: change.State.Version - 1, Status: "absent"}}
+			if err := projection.Observe(entry); err != nil {
+				return state, err
+			}
+			state = projection.State
 		}
-		// Continuity was validated when this source was admitted or prepared.
-		// Requested sources are independently validated again on each read.
-		projection := GoalProjection{State: session.GoalState{Version: change.State.Version - 1, Status: "absent"}}
-		if err := projection.Observe(entry); err != nil {
-			return state, err
-		}
-		state = projection.State
 	}
 	projection := GoalProjection{State: state}
 	if refs.Reset.ID != "" {
@@ -103,7 +111,7 @@ func deriveGoalSourceContext(ctx context.Context, tx spi.ReadTx, entry Entry, re
 	var err error
 	refs.Invocation = nil
 	source := contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
-	if entry.Type == EntryGoal {
+	if entry.Type == EntryGoal || entry.Type == EntryMessageRevision {
 		parent := entryLocator{}
 		if entry.ParentID != "" {
 			parent, err = readEntryLocator(tx, entry.ThreadID, entry.ParentID)

@@ -53,6 +53,7 @@ type threadRuntimeState struct {
 }
 
 type threadRuntimeData struct {
+	messageEditKey      string
 	contextErr          error
 	steering            []string
 	fragmentCancel      context.CancelCauseFunc

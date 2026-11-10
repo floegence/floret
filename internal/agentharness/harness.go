@@ -806,6 +806,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
+	for _, entry := range historyPath {
+		if entry.Type == sessiontree.EntryMessageRevision {
+			engineOptions.MessageRevisionID = entry.ID
+		}
+	}
 	if retrySource != nil && len(history) > 0 {
 		// A durable save point may follow non-message context observations.
 		// The provider prefix boundary is the final projected message at that

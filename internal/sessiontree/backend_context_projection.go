@@ -267,7 +267,7 @@ func appendCanonicalContextProjection(ctx context.Context, tx spi.WriteTx, entry
 		}
 	}
 	kind := ThreadContextEntryKind(entry)
-	if kind != ThreadContextPolicyEntryKind && kind != ThreadContextStatusEntryKind && kind != ThreadContextCompactionEntryKind && !(entry.Type == EntryTurnMarker && terminalTurnMarker(entry.TurnStatus)) {
+	if entry.Type != EntryMessageRevision && kind != ThreadContextPolicyEntryKind && kind != ThreadContextStatusEntryKind && kind != ThreadContextCompactionEntryKind && !(entry.Type == EntryTurnMarker && terminalTurnMarker(entry.TurnStatus)) {
 		stored.Leaf = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
 		return putItemJSON(tx, contextProjectionKey(meta.ID), stored)
 	}

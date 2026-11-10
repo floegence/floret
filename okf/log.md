@@ -1957,3 +1957,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-11-08: Document configurable built-in names and byte-preserving schema 37 semantics.
 
 - 2026-11-09: document canonical reads across earlier-turn host-work settlement and restart qualification.
+
+- Add immutable message revision contracts, schema 38 and logical format 13.

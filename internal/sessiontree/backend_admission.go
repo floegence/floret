@@ -316,6 +316,19 @@ func (mutation *canonicalJournalMutation) acceptTurn(req AcceptTurnRequest, resu
 			return err
 		}
 	}
+	if req.EditSourceEntryID != "" {
+		path, err := canonicalCompletePath(ctx, mutation.tx, req.ThreadID, mutation.meta.LeafID)
+		if err != nil {
+			return err
+		}
+		revision, err := prepareMessageRevision(path, req, now)
+		if err != nil {
+			return err
+		}
+		if _, err := mutation.append(revision, AppendOptions{Root: revision.ParentID == ""}); err != nil {
+			return err
+		}
+	}
 	started = Entry{ID: runtimeTurnStartedEntryID(req.TurnID), ThreadID: req.ThreadID, Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID, RequestKey: req.LogicalRequestID, RequestFingerprint: req.RequestFingerprint, TurnStatus: TurnStarted, CreatedAt: now, Metadata: map[string]string{"run_id": req.RunID, ResponseSegmentsMetadataKey: "1"}}
 	if req.RetrySourceEntryID != "" {
 		started.Metadata[RetrySourceTurnIDMetadataKey], started.Metadata[RetrySourceEntryIDMetadataKey] = req.RetrySourceTurnID, req.RetrySourceEntryID

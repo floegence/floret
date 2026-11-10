@@ -30,8 +30,10 @@ import (
 const (
 	logicalSchemaNamespace            = "floret.system"
 	logicalSchemaKey                  = "logical-schema"
-	logicalSchemaVersion              = "12"
-	logicalSchemaFingerprint          = "sha256:a086704adeda17c8d74919ca5f62c961d50d8be247058829215c6b465999dea9"
+	logicalSchemaVersion              = "13"
+	logicalSchemaFingerprint          = "sha256:7a09e39546c644327528d0058a4c4197fe3255252b5f82c4acc347b1e07108d1"
+	legacyV12LogicalSchemaVersion     = "12"
+	legacyV12LogicalSchemaFingerprint = "sha256:a086704adeda17c8d74919ca5f62c961d50d8be247058829215c6b465999dea9"
 	legacyV11LogicalSchemaVersion     = "11"
 	legacyV11LogicalSchemaFingerprint = "sha256:8c7b5edf140b2950900551ebf83cc70475a970109feba1c9148a6384691cf75a"
 	legacyV10LogicalSchemaVersion     = "10"
@@ -291,7 +293,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		if inspectErr != nil {
 			return inspectErr
 		}
-		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
+		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV12 || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
 			var current bool
 			currentKernel, current, inspectErr = internalstorage.NewCurrentBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents)
 			if !current {
@@ -695,6 +697,8 @@ func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.Thr
 // turnExecutionRequest describes one provider execution after ThreadID is bound by a
 // turnRunnerHandle.
 type turnExecutionRequest struct {
+	EditSourceEntryID           string
+	EditExpectedInput           UserInput
 	ContinueGoal                bool
 	TurnKind                    TurnKind
 	LogicalRequestID            identity.LogicalRequestID
@@ -782,6 +786,7 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV12     logicalSchemaState = "v12"
 	logicalSchemaV11     logicalSchemaState = "v11"
 	logicalSchemaV10     logicalSchemaState = "v10"
 	logicalSchemaV7      logicalSchemaState = "v7"
@@ -825,6 +830,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV12LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV12LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 12 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV12, nil
 	}
 	if envelope.Version == legacyV11LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV11LogicalSchemaFingerprint {

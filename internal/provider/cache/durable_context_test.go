@@ -103,3 +103,29 @@ func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
 		}
 	}
 }
+
+func TestMessageRevisionResetsLineageOnceAndRetainsAudit(t *testing.T) {
+	store := NewMemoryStore()
+	original := []session.Message{{Role: session.User, EntryID: "old", Content: "old"}}
+	first := lineagePlan("test", "model", "ns", "old")
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "old"}, 1, "test", "model", CachePolicy{}, first); err != nil {
+		t.Fatal(err)
+	}
+	changed := []session.Message{{Role: session.User, EntryID: "new", Content: "replacement"}}
+	next := lineagePlan("test", "model", "ns", "new")
+	next.MessageRevisionID = "revision"
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed); err != nil || !next.CanonicalLineageReset {
+		t.Fatalf("revision %v %+v", err, next)
+	}
+	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "new"}, 1, "test", "model", CachePolicy{}, next); err != nil {
+		t.Fatal(err)
+	}
+	next.CanonicalLineageReset = false
+	changed[0].Content = "illegal rewrite"
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed); !errors.Is(err, ErrContextPrefixDrift) {
+		t.Fatalf("unchecked later rewrite: %v", err)
+	}
+}

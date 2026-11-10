@@ -22,10 +22,10 @@ go run . "${root}/history.sqlite"
 cd "${root}/reader"
 go mod init example.com/logical-fence-reader
 cp "${repository_root}/scripts/testdata/logical-storage-fence/reader.go" main.go
-go get github.com/floegence/floret/v7@v7.107.9
+go get github.com/floegence/floret/v7@v7.109.0
 go mod tidy
 go mod verify
-[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.107.9 ]]
+[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.109.0 ]]
 [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
 go run . "${root}/history.sqlite"
 cd "${root}/writer"

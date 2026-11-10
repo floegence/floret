@@ -78,7 +78,9 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 		}
 		entry.Metadata["run_id"] = runID
 	}
-	if opts.ParentID != "" {
+	if opts.Root {
+		entry.ParentID = ""
+	} else if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
 	} else if entry.ParentID == "" {
 		entry.ParentID = meta.LeafID

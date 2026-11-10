@@ -141,7 +141,7 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 		return err
 	}
 	switch entry.Type {
-	case EntryGoal, EntryGoalReview, EntryGoalContext:
+	case EntryMessageRevision, EntryGoal, EntryGoalReview, EntryGoalContext:
 		goal := GoalProjection{}
 		if err := visitCanonicalPathMetadata(ctx, tx, meta.ID, meta.LeafID, goal.Observe); err != nil {
 			return err

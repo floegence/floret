@@ -105,7 +105,7 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 		if err != nil {
 			return nil, false, err
 		}
-		if manifest.Version < backendDomainV37Version {
+		if manifest.Version < backendDomainV38Version {
 			writable, ok := tx.(spi.WriteTx)
 			if !ok {
 				return nil, false, nil
@@ -151,7 +151,7 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 		if retained.version < 27 {
 			migrationTime = now().UTC().UnixNano()
 		}
-		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV37Version, Sequence: manifest.Sequence, SourceVersion: retained.version, MigrationTime: migrationTime}); err != nil {
+		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV38Version, Sequence: manifest.Sequence, SourceVersion: retained.version, MigrationTime: migrationTime}); err != nil {
 			return nil, false, err
 		}
 		migrationSource = &retained

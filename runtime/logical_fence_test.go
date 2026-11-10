@@ -121,7 +121,7 @@ func TestLogicalV11FencePreservesCurrentRecordsAndBoundedRestart(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if envelope.Version != "12" || envelope.Fingerprint == releasedV11Fingerprint {
+		if envelope.Version != logicalSchemaVersion || envelope.Fingerprint == releasedV11Fingerprint {
 			t.Fatalf("logical fence missing: %+v", envelope)
 		}
 		if counts.valueBytesRead() > 32<<10 || counts.recordsRead() > 80 {
@@ -258,7 +258,7 @@ func (b logicalFenceCancelBackend) Update(ctx context.Context, mutate func(spi.W
 }
 
 func TestLogicalFenceRejectsFutureVersionsWithoutReclassifyingReservedMigration(t *testing.T) {
-	for _, version := range []string{"13", "16", "999"} {
+	for _, version := range []string{"14", "16", "999"} {
 		t.Run(version, func(t *testing.T) {
 			backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 			if err != nil {
@@ -290,5 +290,32 @@ func TestLogicalFenceRejectsFutureVersionsWithoutReclassifyingReservedMigration(
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestLogicalV12MigrationPreservesRecords(t *testing.T) {
+	file := logicalFenceFixture(t, true)
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := json.Marshal(logicalSchemaEnvelope{Version: legacyV12LogicalSchemaVersion, Fingerprint: legacyV12LogicalSchemaFingerprint})
+	if _, err = db.Exec("UPDATE floret_backend_records SET value=? WHERE namespace=? AND key=?", old, logicalSchemaNamespace, []byte(logicalSchemaKey)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	before := logicalFenceDigest(t, file, false)
+	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(file), DeferExecution: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.startup.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if logicalFenceDigest(t, file, false) != before {
+		t.Fatal("v12 upgrade changed canonical records")
 	}
 }

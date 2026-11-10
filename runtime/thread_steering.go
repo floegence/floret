@@ -95,6 +95,9 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 		var wait <-chan struct{}
 		var current ThreadView
 		err = actor.apply(ctx, func() error {
+			if actor.state.messageEditKey != "" {
+				return ErrThreadBusy
+			}
 			entry, readErr := service.host.store.repo.Entry(ctx, in.ThreadID.String(), "steer:"+key)
 			if readErr == nil {
 				if entry.Type != sessiontree.EntrySteeringRequested || entry.RequestFingerprint != fingerprint {
@@ -250,6 +253,9 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 				fragment, actor.state.fragmentCancel = context.WithCancelCause(ctx)
 			}
 			err := actor.apply(ctx, func() error {
+				if actor.state.messageEditKey != "" {
+					return ErrThreadBusy
+				}
 				if err := valid(); err != nil {
 					return err
 				}
@@ -269,6 +275,9 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 				}
 			}
 			err = actor.apply(ctx, func() error {
+				if actor.state.messageEditKey != "" {
+					return ErrThreadBusy
+				}
 				if err := valid(); err != nil {
 					return err
 				}
@@ -295,6 +304,9 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 		Finish: func(ctx context.Context) (bool, error) {
 			sealed := false
 			err := actor.apply(ctx, func() error {
+				if actor.state.messageEditKey != "" {
+					return ErrThreadBusy
+				}
 				if actor.state.runID != runID {
 					// A retired execution cannot change its successor's owner.
 					sealed = true

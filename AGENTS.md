@@ -184,7 +184,7 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 37 is the current schema. The exact version 2 to version 3
+  lineage. Version 38 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
@@ -267,7 +267,7 @@ Rules:
   not reconstruct, patch, or migrate Floret domain records themselves.
 - SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 use transactional metadata/layout
   changes only and must not copy or clear canonical records. Logical storage
-  7 -> 8 -> 9 -> 10 -> 11 -> 12 migrates through Host-owned transactions and the permanent
+  7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 migrates through Host-owned transactions and the permanent
   session-tree lineage. A logical format marker identifies the migration owner;
   it does not assert that every historical thread is already prepared. An
   incompatible domain envelope must advance this logical fence so released older

@@ -174,8 +174,10 @@ type EffectResultFinalizationResult struct {
 type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
 
 type Options struct {
-	GoalToolName string
-	Steering     *SteeringControl
+	// MessageRevisionID is read from the admitted canonical path, never a host hint.
+	MessageRevisionID string
+	GoalToolName      string
+	Steering          *SteeringControl
 	// RetrySourceEntryID is supplied only by the canonical harness retry admission.
 	RetrySourceEntryID    string
 	RunID                 string
@@ -2608,6 +2610,10 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 	})
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
+	}
+	plan.MessageRevisionID = opts.MessageRevisionID
+	if opts.MessageRevisionID != "" {
+		plan.RenderLineageKey = cache.HashStrings(plan.RenderLineageKey, opts.MessageRevisionID)
 	}
 	plan.RetrySourceEntryID = opts.RetrySourceEntryID
 	plan.RetryRunID = opts.RunID

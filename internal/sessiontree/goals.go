@@ -70,6 +70,13 @@ func (projection *GoalProjection) Observe(e Entry) error {
 		state.Actor = ""
 		state.SuppressedAtInput = ""
 	}
+	if e.Type == EntryMessageRevision {
+		revision, err := DecodeMessageRevision(e)
+		if err != nil {
+			return err
+		}
+		state = revision.Goal
+	}
 	if e.Type == EntryGoal {
 		var change GoalChange
 		if err := json.Unmarshal(e.Payload, &change); err != nil {

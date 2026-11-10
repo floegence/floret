@@ -102,7 +102,7 @@ func windowResponseBoundary(entry Entry) bool {
 	return entry.Type == EntryToolCall && entry.Message.Kind != "control_signal" && entry.Message.Kind != session.MessageKindToolValidationError || entry.Type == EntryCustom && entry.Metadata["kind"] == HostedToolEntryKind || entry.Type == EntryTurnMarker && entry.TurnStatus == TurnSavePoint && entry.Metadata["reason"] == "context_continue"
 }
 func windowGoalSource(entry Entry) bool {
-	return entry.Type == EntryGoal || entry.Type == EntryTurnMarker && entry.Metadata[GoalCompletedMetadataKey] != "" || entry.Type == EntryUserMessage && entry.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission
+	return entry.Type == EntryMessageRevision || entry.Type == EntryGoal || entry.Type == EntryTurnMarker && entry.Metadata[GoalCompletedMetadataKey] != "" || entry.Type == EntryUserMessage && entry.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission
 }
 func observeWindowSources(ctx context.Context, tx spi.ReadTx, stored *storedWindowSources, turn *storedWindowTurnSources, entry Entry) error {
 	if entry.Type == EntryTurnMarker && entry.TurnStatus != "" {

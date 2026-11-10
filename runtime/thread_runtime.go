@@ -2630,6 +2630,9 @@ func (service *threadRuntimeService) prepareExecution(ctx context.Context, actor
 }
 
 func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, threadID identity.ThreadID, request turnExecutionRequest) (acceptedTurn, error) {
+	if actor := service.runtime(threadID); actor.state.messageEditKey != "" && (actor.state.messageEditKey != request.LogicalRequestID.String() || request.EditSourceEntryID == "") {
+		return acceptedTurn{}, ErrThreadBusy
+	}
 	journal, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return acceptedTurn{}, ErrUnsupportedStoreCapability
@@ -2657,7 +2660,9 @@ func canonicalTurnRequest(threadID identity.ThreadID, request turnExecutionReque
 		canonicalInput = session.Message{}
 	}
 	req := sessiontree.AcceptTurnRequest{
-		TurnKind: string(request.TurnKind), ContinueGoal: request.ContinueGoal,
+		EditSourceEntryID: request.EditSourceEntryID,
+		EditExpectedInput: canonicalEditInput(request.EditExpectedInput),
+		TurnKind:          string(request.TurnKind), ContinueGoal: request.ContinueGoal,
 		ThreadID: threadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(),
 		LogicalRequestID:            request.LogicalRequestID.String(),
 		Input:                       canonicalInput,
@@ -3711,6 +3716,9 @@ func (service *threadRuntimeService) respondResult(ctx context.Context, threadID
 	var current ThreadView
 	var interactions []ThreadInteraction
 	if err := actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		service.flushUpdateLocked(actor)
 		current = threadResult(actor.state.view, mode)
 		interactions = cloneThreadInteractions(actor.state.view.Interactions)
@@ -3792,6 +3800,9 @@ func (service *threadRuntimeService) respondResult(ctx context.Context, threadID
 	}
 	waiters := make([]waiterDelivery, 0, len(resolutions))
 	if err := actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		if existing, found := actor.state.requestKeys[requestKey]; found {
 			if existing.fingerprint != answerFingerprint {
 				return &RequestConflictError{Operation: "respond", RequestID: requestKey, Err: ErrRequestConflict}
@@ -4104,6 +4115,9 @@ func (service *threadRuntimeService) retryResult(ctx context.Context, threadID i
 	var previousExecution <-chan struct{}
 	var replayed bool
 	err = actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		if existing, ok := actor.state.requestKeys[requestKey]; ok {
 			if existing.fingerprint != fingerprint {
 				return &RequestConflictError{Operation: "retry", RequestID: requestKey, Err: ErrRequestConflict}
@@ -4295,7 +4309,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 	var next QueuedInput
 	var threadID identity.ThreadID
 	_ = actor.apply(context.Background(), func() error {
-		if actor.state.view.Activity == ThreadActivityActive || len(actor.state.view.Queue) == 0 {
+		if actor.state.messageEditKey != "" || actor.state.view.Activity == ThreadActivityActive || len(actor.state.view.Queue) == 0 {
 			return nil
 		}
 		next = actor.state.view.Queue[0]
@@ -4308,6 +4322,9 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 	go func() {
 		if _, err := service.startAccepted(context.Background(), actor, threadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID); err != nil {
 			_ = actor.apply(context.Background(), func() error {
+				if actor.state.messageEditKey != "" || actor.state.view.Activity == ThreadActivityActive {
+					return nil
+				}
 				actor.state.view.ViewVersion++
 				actor.state.view.Activity = ThreadActivityIdle
 				outcome := TurnOutcomeFailed
@@ -4363,6 +4380,9 @@ func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, ac
 	var result ThreadView
 	var previousExecution <-chan struct{}
 	err = actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		if actor.state.view.Activity == ThreadActivityActive {
 			return ErrThreadBusy
 		}
@@ -5003,6 +5023,9 @@ func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, com
 		}
 	}
 	err := actor.apply(ctx, func() error {
+		if actor.state.messageEditKey != "" {
+			return ErrThreadBusy
+		}
 		if identity.TurnID(commit.TurnID) != actor.state.turnID || identity.RunID(commit.RunID) != actor.state.runID {
 			return ErrStaleAuthority
 		}

@@ -51,6 +51,8 @@ type ProviderStateStore interface {
 }
 
 type AcceptTurnRequest struct {
+	EditSourceEntryID           string
+	EditExpectedInput           session.Message
 	ContinueGoal                bool
 	TurnKind                    string
 	ThreadID                    string
@@ -176,6 +178,9 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 	if err := ValidateAcceptTurnRequestEnvelope(req); err != nil {
 		return err
 	}
+	if req.EditSourceEntryID != "" && (req.TurnKind != "" || req.RetrySourceEntryID != "" || req.PromotedQueueID != "") {
+		return ErrRequestConflict
+	}
 	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation && req.TurnKind != TurnKindHostWorkContinuation {
 		return errors.New("unknown turn kind")
 	}
@@ -234,21 +239,29 @@ func ValidateAcceptTurnRequestEnvelope(req AcceptTurnRequest) error {
 }
 
 func TurnAcceptanceRequestFingerprint(req AcceptTurnRequest) (string, error) {
+	var editExpected *session.Message
+	if req.EditSourceEntryID != "" {
+		copy := session.CloneMessage(req.EditExpectedInput)
+		editExpected = &copy
+	}
 	payload, err := json.Marshal(struct {
-		TurnKind                    string          `json:"turn_kind,omitempty"`
-		ContinueGoal                bool            `json:"continue_goal,omitempty"`
-		ThreadID                    string          `json:"thread_id"`
-		TurnID                      string          `json:"turn_id"`
-		RunID                       string          `json:"run_id"`
-		LogicalRequestID            string          `json:"logical_request_id,omitempty"`
-		Input                       session.Message `json:"input"`
-		RetrySourceTurnID           string          `json:"retry_source_turn_id,omitempty"`
-		RetrySourceEntryID          string          `json:"retry_source_entry_id,omitempty"`
-		PromotedQueueID             string          `json:"promoted_queue_id,omitempty"`
-		PromotionRequestKey         string          `json:"promotion_request_key,omitempty"`
-		PromotionRequestFingerprint string          `json:"promotion_request_fingerprint,omitempty"`
-		InputRequestFingerprint     string          `json:"input_request_fingerprint,omitempty"`
+		EditSourceEntryID           string           `json:"edit_source_entry_id,omitempty"`
+		EditExpectedInput           *session.Message `json:"edit_expected_input,omitempty"`
+		TurnKind                    string           `json:"turn_kind,omitempty"`
+		ContinueGoal                bool             `json:"continue_goal,omitempty"`
+		ThreadID                    string           `json:"thread_id"`
+		TurnID                      string           `json:"turn_id"`
+		RunID                       string           `json:"run_id"`
+		LogicalRequestID            string           `json:"logical_request_id,omitempty"`
+		Input                       session.Message  `json:"input"`
+		RetrySourceTurnID           string           `json:"retry_source_turn_id,omitempty"`
+		RetrySourceEntryID          string           `json:"retry_source_entry_id,omitempty"`
+		PromotedQueueID             string           `json:"promoted_queue_id,omitempty"`
+		PromotionRequestKey         string           `json:"promotion_request_key,omitempty"`
+		PromotionRequestFingerprint string           `json:"promotion_request_fingerprint,omitempty"`
+		InputRequestFingerprint     string           `json:"input_request_fingerprint,omitempty"`
 	}{
+		EditSourceEntryID: req.EditSourceEntryID, EditExpectedInput: editExpected,
 		TurnKind: req.TurnKind, ContinueGoal: req.ContinueGoal, ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
 		LogicalRequestID: strings.TrimSpace(req.LogicalRequestID), Input: session.CloneMessage(req.Input),
 		RetrySourceTurnID: strings.TrimSpace(req.RetrySourceTurnID), RetrySourceEntryID: strings.TrimSpace(req.RetrySourceEntryID),
