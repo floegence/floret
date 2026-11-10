@@ -12,15 +12,19 @@ import (
 // the union of user-input and approval waits. An unavailable final boundary is
 // distinct from a recorded final boundary with no assistant text.
 type ThreadTurn struct {
-	TurnID         identity.TurnID `json:"turn_id"`
-	RunID          identity.RunID  `json:"run_id"`
-	Kind           TurnKind        `json:"kind,omitempty"`
-	StartedAt      time.Time       `json:"started_at"`
-	EndedAt        *time.Time      `json:"ended_at,omitempty"`
-	Outcome        *TurnOutcome    `json:"outcome,omitempty"`
-	ElapsedMS      int64           `json:"elapsed_ms"`
-	WaitingMS      int64           `json:"waiting_ms"`
-	WorkDurationMS int64           `json:"work_duration_ms"`
+	TurnID    identity.TurnID `json:"turn_id"`
+	RunID     identity.RunID  `json:"run_id"`
+	Kind      TurnKind        `json:"kind,omitempty"`
+	StartedAt time.Time       `json:"started_at"`
+	EndedAt   *time.Time      `json:"ended_at,omitempty"`
+	Outcome   *TurnOutcome    `json:"outcome,omitempty"`
+	// HasFailure reports retained canonical diagnostics for a failed or
+	// interrupted turn. ReadTurnFailure reads them on demand without placing
+	// unbounded error bodies in display pages or observation updates.
+	HasFailure     bool  `json:"has_failure,omitempty"`
+	ElapsedMS      int64 `json:"elapsed_ms"`
+	WaitingMS      int64 `json:"waiting_ms"`
+	WorkDurationMS int64 `json:"work_duration_ms"`
 	// IntermediateItemIDs identifies segmented assistant text superseded by
 	// canonical tool activity or a semantic continuation. Trailing partial text
 	// and unsegmented legacy text remain unclassified. Membership survives later

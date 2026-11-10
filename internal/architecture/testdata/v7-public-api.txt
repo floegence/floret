@@ -1999,6 +1999,7 @@ field ThreadTurn.Kind github.com/floegence/floret/v7/runtime.TurnKind tag="json:
 field ThreadTurn.StartedAt time.Time tag="json:\"started_at\""
 field ThreadTurn.EndedAt *time.Time tag="json:\"ended_at,omitempty\""
 field ThreadTurn.Outcome *github.com/floegence/floret/v7/runtime.TurnOutcome tag="json:\"outcome,omitempty\""
+field ThreadTurn.HasFailure bool tag="json:\"has_failure,omitempty\""
 field ThreadTurn.ElapsedMS int64 tag="json:\"elapsed_ms\""
 field ThreadTurn.WaitingMS int64 tag="json:\"waiting_ms\""
 field ThreadTurn.WorkDurationMS int64 tag="json:\"work_duration_ms\""
@@ -2025,11 +2026,16 @@ const ThreadTurnFailureControlError github.com/floegence/floret/v7/runtime.Threa
 const ThreadTurnFailureDuplicateToolCallID github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "duplicate_tool_call_id"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "engine_contract"
+type ThreadTurnFailureInput struct
+field ThreadTurnFailureInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadTurnFailureInput.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadTurnFailureInput.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 const ThreadTurnFailureInterrupted github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "interrupted"
 const ThreadTurnFailureLegacyUnclassified github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "legacy_unclassified"
 const ThreadTurnFailureModelContextUnavailable github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "model_context_unavailable"
 const ThreadTurnFailureNoProgress github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "no_progress"
 const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "provider"
+type ThreadTurnFailureReader interface interface{ReadTurnFailure(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadTurnFailureInput) (*github.com/floegence/floret/v7/runtime.ThreadTurnFailure, error)}
 type ThreadTurnFailureReason string
 const ThreadTurnFailureRepeatedToolCalls github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "repeated_tool_calls"
 const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "stop_hook_loop"

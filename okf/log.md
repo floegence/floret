@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-11-09: Expose per-turn canonical failure facts for historical diagnostics
+  without changing journal storage or adding host-owned persistence.
+
 - 2026-11-09: Preserve native provider history across the v11 to v12 projection
   upgrade when the canonical prefix matches; invalidate changed prefixes and
   exact-surface continuation at the final provider request boundary.

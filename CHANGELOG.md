@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Expose canonical `ThreadTurn.HasFailure` and authorized
+  `ThreadTurnFailureReader.ReadTurnFailure` for historical failed/interrupted
+  turns after continuation and restart, without adding storage or placing
+  diagnostic bodies in bounded display metadata.
+
 - Recheck message-edit admission under the Host shutdown boundary after Stop;
   shutdown cannot miss a replacement execution or admit it after its fence.
 

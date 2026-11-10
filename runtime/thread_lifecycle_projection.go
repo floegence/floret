@@ -90,8 +90,16 @@ func (projection *threadLifecycleProjection) snapshot() (identity.TurnID, identi
 		value := TurnOutcomeCancelled
 		outcome = &value
 	}
+	return turnID, facts.runID, activity, outcome, facts.failure(outcome)
+}
+
+func (facts *threadLifecycleFacts) hasFailure(outcome *TurnOutcome) bool {
+	return facts != nil && facts.failureMessage != "" && outcome != nil && (*outcome == TurnOutcomeFailed || *outcome == TurnOutcomeInterrupted)
+}
+
+func (facts *threadLifecycleFacts) failure(outcome *TurnOutcome) *ThreadTurnFailure {
 	var failure *ThreadTurnFailure
-	if facts.failureMessage != "" && (lifecycle.Status() == sessionlifecycle.StatusFailed || lifecycle.Status() == sessionlifecycle.StatusInterrupted) {
+	if facts.hasFailure(outcome) {
 		code := facts.failureCode
 		if !code.Valid() {
 			code = ThreadTurnFailureLegacyUnclassified
@@ -101,5 +109,5 @@ func (projection *threadLifecycleProjection) snapshot() (identity.TurnID, identi
 			failure.ProviderTimeout = providerattempt.CloneTimeoutDetails(facts.timeout)
 		}
 	}
-	return turnID, facts.runID, activity, outcome, failure
+	return failure
 }

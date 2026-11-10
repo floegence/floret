@@ -187,6 +187,7 @@ func (projection *threadTurnProjection) turnValue(id string) (ThreadTurn, bool, 
 		return ThreadTurn{}, true, facts.finalErr
 	}
 	turn := facts.turn
+	turn.HasFailure = projection.lifecycle.turns[id].hasFailure(turn.Outcome)
 	if turn.segmented {
 		if facts.intermediateErr != nil {
 			return ThreadTurn{}, true, facts.intermediateErr

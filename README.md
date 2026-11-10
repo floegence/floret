@@ -831,6 +831,11 @@ management Activity describes the invocation's outcome and elapsed execution,
 while a target's saved status describes the child at that operation's boundary.
 `ThreadView.Turns` and `HistoryPage.Turns` expose canonical per-turn outcome,
 start/end times, elapsed milliseconds, waiting milliseconds, and work duration.
+`ThreadTurn.HasFailure` reports retained diagnostics for each failed or
+interrupted turn, including history pages and selected windows. Authorized
+`ThreadTurnFailureReader.ReadTurnFailure` reads the complete canonical error for
+an exact ThreadID/TurnID/RunID after continuation and restart. Diagnostic bodies
+stay outside bounded turn metadata. Hosts never need a second error store.
 Waiting deducts the union of user-input and approval intervals; queue time is
 excluded. `FinalBoundaryComplete` distinguishes recorded accepted final-response
 item IDs from unavailable legacy boundaries. Render every `FinalItemIDs` segment

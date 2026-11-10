@@ -478,6 +478,13 @@ unchanged. These positions are neither durable cursors nor execution identities.
 Forks derive positions from their own Path and preserve all copied occurrence
 timestamps; inherited event recipient identities remain unchanged.
 
+`ThreadTurn.HasFailure` reports retained canonical errors for failed/interrupted
+turns across continuation, selected windows, pagination and restart. It is false
+for running/completed/cancelled turns. `ThreadTurnFailureReader.ReadTurnFailure`
+requires fresh authorized scope and exact ThreadID/TurnID/RunID; it returns detached
+complete evidence on demand. Unbounded errors never enter display turn metadata.
+Hosts own localized summaries and authorized literal rendering.
+
 `ThreadTurn.IntermediateItemIDs` (JSON `intermediate_item_ids`) contains ordered,
 unique segmented assistant items superseded by a later local tool call, hosted
 activity or semantic continuation in the same source Turn/Run. Confirmed membership
