@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -21,7 +22,8 @@ type OutputSnapshot struct {
 }
 
 func validOutputSnapshot(s OutputSnapshot) bool {
-	return s.Bytes >= 0 && s.Bytes <= OutputSourceMaxBytes && s.ObservedBytes >= s.Bytes && s.Chunks >= 0 && s.Chunks <= s.Bytes && (s.Bytes == 0) == (s.Chunks == 0) && len(s.SHA256) == 64 && (!s.Complete || s.Reason == "")
+	hash, err := hex.DecodeString(s.SHA256)
+	return err == nil && len(hash) == 32 && s.SHA256 == strings.ToLower(s.SHA256) && s.Bytes >= 0 && s.Bytes <= OutputSourceMaxBytes && s.ObservedBytes >= s.Bytes && s.Chunks >= 0 && s.Chunks <= s.Bytes && (s.Bytes == 0) == (s.Chunks == 0) && validOutputReason(s.Reason) && s.Complete == (s.Reason == "") && (!s.Complete || s.ObservedBytes == s.Bytes)
 }
 func snapshotOutput(s OutputSource) OutputSnapshot {
 	reason := s.Reason

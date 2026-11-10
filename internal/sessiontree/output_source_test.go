@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -12,6 +13,25 @@ import (
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/storage/spi"
 )
+
+func TestOutputSourceRejectsOverflowingChunkOffset(t *testing.T) {
+	backend := newMigrationTestBackend()
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		source, err := writeOutputSource(t.Context(), tx, "overflow", "a")
+		if err != nil {
+			return err
+		}
+		if err := putOutputRecord(tx, outputChunkKey(source.ID, 1), OutputSourceChunk{Seq: 1, Offset: math.MaxInt64, Text: "a", SHA256: artifact.TextSHA256("a")}); err != nil {
+			return err
+		}
+		if _, err := readOutputChunk(tx, source, 1); !errors.Is(err, ErrAuthorityCorrupt) {
+			t.Fatalf("invalid offset accepted: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestOutputSourcePagesPreserveUnicodeAndChecksums(t *testing.T) {
 	backend := newMigrationTestBackend()

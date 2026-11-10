@@ -12,6 +12,26 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
+func TestOutputSnapshotRejectsConflictingCompleteness(t *testing.T) {
+	valid := OutputSnapshot{SHA256: artifact.TextSHA256(""), Complete: true}
+	if !validOutputSnapshot(valid) {
+		t.Fatal("valid empty snapshot rejected")
+	}
+	for _, mutate := range []func(*OutputSnapshot){
+		func(s *OutputSnapshot) { s.Complete = false },
+		func(s *OutputSnapshot) { s.Reason = "interrupted" },
+		func(s *OutputSnapshot) { s.ObservedBytes = 1 },
+		func(s *OutputSnapshot) { s.SHA256 = strings.Repeat("z", 64) },
+		func(s *OutputSnapshot) { s.Complete = false; s.Reason = "invented" },
+	} {
+		value := valid
+		mutate(&value)
+		if validOutputSnapshot(value) {
+			t.Fatalf("invalid snapshot accepted: %+v", value)
+		}
+	}
+}
+
 func TestHostWorkStreamForkPinsPrefixAndReleasesReferences(t *testing.T) {
 	backend, repo, attempt := canonicalSettlementFixture(t, true)
 	work := HostWork{ID: "stream", ExecutorID: "executor", Invocation: attempt.Invocation, State: "bound", OutputStream: HostWorkOutputSourceID("thread", "stream")}

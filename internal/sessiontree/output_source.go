@@ -246,7 +246,7 @@ func readOutputChunk(tx spi.ReadTx, source OutputSource, seq int64) (OutputSourc
 		return chunk, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	digest := sha256.Sum256([]byte(chunk.Text))
-	if chunk.Seq != seq || chunk.Offset < 0 || chunk.Offset+int64(len(chunk.Text)) > source.Bytes || len(chunk.Text) == 0 || len(chunk.Text) > OutputSourceChunkBytes || !utf8.ValidString(chunk.Text) || chunk.SHA256 != hex.EncodeToString(digest[:]) {
+	if chunk.Seq != seq || chunk.Offset < 0 || chunk.Offset > source.Bytes || int64(len(chunk.Text)) > source.Bytes-chunk.Offset || len(chunk.Text) == 0 || len(chunk.Text) > OutputSourceChunkBytes || !utf8.ValidString(chunk.Text) || chunk.SHA256 != hex.EncodeToString(digest[:]) {
 		return chunk, ErrAuthorityCorrupt
 	}
 	return chunk, nil
