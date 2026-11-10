@@ -1041,7 +1041,11 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
 		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7 || previous.ContextProjectionRevision == contextProjectionV8 || previous.ContextProjectionRevision == contextProjectionV9 || previous.ContextProjectionRevision == contextProjectionV10 || previous.ContextProjectionRevision == contextProjectionV11) && plan.ContextProjectionRevision == ContextProjectionRevision {
-			plan.CanonicalLineageReset = true
+			// A projection version changes the render boundary, but native history
+			// remains valid when its complete canonical request prefix is identical.
+			// v11 -> v12 adds only terminal interruption messages. A changed prefix
+			// still resets state; unchanged threads must retain opaque provider facts.
+			plan.CanonicalLineageReset = previous.ContextProjectionRevision != contextProjectionV11 || !MatchesCanonicalHistoryPrefix(previous, history)
 			return nil
 		}
 		if strings.TrimSpace(previous.ContextProjectionRevision) == "" {

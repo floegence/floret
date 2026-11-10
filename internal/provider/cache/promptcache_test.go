@@ -1348,8 +1348,8 @@ func TestCanonicalProjectionV11UpgradePreservesRecordedFacts(t *testing.T) {
 	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history); err != nil {
 		t.Fatal(err)
 	}
-	if !next.CanonicalLineageReset || next.ContextProjectionRevision != ContextProjectionRevision {
-		t.Fatal("v10 did not explicitly reset lineage")
+	if next.CanonicalLineageReset || next.ContextProjectionRevision != ContextProjectionRevision {
+		t.Fatal("unchanged v11 history lost its canonical lineage")
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "new"}, 1, "test", "model", CachePolicy{}, next); err != nil {
 		t.Fatal(err)

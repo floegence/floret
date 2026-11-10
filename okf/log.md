@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-09: Preserve native provider history across the v11 to v12 projection
+  upgrade when the canonical prefix matches; invalidate changed prefixes and
+  exact-surface continuation at the final provider request boundary.
+
 - 2026-11-09: Bind optional Stop preconditions to exact executions and project
   terminal interruption facts into model context; preserve historical checkpoint
   boundaries, canonical records, and unchanged host presentation.

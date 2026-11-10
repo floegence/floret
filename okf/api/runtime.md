@@ -257,9 +257,10 @@ context after retained partial assistant output. It states that output may be
 incomplete and tool results remain authoritative; it makes no unsupported claim
 about background processes. The same projection serves continuation, restart,
 Fork, Retry and compaction. Retrying from an earlier savepoint excludes discarded
-output and its terminal fact. Projection revision `provider-context.v12` explicitly
-resets prior rendered cache lineage; canonical bytes and released checkpoint
-boundaries remain unchanged. This requires no domain schema migration and adds
+output and its terminal fact. Projection revision `provider-context.v12` establishes
+a new rendered cache boundary. Matching v11 canonical prefixes retain opaque native
+history; inserted interruption messages reset incompatible state. Canonical bytes
+and released checkpoint boundaries remain unchanged. This requires no domain schema migration and adds
 no UI message or second transcript.
 
 ## Queued message controls

@@ -15,6 +15,9 @@
 - Preserve preparing progress and exact interaction attention in cold active-thread
   windows and source-tail admission. Reuse the actor normalization used by live
   execution; deferred read-only hosts retain history without starting execution.
+- Preserve opaque native provider history during the v11 to v12 projection
+  upgrade when the recorded canonical prefix is unchanged. Keep interruption,
+  compaction, model/account and exact-surface invalidation boundaries intact.
 
 - Preserve successful turn completion when a previous turn's host work settles
   during execution. Canonical readers validate the intervening settlement while
