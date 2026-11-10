@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // The same projection rewrites canonical references for every storage owner.
@@ -39,6 +41,9 @@ func projectForkPath(ctx context.Context, path []Entry, meta ThreadMeta, now tim
 			next.ID = entry.ID
 		}
 		next.ThreadID = meta.ID
+		if view := next.Message.ToolResult; view != nil && view.OutputRef != "" && view.FullOutput != nil {
+			view.OutputRef = tools.OutputReference{ThreadID: identity.ThreadID(meta.ID), Kind: "artifact", ID: view.FullOutput.ID}.String()
+		}
 		if entry.Type == EntryHostWork {
 			work, err := decodeHostWork(entry)
 			if err != nil {

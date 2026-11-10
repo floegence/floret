@@ -26,6 +26,12 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 		}
 		message := CloneMessage(original)
 		message.Content = ProviderContent(message)
+		if message.ToolResult != nil {
+			// The canonical locator was rendered once above. Token accounting of
+			// this projected copy must not nest the same envelope a second time.
+			message.ToolResult.OutputRef = ""
+			message.ToolResult.OutputUnavailable = ""
+		}
 		if message.Kind == MessageKindCompactionSummary && message.ModelContextSnapshot != nil {
 			current = nil
 		}

@@ -12,10 +12,11 @@ import (
 // Read errors remain distinct from missing records and authorization outcomes.
 // All accessors refer to one immutable snapshot or transaction.
 type artifactAuthorityReader struct {
-	thread    func(string) (ThreadMeta, bool, error)
-	tombstone func(string) (ThreadTombstone, bool, error)
-	entry     func(string, string) (Entry, bool, error)
-	record    func(string, string) (artifact.Record, bool, error)
+	verifyOutput func(artifact.Record) error
+	thread       func(string) (ThreadMeta, bool, error)
+	tombstone    func(string) (ThreadTombstone, bool, error)
+	entry        func(string, string) (Entry, bool, error)
+	record       func(string, string) (artifact.Record, bool, error)
 }
 
 func (r *MemoryRepo) artifactReaderLocked() artifactAuthorityReader {
@@ -236,7 +237,7 @@ func (r artifactAuthorityReader) artifactClosureLocked(sourceID, destinationID s
 		}
 		item := artifact.ManifestItem{
 			SourceEntryID: record.CanonicalEntryID, ArtifactID: ref.ID, Ref: ref,
-			RefFingerprint: refFingerprint, PayloadSHA256: artifact.TextSHA256(record.Text),
+			RefFingerprint: refFingerprint, PayloadSHA256: artifactPayloadHash(record),
 		}
 		if existing, duplicate := byID[ref.ID]; duplicate && !reflect.DeepEqual(existing, item) {
 			return artifact.Closure{}, ErrAuthorityCorrupt
@@ -279,7 +280,7 @@ func (r artifactAuthorityReader) validateArtifactForkDestinationLocked(closure a
 		if err != nil {
 			return err
 		}
-		if !ok || record.ThreadID != closure.DestinationThreadID || record.Ref.ID != item.ArtifactID || !reflect.DeepEqual(record.Ref, item.Ref) || artifact.TextSHA256(record.Text) != item.PayloadSHA256 {
+		if !ok || record.ThreadID != closure.DestinationThreadID || record.Ref.ID != item.ArtifactID || !reflect.DeepEqual(record.Ref, item.Ref) || artifactPayloadHash(record) != item.PayloadSHA256 {
 			return ErrAuthorityCorrupt
 		}
 		if err := r.validateArtifactRecordLocked(record); err != nil {
@@ -290,8 +291,14 @@ func (r artifactAuthorityReader) validateArtifactForkDestinationLocked(closure a
 }
 
 func (r artifactAuthorityReader) validateArtifactRecordLocked(record artifact.Record) error {
-	if record.ThreadID == "" || record.CanonicalEntryID == "" || record.CreatedAt.IsZero() || artifact.ValidateRef(record.Ref) != nil || record.Ref.SHA256 != artifact.TextSHA256(record.Text) ||
-		record.Ref.SizeBytes != int64(len(record.Text)) {
+	if record.ThreadID == "" || record.CanonicalEntryID == "" || record.CreatedAt.IsZero() || artifact.ValidateRef(record.Ref) != nil {
+		return ErrAuthorityCorrupt
+	}
+	if record.OutputSourceID != "" && record.Text == "" && r.verifyOutput != nil {
+		if err := r.verifyOutput(record); err != nil {
+			return err
+		}
+	} else if record.Ref.SHA256 != artifact.TextSHA256(record.Text) || record.Ref.SizeBytes != int64(len(record.Text)) {
 		return ErrAuthorityCorrupt
 	}
 	entry, ok, err := r.entry(record.ThreadID, record.CanonicalEntryID)
@@ -316,7 +323,7 @@ func (r artifactAuthorityReader) stageArtifactForkLocked(closure artifact.Closur
 		if err != nil {
 			return nil, err
 		}
-		if !ok || source.ThreadID != closure.SourceThreadID || source.Ref.ID != item.ArtifactID || source.CanonicalEntryID != item.SourceEntryID || !reflect.DeepEqual(source.Ref, item.Ref) || artifact.TextSHA256(source.Text) != item.PayloadSHA256 {
+		if !ok || source.ThreadID != closure.SourceThreadID || source.Ref.ID != item.ArtifactID || source.CanonicalEntryID != item.SourceEntryID || !reflect.DeepEqual(source.Ref, item.Ref) || artifactPayloadHash(source) != item.PayloadSHA256 {
 			return nil, ErrAuthorityCorrupt
 		}
 		if err := r.validateArtifactRecordLocked(source); err != nil {
@@ -330,8 +337,16 @@ func (r artifactAuthorityReader) stageArtifactForkLocked(closure artifact.Closur
 		}
 		staged[key] = artifact.Record{
 			ThreadID: closure.DestinationThreadID, Ref: item.Ref, Text: source.Text,
+			OutputSourceID:   source.OutputSourceID,
 			CanonicalEntryID: destinationEntryID, CreatedAt: now,
 		}
 	}
 	return staged, nil
+}
+
+func artifactPayloadHash(record artifact.Record) string {
+	if record.OutputSourceID != "" && record.Text == "" {
+		return record.Ref.SHA256
+	}
+	return artifact.TextSHA256(record.Text)
 }

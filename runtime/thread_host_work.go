@@ -22,6 +22,8 @@ type ThreadHostWorkService interface {
 	ReadHostWorkOutput(context.Context, identity.ThreadID, string) (string, error)
 }
 type BindHostWorkInput struct {
+	// StreamOutput enables durable UTF-8 capture before in-memory eviction.
+	StreamOutput    bool
 	EffectAttemptID string
 	ThreadID        identity.ThreadID
 	TurnID          identity.TurnID
@@ -30,6 +32,10 @@ type BindHostWorkInput struct {
 	WorkID          string
 }
 type CompleteHostWorkInput struct {
+	// OutputReason describes a capture gap, independently of execution outcome.
+	// Empty means all observed output was delivered. Allowed values are
+	// storage_error, capture_error, cancelled, and interrupted.
+	OutputReason string
 	// Activity is the final host-sanitized presentation for the original tool item.
 	Activity *tools.ActivityPresentation
 	// Result retains bounded host-defined facts (valid JSON, at most 16 KiB),
@@ -48,6 +54,7 @@ type CompleteHostWorkInput struct {
 	Output *string
 }
 type HostWork struct {
+	StreamingOutput bool            `json:"streaming_output,omitempty"`
 	Result          json.RawMessage `json:"result,omitempty"`
 	Inherited       bool            `json:"inherited,omitempty"`
 	WorkID          string          `json:"work_id"`
@@ -56,7 +63,9 @@ type HostWork struct {
 	ToolCallID      string          `json:"tool_call_id"`
 	State           string          `json:"state"`
 	Notice          string          `json:"notice,omitempty"`
-	OutputAvailable bool            `json:"output_available"`
+	// OutputAvailable refers to the legacy complete snapshot read method.
+	// StreamingOutput is read through ThreadOutputService with completeness facts.
+	OutputAvailable bool `json:"output_available"`
 }
 
 func (s *threadRuntimeService) BindHostWork(ctx context.Context, in BindHostWorkInput) error {
@@ -86,18 +95,27 @@ func (s *threadRuntimeService) BindHostWork(ctx context.Context, in BindHostWork
 	if !ok {
 		return ErrUnsupportedStoreCapability
 	}
-	_, err = repo.BindHostWork(ctx, sessiontree.HostWork{ID: in.WorkID, ExecutorID: s.host.executorID, Invocation: inv, State: "bound"})
+	w := sessiontree.HostWork{ID: in.WorkID, ExecutorID: s.host.executorID, Invocation: inv, State: "bound"}
+	if in.StreamOutput {
+		w.OutputStream = sessiontree.HostWorkOutputSourceID(inv.ThreadID, in.WorkID)
+	}
+	_, err = repo.BindHostWork(ctx, w)
 	return runtimeHostError(err)
 }
 func (s *threadRuntimeService) CompleteHostWork(ctx context.Context, in CompleteHostWorkInput) error {
 	if err := s.host.available(); err != nil {
 		return err
 	}
+	switch in.OutputReason {
+	case "", "storage_error", "capture_error", "cancelled", "interrupted":
+	default:
+		return errors.New("invalid host-work capture reason")
+	}
 	repo, ok := s.host.store.repo.(sessiontree.HostWorkRepo)
 	if !ok {
 		return ErrUnsupportedStoreCapability
 	}
-	req := sessiontree.HostWorkSettlement{ThreadID: in.ThreadID.String(), ID: in.WorkID, ExecutorID: s.host.executorID, State: "completed", Notice: in.Notice, Notify: in.Notify, OutputUnavailable: in.Output == nil}
+	req := sessiontree.HostWorkSettlement{ThreadID: in.ThreadID.String(), ID: in.WorkID, ExecutorID: s.host.executorID, State: "completed", Notice: in.Notice, Notify: in.Notify, OutputUnavailable: in.Output == nil, OutputReason: in.OutputReason}
 	req.Result = append(json.RawMessage(nil), in.Result...)
 	req.Activity = tools.CloneActivityPresentation(in.Activity)
 	if in.Output != nil {
@@ -134,7 +152,7 @@ func (s *threadRuntimeService) ListHostWork(ctx context.Context, id identity.Thr
 	}
 	out := make([]HostWork, 0, len(works))
 	for _, w := range works {
-		out = append(out, HostWork{Result: append(json.RawMessage(nil), w.Result...), Inherited: w.Inherited, WorkID: w.ID, TurnID: identity.TurnID(w.Invocation.TurnID), RunID: identity.RunID(w.Invocation.RunID), ToolCallID: w.Invocation.ToolCallID, State: w.State, Notice: w.Notice, OutputAvailable: w.Output != nil})
+		out = append(out, HostWork{StreamingOutput: w.OutputStream != "", Result: append(json.RawMessage(nil), w.Result...), Inherited: w.Inherited, WorkID: w.ID, TurnID: identity.TurnID(w.Invocation.TurnID), RunID: identity.RunID(w.Invocation.RunID), ToolCallID: w.Invocation.ToolCallID, State: w.State, Notice: w.Notice, OutputAvailable: w.Output != nil})
 	}
 	return out, nil
 }

@@ -313,6 +313,12 @@ behavior; explicit PreserveFull=false disables both triggers. Positive overrides
 replace inherited thresholds. One FullOutputPlan uses the existing atomic result
 settlement; uncut visible output remains Truncated=false.
 
+`OutputHeadTail` adds an explicit, budgeted omitted-middle marker while retaining
+both endpoints. `Result.FullOutput` explicitly supplies the sanitized pre-preview
+source; the bounded `Text` envelope and execution facts remain independent.
+See [bounded tool output retention](../architecture/tool-output-retention.md) for
+the public read/search/streaming decision and storage lifecycle.
+
 ## Returned effect uncertainty
 
 A handler may return tools.EffectOutcomeUncertain with an error result and no

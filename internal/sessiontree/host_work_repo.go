@@ -266,6 +266,14 @@ func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, e
 		if err != nil {
 			return err
 		}
+		if w.OutputStream != "" {
+			if w.OutputStream != outputSourceID(w.Invocation.ThreadID, hostWorkEntryID(w.ID, false)) {
+				return ErrInvalidThreadAuthority
+			}
+			if _, err := newOutputSource(m.tx, w.OutputStream); err != nil {
+				return err
+			}
+		}
 		_, err = m.append(entry, AppendOptions{ID: entry.ID})
 		return err
 	}, func(memory *MemoryRepo) error { _, err := memory.BindHostWork(ctx, w); return err })
@@ -290,16 +298,44 @@ func (r *BackendRepo) SettleHostWork(ctx context.Context, req HostWorkSettlement
 		}
 		result = w
 		if replayed {
+			if w.OutputStream != "" {
+				source, err := readOutputSource(m.tx, w.OutputStream)
+				if err != nil {
+					return err
+				}
+				reason := req.OutputReason
+				if req.State == "unknown" {
+					reason = "interrupted"
+				}
+				if !source.Sealed {
+					return ErrAuthorityCorrupt
+				}
+				if source.Reason != reason && source.Reason != "output_limit" && source.Reason != "storage_limit" {
+					return ErrRequestConflict
+				}
+			}
 			return nil
+		}
+		if w.OutputStream != "" {
+			source, err := readOutputSource(m.tx, w.OutputStream)
+			if err != nil {
+				return err
+			}
+			reason := req.OutputReason
+			if req.State == "unknown" {
+				reason = "interrupted"
+			}
+			if _, err := sealOutputSource(m.tx, source, reason); err != nil {
+				return err
+			}
 		}
 		entry, err = m.appendFact(entry, AppendOptions{ID: entry.ID}, true)
 		if err != nil {
 			return err
 		}
 		if w.Output != nil {
-			key := artifactRecordKey(m.meta.ID, w.Output.ID)
 			record := artifact.Record{ThreadID: m.meta.ID, Ref: *w.Output, Text: req.Output.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt}
-			if err := putBackendDomainRecordContext(ctx, m.tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0, record); err != nil {
+			if err := storeCanonicalArtifact(ctx, m.tx, record); err != nil {
 				return errors.Join(ErrHostWorkOutputStorage, err)
 			}
 		}

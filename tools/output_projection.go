@@ -3,6 +3,7 @@ package tools
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -21,6 +22,8 @@ type OutputStrategy string
 const (
 	OutputHead OutputStrategy = "head"
 	OutputTail OutputStrategy = "tail"
+	// OutputHeadTail preserves both ends and reports the omitted middle.
+	OutputHeadTail OutputStrategy = "head_tail"
 )
 
 type OutputPolicy struct {
@@ -38,16 +41,18 @@ type OutputPolicy struct {
 }
 
 type OutputProjection struct {
-	VisibleText    string
-	Truncated      bool
-	OriginalBytes  int
-	VisibleBytes   int
-	OriginalLines  int
-	VisibleLines   int
-	Strategy       OutputStrategy
-	ContentSHA256  string
-	FullOutput     *ArtifactRef
-	FullOutputPlan *FullOutputPlan
+	// OutputUnavailable reports a committed retention failure, not tool failure.
+	OutputUnavailable string
+	VisibleText       string
+	Truncated         bool
+	OriginalBytes     int
+	VisibleBytes      int
+	OriginalLines     int
+	VisibleLines      int
+	Strategy          OutputStrategy
+	ContentSHA256     string
+	FullOutput        *ArtifactRef
+	FullOutputPlan    *FullOutputPlan
 }
 
 // FullOutputPlan is a side-effect-free request to admit the complete tool
@@ -84,7 +89,7 @@ func NormalizeOutputPolicy(policy OutputPolicy) OutputPolicy {
 		policy.VisibleMaxLines = DefaultToolVisibleMaxLines
 	}
 	switch policy.Strategy {
-	case OutputHead, OutputTail:
+	case OutputHead, OutputTail, OutputHeadTail:
 	default:
 		policy.Strategy = DefaultToolOutputStrategy
 	}
@@ -136,8 +141,16 @@ func MergeOutputPolicy(base OutputPolicy, override *OutputPolicy) OutputPolicy {
 func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection {
 	policy = NormalizeOutputPolicy(policy)
 	text := result.Text
-	limited, truncated := applyOutputLimits(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy)
-	if truncated && strings.TrimSpace(policy.TruncationNotice) != "" {
+	limited, truncated := text, false
+	if policy.Strategy == OutputHeadTail {
+		truncated = len(text) > policy.VisibleMaxBytes || policy.VisibleMaxLines > 0 && countLines(text) > policy.VisibleMaxLines
+		if truncated {
+			limited = headTailOutput(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.TruncationNotice)
+		}
+	} else {
+		limited, truncated = applyOutputLimits(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy)
+	}
+	if truncated && policy.Strategy != OutputHeadTail && strings.TrimSpace(policy.TruncationNotice) != "" {
 		limited = outputWithTruncationNotice(text, policy)
 	}
 	projection := OutputProjection{
@@ -153,10 +166,30 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 	if policy.PreserveFull && (truncated || (policy.ArchiveAboveBytes > 0 && len(text) > policy.ArchiveAboveBytes)) {
 		projection.FullOutputPlan = &FullOutputPlan{Text: text, Kind: policy.ArtifactKind, MIME: policy.ArtifactMIME}
 	}
+	if result.FullOutput != nil {
+		plan := *result.FullOutput
+		if plan.Kind == "" {
+			plan.Kind = policy.ArtifactKind
+		}
+		if plan.MIME == "" {
+			plan.MIME = policy.ArtifactMIME
+		}
+		projection.FullOutputPlan = &plan
+		projection.OriginalBytes = len(plan.Text)
+		projection.OriginalLines = countLines(plan.Text)
+		projection.ContentSHA256 = stableTextHash(plan.Text)
+		projection.Truncated = truncated || plan.Text != limited
+	}
 	return projection
 }
 
 func applyOutputLimits(text string, maxBytes, maxLines int, strategy OutputStrategy) (string, bool) {
+	if strategy == OutputHeadTail {
+		if len(text) <= maxBytes && (maxLines <= 0 || countLines(text) <= maxLines) {
+			return text, false
+		}
+		return headTailOutput(text, maxBytes, maxLines, ""), true
+	}
 	limited := text
 	truncated := false
 	if maxLines > 0 {
@@ -175,6 +208,48 @@ func applyOutputLimits(text string, maxBytes, maxLines int, strategy OutputStrat
 		}
 	}
 	return limited, truncated
+}
+
+// The omission marker participates in both budgets. Byte facts count the
+// original UTF-8 source, not tokens or the length of an escaped JSON envelope.
+func headTailOutput(text string, maxBytes, maxLines int, notice string) string {
+	notice = strings.TrimSpace(notice)
+	marker := func(omitted int) string {
+		if notice != "" {
+			return strings.TrimSpace(notice)
+		}
+		return fmt.Sprintf("[... %d bytes omitted ...]", omitted)
+	}
+	reserved := len(marker(len(text))) + 2
+	markerLines := countLines(marker(len(text)))
+	if maxBytes <= reserved || maxLines > 0 && maxLines < markerLines+2 {
+		value := marker(len(text))
+		if maxLines > 0 {
+			value, _ = limitLines(value, maxLines, OutputHead)
+		}
+		return safeHead(value, maxBytes)
+	}
+	budget := maxBytes - reserved
+	head := safeHead(text, (budget+1)/2)
+	tail := ""
+	if budget/2 > 0 {
+		tail = safeTail(text, budget/2)
+	}
+	// Prefer a nearby complete line without discarding most of either half.
+	if index := strings.LastIndexByte(head, '\n'); index >= len(head)/2 && index >= 0 {
+		head = head[:index]
+	}
+	if index := strings.IndexByte(tail, '\n'); index >= 0 && index < len(tail)/2 {
+		tail = tail[index+1:]
+	}
+	if maxLines > 0 {
+		lines := maxLines - markerLines
+		head, _ = limitLines(head, (lines+1)/2, OutputHead)
+		tail, _ = limitLines(tail, lines/2, OutputTail)
+	}
+	head = strings.TrimSuffix(head, "\n")
+	tail = strings.TrimPrefix(tail, "\n")
+	return head + "\n" + marker(len(text)-len(head)-len(tail)) + "\n" + tail
 }
 
 func outputWithTruncationNotice(text string, policy OutputPolicy) string {

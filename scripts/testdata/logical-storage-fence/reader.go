@@ -1,4 +1,4 @@
-// Command reader is compiled against the exact released v7.107.9 Runtime.
+// Command reader is compiled against exact released runtimes by the fence gate.
 package main
 
 import (
@@ -60,5 +60,5 @@ func main() {
 	if records(os.Args[1]) != before {
 		panic("old reader changed canonical records")
 	}
-	fmt.Println("v7.107.9 reader: ErrStoreTooNew, all canonical records unchanged")
+	fmt.Println("released reader: ErrStoreTooNew, all canonical records unchanged")
 }

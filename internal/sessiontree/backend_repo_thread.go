@@ -89,7 +89,7 @@ func (repo *BackendRepo) threadMemoryForTransaction(ctx context.Context, tx spi.
 	delete(memory.todos, threadID)
 	delete(memory.tombstones, threadID)
 	delete(memory.providerStates, threadID)
-	if err := loadBackendDomainThreadSideRecords(tx, memory, threadID, repo.domainFormat()); err != nil {
+	if err := loadBackendDomainThreadSideRecords(ctx, tx, memory, threadID, repo.domainFormat()); err != nil {
 		return nil, err
 	}
 	return memory, nil
@@ -575,7 +575,7 @@ func loadBackendDomainThreadFormat(ctx context.Context, tx spi.ReadTx, backend s
 			if err := loadBackendDomainThreadEntries(ctx, tx, memory, currentID, format); err != nil {
 				return nil, err
 			}
-			if err := loadBackendDomainThreadSideRecords(tx, memory, currentID, format); err != nil {
+			if err := loadBackendDomainThreadSideRecords(ctx, tx, memory, currentID, format); err != nil {
 				return nil, err
 			}
 			loadedEntries[currentID] = struct{}{}
@@ -677,7 +677,7 @@ func loadBackendDomainThreadEntries(ctx context.Context, tx spi.ReadTx, memory *
 	return nil
 }
 
-func loadBackendDomainThreadSideRecords(tx spi.ReadTx, memory *MemoryRepo, threadID string, format backendDomainFormat) error {
+func loadBackendDomainThreadSideRecords(ctx context.Context, tx spi.ReadTx, memory *MemoryRepo, threadID string, format backendDomainFormat) error {
 	for _, item := range []struct {
 		kind string
 		key  []byte
@@ -729,6 +729,9 @@ func loadBackendDomainThreadSideRecords(tx spi.ReadTx, memory *MemoryRepo, threa
 		var value artifact.Record
 		if err := decodeBackendDomainValue(format, record, &value); err != nil || artifactRecordKey(value.ThreadID, value.Ref.ID) != key {
 			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := hydrateArtifactOutput(ctx, tx, &value); err != nil {
+			return err
 		}
 		if err := memory.validateArtifactRecordLocked(value); err != nil {
 			return err

@@ -9,8 +9,8 @@ timestamp: 2026-11-02T00:00:00Z
 
 # Summary
 
-The host owns the OS process and output. Floret owns the authorized invocation,
-immutable completion facts, notice admission and continuation eligibility.
+The host owns the OS process and text capture. Floret owns retained text, the
+authorized invocation, immutable completion facts, notice admission and continuation eligibility.
 `ThreadHostWorkService` adds four host methods without adding model tool names.
 
 # Execution and delivery
@@ -43,7 +43,8 @@ dispatch while allowing settlement. A host suspends first, drains/reaps owned
 processes, records confirmed results, then closes Floret. On abnormal restart,
 bindings from the prior executor become unknown once. No PID adoption, shell
 replay, stdin resend or automatic provider wake follows an unknown effect.
-Unsealed output cannot be reconstructed. Forks retain readable facts/output but
+Legacy unsealed snapshots cannot be reconstructed. With streaming capture, the
+committed prefix remains readable as incomplete after restart. Forks retain readable facts/output but
 never inherit process control or completion wake authority. Explicit Stop and
 deletion suppress autonomous completion continuation.
 
@@ -54,6 +55,10 @@ remain supported. Bound/final facts and admitted notices live in the canonical
 journal. The existing sparse index stores source locators only. Active executor
 and per-thread recovery coordination stay in memory. Hosts never inspect or
 rewrite Floret-owned records.
+
+Schema 38 to 39 adds optional streaming capture, with bounded append/read/search
+APIs and pinned Fork watermarks. It does not replace the original 8 MiB snapshot
+API or create another execution lifecycle. See [tool output retention](tool-output-retention.md).
 
 # Evidence
 

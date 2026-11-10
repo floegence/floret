@@ -19,7 +19,7 @@ must not be decoded into a second Agent model by hosts.
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
 -> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 -> v20 -> v21 -> v22 -> v23 -> v24 -> v25 -> v26
--> v27 -> v28 -> v29 -> v30 -> v31 -> v32 lineage. Version 32 is current. The v2 -> v3 edge reconstructs the exact
+-> v27 -> v28 -> v29 -> v30 -> v31 -> v32 -> v33 -> v34 -> v35 -> v36 -> v37 -> v38 -> v39 lineage. Version 39 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -480,13 +480,16 @@ release the backend between pages; a missing manifest hides partial metadata.
 Concurrent canonical changes invalidate the candidate before publication. No
 text terms, postings, or durable query snapshots are introduced.
 
-Logical storage 12 fences the schema 37 manifest from older runtimes. Exact
-logical 11 stores remain supported; domain admission and logical publication
+Logical storage 14 fences the schema 39 manifest from older runtimes. Exact
+logical 11, 12 and 13 stores remain supported; domain admission and logical publication
 commit atomically. A future incompatible domain envelope must advance the
 logical fence so old runtimes return `ErrStoreTooNew` before decoding it. The
-release adoption gates run an exact v7.107.9 reader against a current writer and
+release adoption gates run exact v7.107.9, v7.109.0 and v7.110.0 readers against a current writer and
 assert that rejection preserves all canonical records. Host readiness is an
 in-process observation of the canonical owner, not another durable lifecycle.
+Schema 38 to 39 admits segmented tool text and streaming capture references
+without rewriting historical inline artifacts. [Tool output retention](../architecture/tool-output-retention.md)
+defines its budgets, integrity, Fork and deletion ownership.
 Monolithic v2–v5 sources use the production worker in
 [backend_snapshot_prepare.go](../../internal/sessiontree/backend_snapshot_prepare.go).
 Parser checkpoints and the metadata-only identity directory resume after restart.

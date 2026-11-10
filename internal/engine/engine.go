@@ -1770,6 +1770,11 @@ func projectToolResultOutput(result tools.Result, policy tools.OutputPolicy) (to
 	}
 	const warning = "External effect unconfirmed. Inspect current state before deciding whether another action is necessary; do not blindly repeat this operation.\n"
 	result.Text = warning + result.Text
+	if result.FullOutput != nil {
+		plan := *result.FullOutput
+		plan.Text = warning + plan.Text
+		result.FullOutput = &plan
+	}
 	// The engine-owned warning must neither consume the tool's payload budget
 	// nor disappear under a tail policy. Metadata and artifacts describe the
 	// complete warned result; only the payload is subject to output limits.
@@ -4645,6 +4650,7 @@ func applyCommittedEffectMessage(local session.Message, finalized EffectResultFi
 		return session.Message{}, errors.New("committed effect result does not match projected tool result")
 	}
 	if finalized.Replayed {
+		projection.OutputUnavailable = committed.ToolResult.OutputUnavailable
 		projection.VisibleText = committed.Content
 		projection.Truncated = committed.ToolResult.Truncated
 		projection.OriginalBytes = committed.ToolResult.OriginalBytes
@@ -4682,6 +4688,11 @@ func applyCommittedEffectMessage(local session.Message, finalized EffectResultFi
 		return session.CloneMessage(committed), nil
 	}
 	if ref == nil {
+		if committed.ToolResult.OutputUnavailable != "" {
+			projection.OutputUnavailable = committed.ToolResult.OutputUnavailable
+			projection.FullOutputPlan = nil
+			return session.CloneMessage(committed), nil
+		}
 		return session.Message{}, errors.New("committed effect result is missing full output")
 	}
 	if err := artifact.ValidateRef(*ref); err != nil {
@@ -4709,6 +4720,9 @@ func toolProjectionMetadata(base map[string]any, projection tools.OutputProjecti
 	metadata["visible_lines"] = projection.VisibleLines
 	metadata["strategy"] = string(projection.Strategy)
 	metadata["content_sha256"] = projection.ContentSHA256
+	if projection.OutputUnavailable != "" {
+		metadata["output_unavailable"] = projection.OutputUnavailable
+	}
 	if projection.FullOutput != nil {
 		metadata["artifact_id"] = projection.FullOutput.ID
 		metadata["artifact_label"] = projection.FullOutput.SafeLabel

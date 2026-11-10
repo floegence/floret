@@ -45,9 +45,12 @@ type Content struct {
 // Record is one immutable thread-scoped artifact row. CanonicalEntryID binds
 // the payload to the exact tool-result entry admitted in the same transaction.
 type Record struct {
-	ThreadID         string
-	Ref              Ref
-	Text             string
+	ThreadID string
+	Ref      Ref
+	Text     string
+	// OutputSourceID addresses Floret-owned segmented text. Stored records
+	// contain either inline Text or this source, never two authoritative bodies.
+	OutputSourceID   string `json:",omitempty"`
 	CanonicalEntryID string
 	CreatedAt        time.Time
 }

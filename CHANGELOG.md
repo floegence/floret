@@ -28,6 +28,15 @@
   graceful stop, exact input conflicts, durable replay lookup and immutable version
   reads. Preserve Goal, Todo, queue and usage; fence prompt lineage and historical
   writers through domain 37 → 38 and logical 12 → 13.
+- Add opt-in head/tail tool previews, explicit pre-preview source plans and
+  authorized bounded output reading/search. Preserve valid model result envelopes
+  and expose canonical retention references for host UI disclosure.
+- Persist host-work output incrementally before live-cache eviction, retaining
+  checksummed prefixes through quota exhaustion and restart. Pin Fork watermarks
+  and release shared bytes only after the last canonical owner is deleted.
+  Retention failure never changes a confirmed execution outcome or replays a tool.
+- Append schema 38 to 39 and logical storage 13 to 14 without rewriting released
+  histories. Qualify public consumers, old-reader fences and 50 MiB UTF-8 streams.
 
 - Add optional exact TurnID/RunID cancellation preconditions and stable replay
   semantics so delayed Stop cannot cancel replacement executions. Preserve the

@@ -2984,6 +2984,9 @@ func ValidateEntryIntegrity(entry Entry) error {
 			return err
 		}
 	}
+	if err := validateToolOutputReference(entry); err != nil {
+		return err
+	}
 	if err := validateHostWorkEntry(entry); err != nil {
 		return err
 	}

@@ -29,11 +29,15 @@ type LookupToolResultInput struct {
 // ThreadToolResult contains the original canonical arguments and visible output,
 // without rebuilding provider history or resolving any host resource.
 type ThreadToolResult struct {
-	EffectOutcome tools.EffectOutcome `json:"effect_outcome,omitempty"`
-	ToolName      string              `json:"tool_name"`
-	Arguments     string              `json:"arguments"`
-	Content       string              `json:"content"`
-	Status        string              `json:"status"`
+	OutputRef         string              `json:"output_ref,omitempty"`
+	OutputUnavailable string              `json:"output_unavailable,omitempty"`
+	PreviewOmitted    bool                `json:"preview_omitted,omitempty"`
+	OriginalBytes     int                 `json:"original_bytes,omitempty"`
+	EffectOutcome     tools.EffectOutcome `json:"effect_outcome,omitempty"`
+	ToolName          string              `json:"tool_name"`
+	Arguments         string              `json:"arguments"`
+	Content           string              `json:"content"`
+	Status            string              `json:"status"`
 }
 
 var _ ThreadToolResultReader = (*threadRuntimeService)(nil)
@@ -54,7 +58,7 @@ func (service *threadRuntimeService) LookupToolResult(ctx context.Context, in Lo
 		if !found {
 			return ThreadToolResult{}, false, nil
 		}
-		return ThreadToolResult{ToolName: call.Message.ToolName, Arguments: call.Message.ToolArgs,
+		return ThreadToolResult{OutputRef: result.Message.ToolResult.OutputRef, OutputUnavailable: result.Message.ToolResult.OutputUnavailable, PreviewOmitted: result.Message.ToolResult.Truncated, OriginalBytes: result.Message.ToolResult.OriginalBytes, ToolName: call.Message.ToolName, Arguments: call.Message.ToolArgs,
 			EffectOutcome: result.Message.ToolResult.EffectOutcome, Content: result.Message.Content,
 			Status: result.Message.ToolResult.Status}, true, nil
 	}
@@ -77,6 +81,7 @@ func (service *threadRuntimeService) LookupToolResult(ctx context.Context, in Lo
 				return ThreadToolResult{}, false, ErrAuthorityCorrupt
 			}
 			return ThreadToolResult{
+				OutputRef: entry.Message.ToolResult.OutputRef, OutputUnavailable: entry.Message.ToolResult.OutputUnavailable, PreviewOmitted: entry.Message.ToolResult.Truncated, OriginalBytes: entry.Message.ToolResult.OriginalBytes,
 				ToolName: call.ToolName, Arguments: call.ToolArgs, EffectOutcome: entry.Message.ToolResult.EffectOutcome,
 				Content: entry.Message.Content, Status: entry.Message.ToolResult.Status,
 			}, true, nil

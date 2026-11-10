@@ -98,6 +98,8 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 				envelope = "sessiontree-v37-manifest"
 			case backendDomainV38Version:
 				envelope = "sessiontree-v38-manifest"
+			case backendDomainV39Version:
+				envelope = "sessiontree-v39-manifest"
 			}
 		}
 	}
@@ -136,11 +138,17 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 				manifestVersion = backendDomainV37Version
 			}
 		}
+		if err != nil {
+			payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v38-manifest")
+			if err == nil {
+				manifestVersion = backendDomainV38Version
+			}
+		}
 	}
 	if err != nil && format.version == backendDomainV32Version {
-		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v38-manifest")
+		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v39-manifest")
 		if err == nil {
-			manifestVersion = backendDomainV38Version
+			manifestVersion = backendDomainV39Version
 		}
 	}
 	if err != nil {
@@ -386,6 +394,9 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			if _, duplicate := memory.artifacts[record.ID]; duplicate {
 				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s artifact", format.label))
 			}
+			if err := hydrateArtifactOutput(ctx, tx, &value); err != nil {
+				return err
+			}
 			memory.artifacts[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		default:
@@ -432,7 +443,7 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 		}
 	}
 	validate := format.validate
-	if manifest.Version == backendDomainV35Version || manifest.Version == backendDomainV36Version || manifest.Version == backendDomainV37Version || manifest.Version == backendDomainV38Version {
+	if manifest.Version == backendDomainV35Version || manifest.Version == backendDomainV36Version || manifest.Version == backendDomainV37Version || manifest.Version == backendDomainV38Version || manifest.Version == backendDomainV39Version {
 		validate = validateBackendDomainV35Memory
 	}
 	if err := validate(memory); err != nil {
@@ -627,6 +638,18 @@ func putBackendDomainRecordContext(ctx context.Context, tx spi.WriteTx, format b
 			return fmt.Errorf("%w: entry record %q has unexpected value type %T", ErrAuthorityCorrupt, id, value)
 		}
 		return putCanonicalStoredEntry(ctx, tx, format, key, id, threadID, ordinal, entry)
+	}
+	if record, ok := value.(artifact.Record); ok && record.OutputSourceID != "" {
+		source, err := readOutputSource(tx, record.OutputSourceID)
+		if err != nil {
+			return err
+		}
+		if !source.Sealed || source.Bytes != record.Ref.SizeBytes || source.SHA256 != record.Ref.SHA256 || record.Text != "" && artifact.TextSHA256(record.Text) != source.SHA256 {
+			return ErrAuthorityCorrupt
+		}
+		// Hydration is a read projection, never a second durable body.
+		record.Text = ""
+		value = record
 	}
 	encoded, err := encodeBackendDomainRecord(format, kind, id, threadID, ordinal, value)
 	if err != nil {

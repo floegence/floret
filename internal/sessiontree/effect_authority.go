@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
@@ -541,6 +543,7 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 			return FinishEffectDispatchResult{}, ErrAuthorityCorrupt
 		}
 		entry.Message.ToolResult.FullOutput, committedRef = &ref, &ref
+		entry.Message.ToolResult.OutputRef = tools.OutputReference{ThreadID: identity.ThreadID(meta.ID), Kind: "artifact", ID: ref.ID}.String()
 		full := artifact.NormalizeFullOutput(*req.FullOutput)
 		r.setArtifactLocked(artifactRecordKey(meta.ID, ref.ID), artifact.Record{ThreadID: meta.ID, Ref: ref, Text: full.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt})
 	}
@@ -603,6 +606,8 @@ func effectRequestMessage(message session.Message) session.Message {
 	message = session.CloneMessage(message)
 	if message.ToolResult != nil {
 		message.ToolResult.FullOutput = nil
+		message.ToolResult.OutputRef = ""
+		message.ToolResult.OutputUnavailable = ""
 	}
 	return message
 }

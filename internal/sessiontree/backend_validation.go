@@ -224,7 +224,7 @@ func validateCanonicalHistoricalEntry(ctx context.Context, tx spi.ReadTx, meta T
 		}
 	}
 	if result := entry.Message.ToolResult; result != nil && result.FullOutput != nil {
-		reader := canonicalArtifactReader(tx)
+		reader := canonicalArtifactReader(ctx, tx)
 		record, found, err := reader.record(meta.ID, result.FullOutput.ID)
 		if err != nil || !found || record.ThreadID != meta.ID || record.Ref.ID != result.FullOutput.ID {
 			return errors.Join(ErrAuthorityCorrupt, err)

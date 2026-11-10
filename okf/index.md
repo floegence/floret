@@ -15,6 +15,7 @@ core contracts or explaining the project to another system.
 # Architecture
 
 * [Architecture](architecture/) - Runtime layers, boundaries, execution identities, tools, and observation.
+* [Tool output retention](architecture/tool-output-retention.md) - Head/tail previews, durable captures, bounded read/search and retention integrity.
 
 # Public API
 

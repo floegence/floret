@@ -720,6 +720,11 @@ field AgentRequest.CanonicalTurnInput github.com/floegence/floret/v7/runtime.Use
 field AgentRequest.RetrySource github.com/floegence/floret/v7/identity.TurnID
 field AgentRequest.InteractionID string
 field AgentRequest.EffectAttemptID string
+type AppendHostWorkOutputInput struct
+field AppendHostWorkOutputInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field AppendHostWorkOutputInput.WorkID string
+field AppendHostWorkOutputInput.Offset int64
+field AppendHostWorkOutputInput.Text string
 type ApprovalPresentation struct
 field ApprovalPresentation.Label string tag="json:\"label\""
 field ApprovalPresentation.Description string tag="json:\"description,omitempty\""
@@ -743,6 +748,7 @@ type AuthorityBusyKind string
 const AuthorityBusyTurn github.com/floegence/floret/v7/runtime.AuthorityBusyKind = "turn"
 type AuthorizedEffect func(context.Context, github.com/floegence/floret/v7/runtime.EffectAuthorizationProof) (github.com/floegence/floret/v7/runtime.EffectDispatchResult, error)
 type BindHostWorkInput struct
+field BindHostWorkInput.StreamOutput bool
 field BindHostWorkInput.EffectAttemptID string
 field BindHostWorkInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field BindHostWorkInput.TurnID github.com/floegence/floret/v7/identity.TurnID
@@ -781,6 +787,7 @@ field CompactContextInput.ThreadID github.com/floegence/floret/v7/identity.Threa
 field CompactContextInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 field CompactContextInput.ContinueGoal bool tag="json:\"continue_goal,omitempty\""
 type CompleteHostWorkInput struct
+field CompleteHostWorkInput.OutputReason string
 field CompleteHostWorkInput.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation
 field CompleteHostWorkInput.Result encoding/json.RawMessage
 field CompleteHostWorkInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
@@ -1000,6 +1007,7 @@ method *Host.PrepareDisplayThread func(ctx context.Context, threadID github.com/
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type HostWork struct
+field HostWork.StreamingOutput bool tag="json:\"streaming_output,omitempty\""
 field HostWork.Result encoding/json.RawMessage tag="json:\"result,omitempty\""
 field HostWork.Inherited bool tag="json:\"inherited,omitempty\""
 field HostWork.WorkID string tag="json:\"work_id\""
@@ -1009,6 +1017,21 @@ field HostWork.ToolCallID string tag="json:\"tool_call_id\""
 field HostWork.State string tag="json:\"state\""
 field HostWork.Notice string tag="json:\"notice,omitempty\""
 field HostWork.OutputAvailable bool tag="json:\"output_available\""
+type HostWorkOutputChunk struct
+field HostWorkOutputChunk.Seq int64 tag="json:\"seq\""
+field HostWorkOutputChunk.Offset int64 tag="json:\"offset\""
+field HostWorkOutputChunk.Text string tag="json:\"text\""
+type HostWorkOutputChunkPage struct
+field HostWorkOutputChunkPage.<embedded> github.com/floegence/floret/v7/runtime.ToolOutputRetention
+field HostWorkOutputChunkPage.Chunks []github.com/floegence/floret/v7/runtime.HostWorkOutputChunk tag="json:\"chunks\""
+field HostWorkOutputChunkPage.LastSeq int64 tag="json:\"last_seq\""
+field HostWorkOutputChunkPage.LatestSeq int64 tag="json:\"latest_seq\""
+field HostWorkOutputChunkPage.HasMore bool tag="json:\"has_more\""
+type HostWorkOutputChunksInput struct
+field HostWorkOutputChunksInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field HostWorkOutputChunksInput.WorkID string
+field HostWorkOutputChunksInput.AfterSeq int64
+field HostWorkOutputChunksInput.MaxBytes int
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
 type ImportPendingInputsInput struct
 field ImportPendingInputsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -1849,6 +1872,7 @@ field ThreadModelContext.UsedByRequestID string tag="json:\"used_by_request_id,o
 field ThreadModelContext.UsedByTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"used_by_turn_id,omitempty\""
 field ThreadModelContext.UsedByRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"used_by_run_id,omitempty\""
 field ThreadModelContext.UsedAt *time.Time tag="json:\"used_at,omitempty\""
+type ThreadOutputService interface interface{AppendHostWorkOutput(context.Context, github.com/floegence/floret/v7/runtime.AppendHostWorkOutputInput) (github.com/floegence/floret/v7/runtime.ToolOutputRetention, error); ReadHostWorkOutputChunks(context.Context, github.com/floegence/floret/v7/runtime.HostWorkOutputChunksInput) (github.com/floegence/floret/v7/runtime.HostWorkOutputChunkPage, error); ReadToolOutput(context.Context, github.com/floegence/floret/v7/runtime.ToolOutputReadInput) (github.com/floegence/floret/v7/runtime.ToolOutputPage, error); SearchToolOutput(context.Context, github.com/floegence/floret/v7/runtime.ToolOutputSearchInput) (github.com/floegence/floret/v7/runtime.ToolOutputSearchResult, error)}
 type ThreadParentEventService interface interface{ListParentEvents(context.Context, github.com/floegence/floret/v7/runtime.ListParentEventsInput) (github.com/floegence/floret/v7/runtime.ParentEventPage, error); ReadParentEvents(context.Context, github.com/floegence/floret/v7/runtime.ReadParentEventsInput) (github.com/floegence/floret/v7/runtime.ParentEventPage, error); ReportToParent(context.Context, github.com/floegence/floret/v7/runtime.ReportToParentInput) (github.com/floegence/floret/v7/runtime.ParentEventReceipt, error)}
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle"
@@ -1958,6 +1982,10 @@ field ThreadToolCallPreview.Name string tag="json:\"name\""
 field ThreadToolCallPreview.ArgumentsComplete bool tag="json:\"arguments_complete\""
 field ThreadToolCallPreview.Preview *github.com/floegence/floret/v7/tools.ArgumentPreview tag="json:\"preview\""
 type ThreadToolResult struct
+field ThreadToolResult.OutputRef string tag="json:\"output_ref,omitempty\""
+field ThreadToolResult.OutputUnavailable string tag="json:\"output_unavailable,omitempty\""
+field ThreadToolResult.PreviewOmitted bool tag="json:\"preview_omitted,omitempty\""
+field ThreadToolResult.OriginalBytes int tag="json:\"original_bytes,omitempty\""
 field ThreadToolResult.EffectOutcome github.com/floegence/floret/v7/tools.EffectOutcome tag="json:\"effect_outcome,omitempty\""
 field ThreadToolResult.ToolName string tag="json:\"tool_name\""
 field ThreadToolResult.Arguments string tag="json:\"arguments\""
@@ -2105,6 +2133,39 @@ type ThreadWindowSource interface interface{SubscribeWindowUpdates(context.Conte
 type ToolCallStream struct
 field ToolCallStream.ID string tag="json:\"id,omitempty\""
 field ToolCallStream.Name string tag="json:\"name,omitempty\""
+type ToolOutputMatch struct
+field ToolOutputMatch.Offset int64 tag="json:\"offset\""
+field ToolOutputMatch.EndOffset int64 tag="json:\"end_offset\""
+type ToolOutputPage struct
+field ToolOutputPage.<embedded> github.com/floegence/floret/v7/runtime.ToolOutputRetention
+field ToolOutputPage.Ref string tag="json:\"ref\""
+field ToolOutputPage.Text string tag="json:\"text\""
+field ToolOutputPage.Offset int64 tag="json:\"offset\""
+field ToolOutputPage.NextOffset int64 tag="json:\"next_offset\""
+field ToolOutputPage.HasMore bool tag="json:\"has_more\""
+type ToolOutputReadInput struct
+field ToolOutputReadInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field ToolOutputReadInput.Ref string
+field ToolOutputReadInput.Offset int64
+field ToolOutputReadInput.MaxBytes int
+type ToolOutputRetention struct
+field ToolOutputRetention.RetainedBytes int64 tag="json:\"retained_bytes\""
+field ToolOutputRetention.ObservedBytes int64 tag="json:\"observed_bytes\""
+field ToolOutputRetention.SHA256 string tag="json:\"sha256\""
+field ToolOutputRetention.Sealed bool tag="json:\"sealed\""
+field ToolOutputRetention.Complete bool tag="json:\"complete\""
+field ToolOutputRetention.Reason string tag="json:\"reason,omitempty\""
+type ToolOutputSearchInput struct
+field ToolOutputSearchInput.<embedded> github.com/floegence/floret/v7/runtime.ToolOutputReadInput
+field ToolOutputSearchInput.Literal string
+field ToolOutputSearchInput.MaxMatches int
+type ToolOutputSearchResult struct
+field ToolOutputSearchResult.<embedded> github.com/floegence/floret/v7/runtime.ToolOutputRetention
+field ToolOutputSearchResult.Ref string tag="json:\"ref\""
+field ToolOutputSearchResult.Matches []github.com/floegence/floret/v7/runtime.ToolOutputMatch tag="json:\"matches\""
+field ToolOutputSearchResult.NextOffset int64 tag="json:\"next_offset\""
+field ToolOutputSearchResult.HasMore bool tag="json:\"has_more\""
+field ToolOutputSearchResult.ScannedBytes int64 tag="json:\"scanned_bytes\""
 type ToolSurface struct
 field ToolSurface.ModelContextSnapshot *github.com/floegence/floret/v7/runtime.ModelContextSnapshot
 field ToolSurface.RefreshProviderSurface bool
@@ -2650,6 +2711,7 @@ func NormalizeOutputPolicy func(policy github.com/floegence/floret/v7/tools.Outp
 func Nullable func(schema map[string]any) map[string]any
 func Number func(description string) map[string]any
 const OutputHead github.com/floegence/floret/v7/tools.OutputStrategy = "head"
+const OutputHeadTail github.com/floegence/floret/v7/tools.OutputStrategy = "head_tail"
 type OutputPolicy struct
 field OutputPolicy.ArchiveAboveBytes int
 field OutputPolicy.VisibleMaxBytes int
@@ -2661,6 +2723,7 @@ field OutputPolicy.ArtifactKind string
 field OutputPolicy.ArtifactMIME string
 field OutputPolicy.TruncationNotice string
 type OutputProjection struct
+field OutputProjection.OutputUnavailable string
 field OutputProjection.VisibleText string
 field OutputProjection.Truncated bool
 field OutputProjection.OriginalBytes int
@@ -2671,8 +2734,15 @@ field OutputProjection.Strategy github.com/floegence/floret/v7/tools.OutputStrat
 field OutputProjection.ContentSHA256 string
 field OutputProjection.FullOutput *github.com/floegence/floret/v7/tools.ArtifactRef
 field OutputProjection.FullOutputPlan *github.com/floegence/floret/v7/tools.FullOutputPlan
+type OutputReference struct
+field OutputReference.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field OutputReference.Kind string tag="json:\"kind\""
+field OutputReference.ID string tag="json:\"id\""
+method OutputReference.Validate func() error
+method OutputReference.String func() string
 type OutputStrategy string
 const OutputTail github.com/floegence/floret/v7/tools.OutputStrategy = "tail"
+func ParseOutputReference func(ref string) (github.com/floegence/floret/v7/tools.OutputReference, error)
 type PatchActivityPayload struct
 field PatchActivityPayload.Path string tag="json:\"path,omitempty\""
 field PatchActivityPayload.Diff string tag="json:\"diff,omitempty\""
@@ -2778,6 +2848,7 @@ field Result.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation
 field Result.Artifacts []github.com/floegence/floret/v7/tools.ArtifactRef
 field Result.Attachments []github.com/floegence/floret/v7/tools.ArtifactRef
 field Result.InputRequired *github.com/floegence/floret/v7/tools.InputRequest
+field Result.FullOutput *github.com/floegence/floret/v7/tools.FullOutputPlan
 field Result.OutputPolicy *github.com/floegence/floret/v7/tools.OutputPolicy
 field Result.Pending *github.com/floegence/floret/v7/tools.PendingToolResult
 field Result.IsError bool

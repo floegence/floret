@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/floegence/floret/v7/internal/session/artifact"
 	"slices"
 	"strings"
 
@@ -154,8 +155,34 @@ func deleteCanonicalThreadRecords(ctx context.Context, tx spi.WriteTx, meta Thre
 		if err != nil {
 			return err
 		}
+		if entry.Type == EntryHostWork {
+			work, err := decodeHostWork(entry)
+			if err != nil {
+				return err
+			}
+			if work.State == "bound" && work.OutputStream != "" {
+				if err := releaseOutputSource(ctx, tx, work.OutputStream); err != nil {
+					return err
+				}
+			}
+		}
 		if result := entry.Message.ToolResult; result != nil && result.FullOutput != nil {
 			key := backendDomainKey(backendDomainRecordArtifact, artifactRecordKey(meta.ID, result.FullOutput.ID))
+			raw, found, err := readBackendDomainRecord(tx, backendDomainV32Format, key, backendDomainRecordArtifact, artifactRecordKey(meta.ID, result.FullOutput.ID), "", 0)
+			if err != nil {
+				return err
+			}
+			if found {
+				var record artifact.Record
+				if err := decodeBackendDomainValue(backendDomainV32Format, raw, &record); err != nil {
+					return err
+				}
+				if record.OutputSourceID != "" {
+					if err := releaseOutputSource(ctx, tx, record.OutputSourceID); err != nil {
+						return err
+					}
+				}
+			}
 			if err := deleteCanonicalOptionalRecord(tx, backendDomainV32Namespace, key); err != nil {
 				return err
 			}

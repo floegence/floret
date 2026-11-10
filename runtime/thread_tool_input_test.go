@@ -166,7 +166,17 @@ func testCompletedToolInputRestart(t *testing.T, failed bool) {
 		}
 		if msg.ToolResult != nil && msg.ToolResult.CallID == "inspect-1" {
 			resultCount++
-			if strings.HasPrefix(msg.ToolResult.Text, "ERROR: ") != failed {
+			var envelope struct {
+				Status string `json:"status"`
+				Result string `json:"result"`
+				Output struct {
+					Ref string `json:"ref"`
+				} `json:"retained_output"`
+			}
+			if err := json.Unmarshal([]byte(msg.ToolResult.Text), &envelope); err != nil || envelope.Output.Ref == "" {
+				t.Fatal("retained output envelope lost", err)
+			}
+			if (envelope.Status == "error") != failed || strings.HasPrefix(envelope.Result, "ERROR: ") != failed {
 				t.Fatal("completed error status changed")
 			}
 		}

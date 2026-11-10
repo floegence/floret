@@ -9,7 +9,8 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func canonicalArtifactReader(tx spi.ReadTx) artifactAuthorityReader {
+func canonicalArtifactReader(ctx context.Context, tx spi.ReadTx) artifactAuthorityReader {
+	verified := map[string]bool{}
 	read := func(kind, id string, value any) (bool, error) {
 		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(kind, id), kind, id, "", 0)
 		if err != nil || !found {
@@ -21,6 +22,23 @@ func canonicalArtifactReader(tx spi.ReadTx) artifactAuthorityReader {
 		return true, nil
 	}
 	return artifactAuthorityReader{
+		verifyOutput: func(record artifact.Record) error {
+			source, err := readOutputSource(tx, record.OutputSourceID)
+			if err != nil {
+				return err
+			}
+			if !source.Sealed || source.Bytes != record.Ref.SizeBytes || source.SHA256 != record.Ref.SHA256 {
+				return ErrAuthorityCorrupt
+			}
+			if verified[source.ID] {
+				return nil
+			}
+			if err := verifyOutputSource(ctx, tx, source); err != nil {
+				return err
+			}
+			verified[source.ID] = true
+			return nil
+		},
 		thread: func(id string) (ThreadMeta, bool, error) {
 			var value ThreadMeta
 			found, err := read(backendDomainRecordThread, id, &value)
@@ -53,7 +71,7 @@ func (repo *BackendRepo) ReadArtifact(ctx context.Context, req ArtifactReadReque
 	}
 	var result ArtifactContent
 	err := repo.canonicalArtifactView(ctx, threadID, strings.TrimSpace(req.ParentThreadID), func(tx spi.ReadTx) error {
-		reader := canonicalArtifactReader(tx)
+		reader := canonicalArtifactReader(ctx, tx)
 		if err := reader.validateArtifactReadAuthorityLocked(req.ParentThreadID, threadID); err != nil {
 			return err
 		}
@@ -68,6 +86,9 @@ func (repo *BackendRepo) ReadArtifact(ctx context.Context, req ArtifactReadReque
 			return ErrAuthorityCorrupt
 		}
 		if err := reader.validateArtifactRecordLocked(record); err != nil {
+			return err
+		}
+		if err := hydrateArtifactOutput(ctx, tx, &record); err != nil {
 			return err
 		}
 		result = ArtifactContent{Ref: record.Ref, Text: record.Text}
@@ -126,7 +147,7 @@ func (repo *BackendRepo) ArtifactClosure(ctx context.Context, req ArtifactClosur
 			entries = append(entries, entry)
 		}
 		var err error
-		result, err = canonicalArtifactReader(tx).artifactClosureLocked(sourceID, destinationID, entries)
+		result, err = canonicalArtifactReader(ctx, tx).artifactClosureLocked(sourceID, destinationID, entries)
 		return err
 	}, func(memory *MemoryRepo) error {
 		var err error
@@ -141,6 +162,6 @@ func (repo *BackendRepo) ValidateArtifactForkDestination(ctx context.Context, cl
 		return ErrAuthorityCorrupt
 	}
 	return repo.canonicalArtifactView(ctx, closure.DestinationThreadID, "", func(tx spi.ReadTx) error {
-		return canonicalArtifactReader(tx).validateArtifactForkDestinationLocked(closure)
+		return canonicalArtifactReader(ctx, tx).validateArtifactForkDestinationLocked(closure)
 	}, func(memory *MemoryRepo) error { return memory.ValidateArtifactForkDestination(ctx, closure) })
 }

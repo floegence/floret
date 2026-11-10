@@ -638,6 +638,21 @@ a positive byte threshold when PreserveFull is enabled, even without visible
 truncation. Zero retains archive-on-truncation behavior. Archival uses the existing
 atomic result/artifact settlement and never marks uncut Text as truncated.
 
+For large text, opt into `tools.OutputHeadTail` with an 8000-byte visible budget.
+The omitted-middle marker is included in that budget. `Result.FullOutput` can
+retain the host-sanitized source before a structured preview is constructed.
+New archived results expose a versioned `output:v1:` reference; hosts authorize
+its exact thread before using `runtime.ThreadOutputService` for contiguous reads
+or bounded literal search. A reference never grants access by itself.
+
+`BindHostWorkInput.StreamOutput` enables append-only durable output capture before
+live-cache eviction. Completion and restart preserve explicit completeness facts;
+an interrupted process retains its committed prefix without claiming success or
+replaying its effects. Sources retain up to 64 MiB within a 1 GiB backend budget,
+with no eviction or TTL for referenced text. Fork pins its readable watermark.
+See [tool output retention](okf/architecture/tool-output-retention.md) for budgets,
+failure behavior, compatibility and the 50 MiB qualification command.
+
 Ask User `runtime.InputPresentation` exposes optional `ReasonCode`,
 `RequiredFromUser`, and `EvidenceRefs` from the validated control signal in current,
 summary, and historical views. Evidence associates facts; it grants no access or
@@ -1377,8 +1392,8 @@ reconstruction uses fixed metadata windows; it does not retain transcript bodies
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
 prompt history and the permanent session-tree lineage. Logical storage version
-13 fences domain schema 38 from older runtimes while preserving the exact
-logical 11 migration path and bounded resumable preparation. Incompatible domain
+14 fences domain schema 39 from older runtimes while preserving the exact
+logical 11, 12 and 13 migration paths and bounded resumable preparation. Incompatible domain
 envelopes must advance the logical fence; released old readers return
 `ErrStoreTooNew` before interpreting newer domain authority. Source recognition and
 logical publication commit together; each complete thread then publishes in its

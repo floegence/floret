@@ -148,7 +148,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	if err != nil {
 		return err
 	}
-	reader := canonicalArtifactReader(tx)
+	reader := canonicalArtifactReader(ctx, tx)
 	actual, err := reader.artifactClosureLocked(source.ID, newID, path)
 	if err != nil {
 		return err
@@ -194,6 +194,9 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := pinForkOutputStreams(ctx, tx, entries); err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if entry.Type == EntryUserMessage && fallbackThreadTitle(entry.Message) != "" {
 			meta, _, err = installFallbackThreadTitle(meta, entry.Message, now)
@@ -219,11 +222,16 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 			return err
 		}
 	}
-	for key, record := range artifacts {
+	for _, record := range artifacts {
 		if err := reader.validateArtifactRecordLocked(record); err != nil {
 			return err
 		}
-		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0, record); err != nil {
+		if record.OutputSourceID != "" {
+			if err := retainOutputSource(tx, record.OutputSourceID); err != nil {
+				return err
+			}
+		}
+		if err := storeCanonicalArtifact(ctx, tx, record); err != nil {
 			return err
 		}
 	}

@@ -258,7 +258,7 @@ func (b logicalFenceCancelBackend) Update(ctx context.Context, mutate func(spi.W
 }
 
 func TestLogicalFenceRejectsFutureVersionsWithoutReclassifyingReservedMigration(t *testing.T) {
-	for _, version := range []string{"14", "16", "999"} {
+	for _, version := range []string{"15", "16", "999"} {
 		t.Run(version, func(t *testing.T) {
 			backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 			if err != nil {
@@ -317,5 +317,54 @@ func TestLogicalV12MigrationPreservesRecords(t *testing.T) {
 	}
 	if logicalFenceDigest(t, file, false) != before {
 		t.Fatal("v12 upgrade changed canonical records")
+	}
+}
+
+func TestLogicalV13RequiresExactReleasedFingerprint(t *testing.T) {
+	const released = "sha256:7a09e39546c644327528d0058a4c4197fe3255252b5f82c4acc347b1e07108d1"
+	for _, fingerprint := range []string{released, "drift", "sha256:71250f7c85f923bb962da4549e2f4f19654b0bdb4b39ea480c8bbba3b8fa2518"} {
+		t.Run(fingerprint, func(t *testing.T) {
+			file := logicalFenceFixture(t, true)
+			db, err := sql.Open("sqlite", file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, _ := json.Marshal(logicalSchemaEnvelope{Version: "13", Fingerprint: fingerprint})
+			_, err = db.Exec("UPDATE floret_backend_records SET value=? WHERE namespace=? AND key=?", old, logicalSchemaNamespace, []byte(logicalSchemaKey))
+			if closeErr := db.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeAll, beforeDomain := logicalFenceDigest(t, file, true), logicalFenceDigest(t, file, false)
+			for range 2 {
+				host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(file), DeferExecution: true})
+				if fingerprint != released {
+					if host != nil || !errors.Is(err, ErrUnsupportedSchema) || errors.Is(err, ErrStoreTooNew) {
+						t.Fatalf("invalid v13 fingerprint admitted or misclassified: %v", err)
+					}
+					if logicalFenceDigest(t, file, true) != beforeAll {
+						t.Fatal("rejected source mutated")
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := host.startup.wait(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if state, err := inspectLogicalSchema(t.Context(), host.backend); err != nil || state != logicalSchemaCurrent {
+					t.Fatalf("logical fence not published: %s %v", state, err)
+				}
+				if err := host.Shutdown(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if logicalFenceDigest(t, file, false) != beforeDomain {
+					t.Fatal("v13 upgrade/restart changed canonical records")
+				}
+			}
+		})
 	}
 }

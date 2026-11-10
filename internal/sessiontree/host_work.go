@@ -25,6 +25,10 @@ var ErrHostWorkOutputStorage = errors.New("host-work output storage failed")
 // HostWork records only facts that outlive the executing process. The journal
 // owns identity and settlement; the host owns execution and observes its effects.
 type HostWork struct {
+	// OutputStream names the append-only capture owned by this canonical binding.
+	// A Fork pins a watermark; it never acquires authority to append.
+	OutputStream      string                   `json:"output_stream,omitempty"`
+	OutputSnapshot    *OutputSnapshot          `json:"output_snapshot,omitempty"`
 	Result            json.RawMessage          `json:"result,omitempty"`
 	Inherited         bool                     `json:"inherited,omitempty"`
 	ID                string                   `json:"id"`
@@ -48,6 +52,7 @@ type HostWorkSettlement struct {
 	Notify            bool
 	Output            *artifact.FullOutput
 	OutputUnavailable bool
+	OutputReason      string
 }
 
 type HostWorkRepo interface {
@@ -94,6 +99,9 @@ func decodeHostWork(entry Entry) (HostWork, error) {
 		return w, ErrAuthorityCorrupt
 	}
 	if w.State != "bound" && w.State != "completed" && w.State != "unknown" {
+		return w, ErrAuthorityCorrupt
+	}
+	if w.OutputStream != "" && !validateStreamIdentity(w.OutputStream) || w.OutputSnapshot != nil && (!w.Inherited || w.OutputStream == "" || !validOutputSnapshot(*w.OutputSnapshot)) {
 		return w, ErrAuthorityCorrupt
 	}
 	if len(w.Result) > 16384 || len(w.Result) > 0 && !json.Valid(w.Result) || w.Output != nil && w.OutputUnavailable || w.State == "bound" && (len(w.Result) > 0 || w.Notice != "" || w.Notify || w.Output != nil || w.OutputUnavailable) || w.State == "unknown" && (w.Output != nil || !w.OutputUnavailable) {
@@ -168,7 +176,7 @@ func hostWorksFromPath(path []Entry) ([]HostWork, map[string]bool, error) {
 		}
 		if i, ok := positions[w.ID]; ok {
 			previous := out[i]
-			if previous.State != "bound" || w.State == "bound" || previous.Invocation != w.Invocation || previous.ExecutorID != w.ExecutorID || previous.Inherited != w.Inherited {
+			if previous.State != "bound" || w.State == "bound" || previous.Invocation != w.Invocation || previous.ExecutorID != w.ExecutorID || previous.Inherited != w.Inherited || previous.OutputStream != w.OutputStream || !reflect.DeepEqual(previous.OutputSnapshot, w.OutputSnapshot) {
 				return nil, nil, ErrAuthorityCorrupt
 			}
 			out[i] = w
@@ -229,6 +237,9 @@ func settleHostWorkEntry(req HostWorkSettlement, path []Entry) (Entry, HostWork,
 	if w.Inherited || req.ExecutorID != w.ExecutorID || req.ThreadID != w.Invocation.ThreadID {
 		return Entry{}, w, false, ErrInvalidThreadAuthority
 	}
+	if w.OutputStream != "" && req.Output != nil {
+		return Entry{}, w, false, errors.New("streaming work cannot add a second output snapshot")
+	}
 	if req.Activity != nil {
 		if err := req.Activity.Validate(); err != nil {
 			return Entry{}, w, false, err
@@ -240,6 +251,9 @@ func settleHostWorkEntry(req HostWorkSettlement, path []Entry) (Entry, HostWork,
 	next.Notice = req.Notice
 	next.Notify = req.Notify
 	next.OutputUnavailable = req.OutputUnavailable
+	if next.OutputStream != "" && next.State == "completed" {
+		next.OutputUnavailable = false
+	}
 	next.Output = nil
 	if req.Output != nil {
 		if len(req.Output.Text) > HostWorkOutputMaxBytes || !utf8.ValidString(req.Output.Text) || req.OutputUnavailable {
@@ -283,7 +297,11 @@ func settleHostWorkEntry(req HostWorkSettlement, path []Entry) (Entry, HostWork,
 func hostWorkNotice(w HostWork) string {
 	text := w.Notice
 	if w.OutputUnavailable {
-		text += " Retained output is unavailable."
+		if w.OutputStream != "" {
+			text += " Final output completeness is unknown; the committed prefix remains readable."
+		} else {
+			text += " Retained output is unavailable."
+		}
 	}
 	return text + "\n\n"
 }

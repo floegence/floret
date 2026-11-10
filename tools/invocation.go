@@ -98,10 +98,14 @@ type Result struct {
 	// InputRequired stops the next model request until the user responds through
 	// the thread runtime. It requires a successful, completed tool result.
 	InputRequired *InputRequest
-	OutputPolicy  *OutputPolicy
-	Pending       *PendingToolResult
-	IsError       bool
-	DispatchErr   error
+	// FullOutput retains the complete authorized source behind a host-authored
+	// bounded Text/Structured projection. It is admitted with the result, never
+	// an already durable reference. Nil retains ordinary OutputPolicy behavior.
+	FullOutput   *FullOutputPlan
+	OutputPolicy *OutputPolicy
+	Pending      *PendingToolResult
+	IsError      bool
+	DispatchErr  error
 
 	effectFinalizationRequired bool
 }

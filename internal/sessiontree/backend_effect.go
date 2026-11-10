@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // Dispatch requests carry an opaque attempt ID. This index locates its latest
@@ -279,7 +281,7 @@ func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEff
 			if err != nil {
 				return err
 			}
-			ref, err := validateCanonicalEffectArtifactReplay(mutation.tx, attempt, entry, req)
+			ref, err := validateCanonicalEffectArtifactReplay(ctx, mutation.tx, attempt, entry, req)
 			if err != nil {
 				return err
 			}
@@ -315,17 +317,17 @@ func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEff
 				return ErrAuthorityCorrupt
 			}
 			entry.Message.ToolResult.FullOutput, committedRef = &ref, &ref
+			entry.Message.ToolResult.OutputRef = tools.OutputReference{ThreadID: identity.ThreadID(mutation.meta.ID), Kind: "artifact", ID: ref.ID}.String()
 		}
 		entry, err := mutation.append(entry, AppendOptions{})
 		if err != nil {
 			return err
 		}
 		if committedRef != nil {
-			key := artifactRecordKey(mutation.meta.ID, committedRef.ID)
 			full := artifact.NormalizeFullOutput(*req.FullOutput)
 			record := artifact.Record{ThreadID: mutation.meta.ID, Ref: *committedRef, Text: full.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt}
-			if err := putBackendDomainRecordContext(ctx, mutation.tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0, record); err != nil {
-				return err
+			if err := storeCanonicalArtifact(ctx, mutation.tx, record); err != nil {
+				return classifyOutputRetentionError(err)
 			}
 		}
 		attempt.State, attempt.TerminalFingerprint, attempt.ResultEntryID, attempt.UpdatedAt = wantState, strings.TrimSpace(req.OutcomeFingerprint), entry.ID, entry.CreatedAt
@@ -340,12 +342,21 @@ func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEff
 		return err
 	})
 	if err != nil {
+		var retention *outputRetentionError
+		if req.FullOutput != nil && errors.As(err, &retention) {
+			// The failed transaction published no reference. Retry only the
+			// observed result admission, never the tool or its side effects.
+			req.Result = cloneEntry(req.Result)
+			req.Result.Message.ToolResult.OutputUnavailable = retention.reason
+			req.FullOutput = nil
+			return repo.FinishEffectDispatch(ctx, req)
+		}
 		return FinishEffectDispatchResult{}, err
 	}
 	return result, nil
 }
 
-func validateCanonicalEffectArtifactReplay(tx spi.ReadTx, attempt EffectAttempt, entry Entry, req FinishEffectDispatchRequest) (*artifact.Ref, error) {
+func validateCanonicalEffectArtifactReplay(ctx context.Context, tx spi.ReadTx, attempt EffectAttempt, entry Entry, req FinishEffectDispatchRequest) (*artifact.Ref, error) {
 	if !EffectResultRequestMatches(entry, req.Result, attempt.EffectAttemptID) {
 		return nil, ErrRequestConflict
 	}
@@ -357,6 +368,9 @@ func validateCanonicalEffectArtifactReplay(tx spi.ReadTx, attempt EffectAttempt,
 		return nil, nil
 	}
 	if committed == nil {
+		if entry.Message.ToolResult.OutputUnavailable != "" {
+			return nil, nil
+		}
 		return nil, ErrAuthorityCorrupt
 	}
 	expected, err := artifact.RefForEffect(attempt.EffectAttemptID, attempt.Invocation.ToolName, *req.FullOutput)
@@ -374,6 +388,9 @@ func validateCanonicalEffectArtifactReplay(tx spi.ReadTx, attempt EffectAttempt,
 	var record artifact.Record
 	if err := decodeBackendDomainValue(backendDomainV32Format, raw, &record); err != nil {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if err := hydrateArtifactOutput(ctx, tx, &record); err != nil {
+		return nil, err
 	}
 	if record.Text != artifact.NormalizeFullOutput(*req.FullOutput).Text || !reflect.DeepEqual(record.Ref, expected) || record.CanonicalEntryID != entry.ID {
 		return nil, ErrRequestConflict
