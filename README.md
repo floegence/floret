@@ -1611,8 +1611,8 @@ The November 10, 2026 review adds Claude Fable 5.2 and Gemini 4 Argon/Carbon,
 updates provider capacities and reasoning controls, and removes retired entries
 from the selectable inventory. GPT-6.1 Terra requires a host-owned Responses
 gateway for tools; it is not advertised by the built-in OpenAI Chat transport.
-Model selection, account access, and historical conversation identity remain
-host-owned and are never changed by a catalog refresh.
+Hosts own model selection and account access. Catalog refreshes never change
+historical conversation identity or canonical storage.
 
 ## Development
 
