@@ -2,6 +2,7 @@
 
 ## v7.114.0
 
+- Require Go 1.27.4 to include the standard-library fix for GO-2026-6859.
 - Refresh all nine embedded provider inventories from the November 10 models.dev
   snapshot. Add Claude Fable 5.2, Gemini 4 Argon/Carbon and the Gemini Pro alias;
   retain preview labels and omit retired Sonnet 4.5 and Qwen entries.
