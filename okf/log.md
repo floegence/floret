@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-10: Refresh reviewed provider inventories, document Gemini 4 foreground
+  limits and Responses/subscription boundaries, and qualify GLM thinking controls
+  through published public gateways.
+
 - 2026-11-10: Retain canonically admitted host-work completion after a retry
   checkpoint, including restart, without replaying confirmed effects.
 

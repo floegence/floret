@@ -14,6 +14,9 @@ func TestCurrentAgentCatalog(t *testing.T) {
 	}{
 		{ProviderOpenAI, "gpt-6-astra", true}, {ProviderOpenAI, "gpt-5.6-sol", true},
 		{ProviderAnthropic, "claude-fable-5-1", true}, {ProviderGoogle, "gemini-3.8-flash", true},
+		{ProviderAnthropic, "claude-fable-5-2", true},
+		{ProviderGoogle, "gemini-4-argon", true}, {ProviderGoogle, "gemini-4-carbon", true},
+		{ProviderGoogle, "gemini-pro-latest", true},
 		{ProviderMoonshot, "kimi-k3", true},
 		{ProviderMoonshot, "kimi-k3.1-pro", true}, {ProviderMoonshot, "kimi-k3.1-pro-highspeed", true},
 		{ProviderChatGLM, "glm-5.3-flash", true},
@@ -32,7 +35,7 @@ func TestCurrentAgentCatalog(t *testing.T) {
 		})
 	}
 	for pid, ids := range map[string][]string{
-		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1", "gpt-6.1-sol"},
+		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1", "gpt-6.1-sol", "gpt-6.1-terra"},
 		ProviderMoonshot: {"kimi-k2.6-thinking", "kimi-k2.5"},
 		ProviderGoogle:   {"gemini-3.1-flash-preview", "gemini-3.1-flash-live-preview"},
 		ProviderGroq:     {"qwen/qwen3-32b", "llama-3.3-70b-versatile"},
@@ -53,6 +56,12 @@ func TestCurrentReasoningBoundaries(t *testing.T) {
 	}{
 		{ProviderOpenAI, "gpt-6-astra", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
 		{ProviderGoogle, "gemini-3.8-flash", provider.ReasoningLevelLow, provider.ReasoningLevelMinimal},
+		{ProviderGoogle, "gemini-4-argon", provider.ReasoningLevelMedium, provider.ReasoningLevelOff},
+		{ProviderGoogle, "gemini-4-carbon", provider.ReasoningLevelHigh, provider.ReasoningLevelOff},
+		{ProviderAnthropic, "claude-fable-5-2", provider.ReasoningLevelXHigh, provider.ReasoningLevelOff},
+		{ProviderChatGLM, "glm-5.2", provider.ReasoningLevelOff, provider.ReasoningLevelLow},
+		{ProviderXAI, "grok-4.3", provider.ReasoningLevelHigh, provider.ReasoningLevelXHigh},
+		{ProviderXAI, "grok-4.5", provider.ReasoningLevelHigh, provider.ReasoningLevelXHigh},
 		{ProviderMoonshot, "kimi-k3", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
 		{ProviderMoonshot, "kimi-k3.1-pro", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
 		{ProviderMoonshot, "kimi-k3.1-pro-highspeed", provider.ReasoningLevelLow, provider.ReasoningLevelOff},

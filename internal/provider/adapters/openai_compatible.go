@@ -435,6 +435,10 @@ func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req p
 	case "glm_thinking_type":
 		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": thinkingType(selection)}})
 	case "glm_reasoning_effort":
+		if selection.Level == provider.ReasoningLevelOff {
+			chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+			return nil
+		}
 		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
 	case "openrouter_reasoning_metadata":
 		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"reasoning": map[string]any{"effort": openAICompatibleReasoningEffort(selection.Level)}})

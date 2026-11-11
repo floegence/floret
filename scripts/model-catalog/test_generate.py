@@ -35,7 +35,7 @@ class ScopedRefreshTest(unittest.TestCase):
         rules = json.loads((ROOT / 'overrides.json').read_text())
         data = json.loads((ROOT / 'upstream.json').read_text())
         result = generator.generate(data, rules)
-        self.assertEqual(result['provider_sources'], data['provider_sources'])
+        self.assertEqual(result.get('provider_sources'), data.get('provider_sources'))
         for pid, models in result['providers'].items():
             for model in models:
                 cap = model['reasoning']

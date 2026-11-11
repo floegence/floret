@@ -73,6 +73,7 @@ sed 's/package provider_test/package adoption_test/' "${repository_root}/provide
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/responses_output_test.go" > responses_output_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/anthropic_protocol_test.go" > anthropic_protocol_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/moonshot_test.go" > moonshot_test.go
+sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/current_models_test.go" > current_models_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/model_image_test.go" > model_image_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/media_capacity_test.go" > media_capacity_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/failure_details_test.go" > failure_details_test.go

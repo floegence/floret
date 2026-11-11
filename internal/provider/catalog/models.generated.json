@@ -1,13 +1,44 @@
 {
-  "checked_at": "2026-10-12",
-  "provider_sources": {
-    "moonshot": {
-      "sha256": "2df6a44e5be4608d0537cbcf214bfc7f83e2ab16543fbf6df052cec593563c08",
-      "source": "https://models.dev/api.json"
-    }
-  },
+  "checked_at": "2026-11-10",
   "providers": {
     "anthropic": [
+      {
+        "context_window": 1000000,
+        "cost": {
+          "cache_read_per_mtok": 0.2,
+          "cache_write_per_mtok": 10,
+          "input_per_mtok": 8,
+          "output_per_mtok": 40
+        },
+        "id": "claude-fable-5-2",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 128000,
+        "name": "Claude Fable 5.2",
+        "reasoning": {
+          "default_level": "high",
+          "fixture": "anthropic_output_config_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-10",
+          "source_urls": [
+            "https://platform.claude.com/docs/en/models/overview",
+            "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
+            "https://platform.claude.com/docs/en/build-with-claude/effort"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "wire_shape": "anthropic_output_config_effort"
+        },
+        "release_date": "2026-11-09",
+        "status": ""
+      },
       {
         "context_window": 1000000,
         "cost": {
@@ -28,7 +59,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -65,7 +96,7 @@
           "default_level": "high",
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -102,7 +133,7 @@
           "default_level": "medium",
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -138,7 +169,7 @@
         "reasoning": {
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -174,7 +205,7 @@
         "reasoning": {
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -211,7 +242,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -247,7 +278,7 @@
         "reasoning": {
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -283,7 +314,7 @@
         "reasoning": {
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -319,7 +350,7 @@
         "reasoning": {
           "fixture": "anthropic_output_config_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -360,7 +391,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -400,7 +431,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -440,7 +471,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -479,7 +510,7 @@
           "disable_supported": true,
           "fixture": "anthropic_output_config_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -518,7 +549,7 @@
           "disable_supported": true,
           "fixture": "anthropic_thinking_budget_tokens",
           "kind": "budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -552,7 +583,7 @@
           "disable_supported": true,
           "fixture": "anthropic_thinking_budget_tokens",
           "kind": "budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.claude.com/docs/en/models/overview",
             "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
@@ -561,74 +592,6 @@
           "wire_shape": "anthropic_thinking_budget_tokens"
         },
         "release_date": "2025-10-15",
-        "status": ""
-      },
-      {
-        "context_window": 200000,
-        "cost": {
-          "cache_read_per_mtok": 0.3,
-          "cache_write_per_mtok": 3.75,
-          "input_per_mtok": 3,
-          "output_per_mtok": 15
-        },
-        "id": "claude-sonnet-4-5-20250929",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 64000,
-        "name": "Claude Sonnet 4.5",
-        "reasoning": {
-          "budget": {
-            "min_tokens": 1024
-          },
-          "budget_shape": "anthropic_thinking_budget_tokens",
-          "disable_supported": true,
-          "fixture": "anthropic_thinking_budget_tokens",
-          "kind": "budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://platform.claude.com/docs/en/models/overview",
-            "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
-            "https://platform.claude.com/docs/en/build-with-claude/effort"
-          ],
-          "wire_shape": "anthropic_thinking_budget_tokens"
-        },
-        "release_date": "2025-09-29",
-        "status": ""
-      },
-      {
-        "context_window": 200000,
-        "cost": {
-          "cache_read_per_mtok": 0.3,
-          "cache_write_per_mtok": 3.75,
-          "input_per_mtok": 3,
-          "output_per_mtok": 15
-        },
-        "id": "claude-sonnet-4-5",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 64000,
-        "name": "Claude Sonnet 4.5 (latest)",
-        "reasoning": {
-          "budget": {
-            "min_tokens": 1024
-          },
-          "budget_shape": "anthropic_thinking_budget_tokens",
-          "disable_supported": true,
-          "fixture": "anthropic_thinking_budget_tokens",
-          "kind": "budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://platform.claude.com/docs/en/models/overview",
-            "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
-            "https://platform.claude.com/docs/en/build-with-claude/effort"
-          ],
-          "wire_shape": "anthropic_thinking_budget_tokens"
-        },
-        "release_date": "2025-09-29",
         "status": ""
       }
     ],
@@ -652,7 +615,7 @@
           "default_level": "max",
           "fixture": "glm_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -688,7 +651,7 @@
           "default_level": "max",
           "fixture": "glm_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -723,7 +686,7 @@
           "default_level": "max",
           "fixture": "glm_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -756,9 +719,10 @@
         "name": "GLM-5.2",
         "reasoning": {
           "default_level": "max",
+          "disable_supported": true,
           "fixture": "glm_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -792,7 +756,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -826,7 +790,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -859,7 +823,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -892,7 +856,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -925,7 +889,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -958,7 +922,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -991,7 +955,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1025,7 +989,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1043,6 +1007,8 @@
       {
         "context_window": 128000,
         "cost": {
+          "cache_read_per_mtok": 0.05,
+          "cache_write_per_mtok": 0,
           "input_per_mtok": 0.3,
           "output_per_mtok": 0.9
         },
@@ -1057,7 +1023,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1090,7 +1056,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1108,6 +1074,8 @@
       {
         "context_window": 64000,
         "cost": {
+          "cache_read_per_mtok": 0.11,
+          "cache_write_per_mtok": 0,
           "input_per_mtok": 0.6,
           "output_per_mtok": 1.8
         },
@@ -1122,7 +1090,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1155,7 +1123,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1188,7 +1156,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1221,7 +1189,7 @@
           "disable_supported": true,
           "fixture": "glm_thinking_type",
           "kind": "toggle",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
             "https://docs.z.ai/guides/capabilities/thinking-mode",
@@ -1239,7 +1207,7 @@
     ],
     "deepseek": [
       {
-        "context_window": 1000000,
+        "context_window": 1048576,
         "cost": {
           "cache_read_per_mtok": 0.003,
           "input_per_mtok": 0.15,
@@ -1260,7 +1228,7 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-19",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
@@ -1275,11 +1243,11 @@
           ],
           "wire_shape": "deepseek_responses_reasoning_effort"
         },
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "status": ""
       },
       {
-        "context_window": 1000000,
+        "context_window": 1048576,
         "cost": {
           "cache_read_per_mtok": 0.003,
           "input_per_mtok": 0.15,
@@ -1300,7 +1268,7 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-19",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
@@ -1315,11 +1283,11 @@
           ],
           "wire_shape": "deepseek_responses_reasoning_effort"
         },
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "status": ""
       },
       {
-        "context_window": 1000000,
+        "context_window": 1048576,
         "cost": {
           "cache_read_per_mtok": 0.003,
           "input_per_mtok": 0.15,
@@ -1340,7 +1308,7 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-19",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
@@ -1355,11 +1323,11 @@
           ],
           "wire_shape": "deepseek_responses_reasoning_effort"
         },
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "status": ""
       },
       {
-        "context_window": 1000000,
+        "context_window": 1048576,
         "cost": {
           "cache_read_per_mtok": 0.022,
           "input_per_mtok": 0.66,
@@ -1379,7 +1347,7 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-19",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
@@ -1394,11 +1362,79 @@
           ],
           "wire_shape": "deepseek_responses_reasoning_effort"
         },
-        "release_date": "2026-08-12",
+        "release_date": "2026-08-13",
         "status": ""
       }
     ],
     "google": [
+      {
+        "context_window": 1048576,
+        "cost": {
+          "cache_read_per_mtok": 0.1,
+          "input_per_mtok": 2,
+          "output_per_mtok": 10
+        },
+        "id": "gemini-4-carbon",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 32768,
+        "name": "Gemini 4 Carbon",
+        "reasoning": {
+          "fixture": "openai_chat_reasoning_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-10",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/openai",
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "wire_shape": "openai_chat_reasoning_effort"
+        },
+        "release_date": "2026-11-10",
+        "status": ""
+      },
+      {
+        "context_window": 1048576,
+        "cost": {
+          "cache_read_per_mtok": 0.1,
+          "input_per_mtok": 2,
+          "output_per_mtok": 10
+        },
+        "id": "gemini-4-argon",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 32768,
+        "name": "Gemini 4 Argon",
+        "reasoning": {
+          "fixture": "openai_chat_reasoning_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-10",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/openai",
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "wire_shape": "openai_chat_reasoning_effort"
+        },
+        "release_date": "2026-10-13",
+        "status": ""
+      },
       {
         "context_window": 1048576,
         "cost": {
@@ -1416,10 +1452,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "low",
@@ -1448,10 +1486,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "low",
@@ -1480,10 +1520,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "low",
@@ -1512,10 +1554,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1545,10 +1589,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1578,10 +1624,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1611,10 +1659,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1644,10 +1694,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1667,6 +1719,40 @@
           "input_per_mtok": 2,
           "output_per_mtok": 12
         },
+        "id": "gemini-pro-latest",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 65536,
+        "name": "Gemini Pro Latest",
+        "reasoning": {
+          "fixture": "openai_chat_reasoning_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-10",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/openai",
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "wire_shape": "openai_chat_reasoning_effort"
+        },
+        "release_date": "2026-02-19",
+        "status": "beta"
+      },
+      {
+        "context_window": 1048576,
+        "cost": {
+          "cache_read_per_mtok": 0.2,
+          "input_per_mtok": 2,
+          "output_per_mtok": 12
+        },
         "id": "gemini-3.1-pro-preview-customtools",
         "input": [
           "text",
@@ -1677,10 +1763,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "low",
@@ -1709,10 +1797,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "low",
@@ -1741,10 +1831,12 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "supported_levels": [
             "minimal",
@@ -1779,10 +1871,12 @@
           "budget_shape": "gemini_thinking_budget",
           "fixture": "gemini_openai_thinking_budget",
           "kind": "budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "wire_shape": "gemini_openai_thinking_budget"
         },
@@ -1812,10 +1906,12 @@
           "disable_supported": true,
           "fixture": "gemini_openai_thinking_budget",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "wire_shape": "gemini_openai_thinking_budget"
         },
@@ -1845,10 +1941,12 @@
           "disable_supported": true,
           "fixture": "gemini_openai_thinking_budget",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking"
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
           ],
           "wire_shape": "gemini_openai_thinking_budget"
         },
@@ -1858,7 +1956,7 @@
     ],
     "groq": [
       {
-        "context_window": 131042,
+        "context_window": 131072,
         "cost": {
           "input_per_mtok": 0.8,
           "output_per_mtok": 4
@@ -1874,7 +1972,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://console.groq.com/docs/models",
             "https://console.groq.com/docs/reasoning"
@@ -1908,7 +2006,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://console.groq.com/docs/models",
             "https://console.groq.com/docs/reasoning"
@@ -1937,7 +2035,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://console.groq.com/docs/models",
             "https://console.groq.com/docs/reasoning"
@@ -1968,7 +2066,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://console.groq.com/docs/models",
             "https://console.groq.com/docs/reasoning"
@@ -2008,7 +2106,7 @@
             "reasoning_content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2049,7 +2147,7 @@
             "reasoning_content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2090,7 +2188,7 @@
             "reasoning_content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2128,7 +2226,7 @@
             "reasoning_content"
           ],
           "kind": "always_on",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2161,7 +2259,7 @@
             "reasoning_content"
           ],
           "kind": "always_on",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2195,7 +2293,7 @@
             "reasoning_content"
           ],
           "kind": "toggle",
-          "source_checked_at": "2026-10-24",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://platform.kimi.com/docs/models",
             "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
@@ -2233,13 +2331,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2274,13 +2374,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2313,13 +2415,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "low",
@@ -2352,13 +2456,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2392,13 +2498,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2432,13 +2540,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2472,13 +2582,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2509,13 +2621,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "medium",
@@ -2545,13 +2659,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2583,13 +2699,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2621,13 +2739,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2657,13 +2777,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "medium",
@@ -2693,13 +2815,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2731,13 +2855,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2767,13 +2893,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "medium",
@@ -2803,13 +2931,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2841,13 +2971,15 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "off",
@@ -2876,13 +3008,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "high"
@@ -2909,13 +3043,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "minimal",
@@ -2945,13 +3081,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "minimal",
@@ -2981,13 +3119,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "minimal",
@@ -3016,13 +3156,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "low",
@@ -3051,13 +3193,15 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
             "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol"
+            "https://developers.openai.com/api/docs/models/gpt-6-sol",
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model"
           ],
           "supported_levels": [
             "low",
@@ -3197,7 +3341,7 @@
           "disable_supported": true,
           "fixture": "qwen_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3237,7 +3381,7 @@
           "disable_supported": true,
           "fixture": "qwen_reasoning_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3277,7 +3421,7 @@
           "disable_supported": true,
           "fixture": "qwen_reasoning_effort",
           "kind": "effort_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3296,7 +3440,7 @@
       {
         "context_window": 1000000,
         "cost": {
-          "cache_read_per_mtok": 0.003,
+          "cache_read_per_mtok": 0.006,
           "cache_write_per_mtok": 0.0375,
           "input_per_mtok": 0.03,
           "output_per_mtok": 0.13
@@ -3316,7 +3460,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3333,7 +3477,7 @@
       {
         "context_window": 1000000,
         "cost": {
-          "cache_read_per_mtok": 0.04,
+          "cache_read_per_mtok": 0.08,
           "cache_write_per_mtok": 0.5,
           "input_per_mtok": 0.4,
           "output_per_mtok": 1.6
@@ -3351,7 +3495,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3385,7 +3529,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3402,9 +3546,10 @@
       {
         "context_window": 1000000,
         "cost": {
-          "cache_write_per_mtok": 0.234375,
-          "input_per_mtok": 0.1875,
-          "output_per_mtok": 1.125
+          "cache_read_per_mtok": 0.025,
+          "cache_write_per_mtok": 0.3125,
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 1.5
         },
         "id": "qwen3.6-flash",
         "input": [
@@ -3419,7 +3564,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3452,7 +3597,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3469,42 +3614,8 @@
       {
         "context_window": 262144,
         "cost": {
-          "cache_read_per_mtok": 0.13,
-          "cache_write_per_mtok": 1.625,
-          "input_per_mtok": 1.3,
-          "output_per_mtok": 7.8
-        },
-        "id": "qwen3.6-max-preview",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 65536,
-        "name": "Qwen3.6 Max Preview",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "disable_supported": true,
-          "fixture": "qwen_enable_thinking",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "supported_levels": [
-            "on"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2026-04-20",
-        "status": "beta"
-      },
-      {
-        "context_window": 262144,
-        "cost": {
-          "input_per_mtok": 0.248,
-          "output_per_mtok": 1.485
+          "input_per_mtok": 0.375,
+          "output_per_mtok": 2.25
         },
         "id": "qwen3.6-35b-a3b",
         "input": [
@@ -3519,7 +3630,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3554,7 +3665,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3591,7 +3702,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3624,7 +3735,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3657,7 +3768,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3690,7 +3801,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3723,7 +3834,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3756,7 +3867,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3773,6 +3884,8 @@
       {
         "context_window": 262144,
         "cost": {
+          "cache_read_per_mtok": 0.04,
+          "cache_write_per_mtok": 0.25,
           "input_per_mtok": 0.2,
           "output_per_mtok": 1.6
         },
@@ -3789,7 +3902,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3804,68 +3917,10 @@
         "status": ""
       },
       {
-        "context_window": 262144,
-        "cost": {
-          "input_per_mtok": 1.2,
-          "output_per_mtok": 6
-        },
-        "id": "qwen3-max",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 65536,
-        "name": "Qwen3 Max",
-        "reasoning": {},
-        "release_date": "2025-09-23",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.5,
-          "output_per_mtok": 6
-        },
-        "id": "qwen3-next-80b-a3b-thinking",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 32768,
-        "name": "Qwen3-Next 80B-A3B (Thinking)",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "fixture": "qwen_enable_thinking",
-          "kind": "budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.5,
-          "output_per_mtok": 2
-        },
-        "id": "qwen3-next-80b-a3b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 32768,
-        "name": "Qwen3-Next 80B-A3B Instruct",
-        "reasoning": {},
-        "release_date": "2025-09",
-        "status": ""
-      },
-      {
         "context_window": 1000000,
         "cost": {
+          "cache_read_per_mtok": 0.06,
+          "cache_write_per_mtok": 0.375,
           "input_per_mtok": 0.3,
           "output_per_mtok": 1.5
         },
@@ -3882,6 +3937,8 @@
       {
         "context_window": 1000000,
         "cost": {
+          "cache_read_per_mtok": 0.01,
+          "cache_write_per_mtok": 0.0625,
           "input_per_mtok": 0.05,
           "output_per_mtok": 0.4
         },
@@ -3897,7 +3954,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -3909,22 +3966,6 @@
           "wire_shape": "qwen_enable_thinking"
         },
         "release_date": "2025-07-28",
-        "status": ""
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "input_per_mtok": 1,
-          "output_per_mtok": 5
-        },
-        "id": "qwen3-coder-plus",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 65536,
-        "name": "Qwen3 Coder Plus",
-        "reasoning": {},
-        "release_date": "2025-07-23",
         "status": ""
       },
       {
@@ -3943,99 +3984,10 @@
         "reasoning": {
           "budget": {},
           "budget_shape": "qwen_thinking_budget",
-          "fixture": "qwen_enable_thinking",
-          "kind": "budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.7,
-          "output_per_mtok": 2.8
-        },
-        "id": "qwen3-vl-235b-a22b",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 32768,
-        "name": "Qwen3-VL 235B-A22B",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "fixture": "qwen_enable_thinking",
-          "kind": "budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 262144,
-        "cost": {
-          "input_per_mtok": 1.5,
-          "output_per_mtok": 7.5
-        },
-        "id": "qwen3-coder-480b-a35b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 65536,
-        "name": "Qwen3-Coder 480B-A35B Instruct",
-        "reasoning": {},
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 262144,
-        "cost": {
-          "input_per_mtok": 0.45,
-          "output_per_mtok": 2.25
-        },
-        "id": "qwen3-coder-30b-a3b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 65536,
-        "name": "Qwen3-Coder 30B-A3B Instruct",
-        "reasoning": {},
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.18,
-          "output_per_mtok": 0.7
-        },
-        "id": "qwen3-8b",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen3 8B",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -4047,302 +3999,6 @@
           "wire_shape": "qwen_enable_thinking"
         },
         "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.7,
-          "output_per_mtok": 2.8
-        },
-        "id": "qwen3-32b",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 16384,
-        "name": "Qwen3 32B",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "disable_supported": true,
-          "fixture": "qwen_enable_thinking",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "supported_levels": [
-            "on"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.7,
-          "output_per_mtok": 2.8
-        },
-        "id": "qwen3-235b-a22b",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 16384,
-        "name": "Qwen3 235B-A22B",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "disable_supported": true,
-          "fixture": "qwen_enable_thinking",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "supported_levels": [
-            "on"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.35,
-          "output_per_mtok": 1.4
-        },
-        "id": "qwen3-14b",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen3 14B",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "disable_supported": true,
-          "fixture": "qwen_enable_thinking",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "supported_levels": [
-            "on"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-04",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 1.2,
-          "output_per_mtok": 4.8
-        },
-        "id": "qvq-max",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 8192,
-        "name": "QVQ Max",
-        "reasoning": {
-          "fixture": "qwen_enable_thinking",
-          "kind": "always_on",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-03-25",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.8,
-          "output_per_mtok": 2.4
-        },
-        "id": "qwq-plus",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "QwQ Plus",
-        "reasoning": {
-          "fixture": "qwen_enable_thinking",
-          "kind": "always_on",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2025-03-05",
-        "status": ""
-      },
-      {
-        "context_window": 1000000,
-        "cost": {
-          "input_per_mtok": 0.05,
-          "output_per_mtok": 0.2
-        },
-        "id": "qwen-turbo",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 16384,
-        "name": "Qwen Turbo",
-        "reasoning": {
-          "budget": {},
-          "budget_shape": "qwen_thinking_budget",
-          "disable_supported": true,
-          "fixture": "qwen_enable_thinking",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
-          "source_urls": [
-            "https://www.alibabacloud.com/help/en/model-studio/models",
-            "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
-            "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
-          ],
-          "supported_levels": [
-            "on"
-          ],
-          "wire_shape": "qwen_enable_thinking"
-        },
-        "release_date": "2024-11-01",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.35,
-          "output_per_mtok": 1.05
-        },
-        "id": "qwen2-5-vl-7b-instruct",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5-VL 7B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 2.8,
-          "output_per_mtok": 8.4
-        },
-        "id": "qwen2-5-vl-72b-instruct",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5-VL 72B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.175,
-          "output_per_mtok": 0.7
-        },
-        "id": "qwen2-5-7b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5 7B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 1.4,
-          "output_per_mtok": 5.6
-        },
-        "id": "qwen2-5-72b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5 72B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.7,
-          "output_per_mtok": 2.8
-        },
-        "id": "qwen2-5-32b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5 32B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.35,
-          "output_per_mtok": 1.4
-        },
-        "id": "qwen2-5-14b-instruct",
-        "input": [
-          "text"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen2.5 14B Instruct",
-        "reasoning": {},
-        "release_date": "2024-09",
-        "status": ""
-      },
-      {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.8,
-          "output_per_mtok": 3.2
-        },
-        "id": "qwen-vl-max",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen-VL Max",
-        "reasoning": {},
-        "release_date": "2024-04-08",
         "status": ""
       },
       {
@@ -4362,25 +4018,10 @@
         "status": ""
       },
       {
-        "context_window": 131072,
-        "cost": {
-          "input_per_mtok": 0.21,
-          "output_per_mtok": 0.63
-        },
-        "id": "qwen-vl-plus",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 8192,
-        "name": "Qwen-VL Plus",
-        "reasoning": {},
-        "release_date": "2024-01-25",
-        "status": ""
-      },
-      {
         "context_window": 1000000,
         "cost": {
+          "cache_read_per_mtok": 0.08,
+          "cache_write_per_mtok": 0.5,
           "input_per_mtok": 0.4,
           "output_per_mtok": 1.2
         },
@@ -4396,7 +4037,7 @@
           "disable_supported": true,
           "fixture": "qwen_enable_thinking",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/models",
             "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
@@ -4430,7 +4071,7 @@
           "default_level": "high",
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.x.ai/developers/models",
             "https://docs.x.ai/developers/model-capabilities/text/reasoning",
@@ -4464,7 +4105,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.x.ai/developers/models",
             "https://docs.x.ai/developers/model-capabilities/text/reasoning",
@@ -4498,7 +4139,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.x.ai/developers/models",
             "https://docs.x.ai/developers/model-capabilities/text/reasoning",
@@ -4532,7 +4173,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-11-10",
           "source_urls": [
             "https://docs.x.ai/developers/models",
             "https://docs.x.ai/developers/model-capabilities/text/reasoning",
@@ -4551,6 +4192,6 @@
       }
     ]
   },
-  "sha256": "a6af79756a8a8efb5fd3144a83bd01f333e503043998d5f26f3c98bf9181d36c",
+  "sha256": "d821c11956a5e995ae246e98eb45c304dbd98e79bec9956a77b54dc258e744be",
   "source": "https://models.dev/api.json"
 }

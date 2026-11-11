@@ -78,9 +78,8 @@ func TestOctoberCatalogClaudeCapabilities(t *testing.T) {
 		t.Fatalf("Haiku 5.5 reasoning = %#v", model.Reasoning)
 	}
 	for _, id := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"} {
-		model, ok := FindModel(ProviderAnthropic, id)
-		if !ok || model.ContextWindow != 200000 {
-			t.Fatalf("%s context window = %d", id, model.ContextWindow)
+		if SupportsModel(ProviderAnthropic, id) {
+			t.Fatalf("retired model %s remains selectable", id)
 		}
 	}
 }
@@ -188,9 +187,14 @@ func TestBuiltInCatalogUsesAuditedProviderCapabilities(t *testing.T) {
 		{provider: ProviderOpenAI, model: "gpt-5.4", context: 1050000, max: 128000},
 		{provider: ProviderGoogle, model: "gemini-3.1-pro-preview", context: 1048576, max: 65536},
 		{provider: ProviderGoogle, model: "gemini-2.5-flash", context: 1048576, max: 65536},
-		{provider: ProviderDeepSeek, model: "deepseek-flash", context: 1000000, max: 393216},
-		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1000000, max: 393216},
-		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1000000, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-flash", context: 1048576, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1048576, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1048576, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-flash-vision-exp", context: 1048576, max: 393216},
+		{provider: ProviderAnthropic, model: "claude-fable-5-2", context: 1000000, max: 128000},
+		{provider: ProviderGoogle, model: "gemini-4-argon", context: 1048576, max: 32768},
+		{provider: ProviderGoogle, model: "gemini-4-carbon", context: 1048576, max: 32768},
+		{provider: ProviderGroq, model: "qwen/qwen3.8-27b", context: 131072, max: 16384},
 		{provider: ProviderXAI, model: "grok-4.3", context: 1000000, max: 30000},
 		{provider: ProviderXAI, model: "grok-4.6", context: 500000, max: 500000},
 	}

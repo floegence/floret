@@ -67,3 +67,27 @@ confirms K3-compatible reasoning, fixed sampling controls and
 `max_completion_tokens`. Runtime rendering follows the reviewed capability,
 not a single model-name exception. This refresh preserves all other inventories.
 Run `python3 scripts/model-catalog/test_generate.py` to verify scoped provenance.
+
+The 2026-11-10 full refresh adds Claude Fable 5.2 (always-on adaptive thinking,
+default high), Gemini 4 Argon/Carbon and the preview `gemini-pro-latest` alias.
+Gemini 4 uses a shared 1,048,576-token window and low/medium/high thinking.
+The catalog retains the conservative 32,768-token foreground non-streaming
+output ceiling; 65,536 streaming output and long decode need separate transport
+qualification. See Google's [thinking limits](https://ai.google.dev/gemini-api/docs/thinking).
+DeepSeek models and their official aliases now share the source's 1,048,576-token
+window; their 393,216-token output ceiling is unchanged. Groq Qwen 3.8's window
+is corrected to 131,072. GLM 5.2 Off uses `thinking.type: disabled`, not a `none`
+effort. Grok 4.3/4.5 retain their reviewed effort levels: the official API treats
+`xhigh` as `high`, so the catalog must not advertise it as an independent level.
+
+The refreshed source marks Sonnet 4.5 and older Qwen models deprecated or removes
+them. They leave the selectable inventory without replacing saved model IDs.
+OpenRouter and Ollama remain discovery-owned. GPT-6.1 Terra, like GPT-6.1 Sol,
+requires Responses for tools and is excluded from the built-in OpenAI Chat list.
+The earlier GPT-6 Astra/Sol/Luna entries are retained as existing metadata, not
+new transport qualification: [OpenAI's current guide](https://developers.openai.com/api/docs/guides/latest-model)
+requires Responses for Astra tools and for Sol/Luna tools with reasoning enabled.
+Hosts must enforce their gateway's supported protocol when exposing these IDs.
+[Qwen4 Max Preview](https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview)
+is a limited Token Plan subscription preview, not the ordinary DashScope API
+inventory. It is not added to the general-purpose provider catalog.

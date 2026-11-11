@@ -1,12 +1,13 @@
 {
-  "checked_at": "2026-10-12",
+  "checked_at": "2026-11-10",
   "exclude_pattern": "realtime|(?:^|-)live(?:-|$)|deep-research|computer-use|safeguard|character",
   "exclude": {
     "openai": [
       "gpt-5.3-codex-spark",
       "gpt-daybreak-blue-latest",
       "gpt-daybreak-red-latest",
-      "gpt-6.1-sol"
+      "gpt-6.1-sol",
+      "gpt-6.1-terra"
     ],
     "google": [],
     "xai": [
@@ -25,7 +26,9 @@
       "https://developers.openai.com/api/docs/guides/reasoning",
       "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
       "https://developers.openai.com/api/docs/models/gpt-6-luna",
-      "https://developers.openai.com/api/docs/models/gpt-6-sol"
+      "https://developers.openai.com/api/docs/models/gpt-6-sol",
+      "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+      "https://developers.openai.com/api/docs/guides/latest-model"
     ],
     "anthropic": [
       "https://platform.claude.com/docs/en/models/overview",
@@ -34,7 +37,9 @@
     ],
     "google": [
       "https://ai.google.dev/gemini-api/docs/openai",
-      "https://ai.google.dev/gemini-api/docs/thinking"
+      "https://ai.google.dev/gemini-api/docs/thinking",
+      "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+      "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
     ],
     "moonshot": [
       "https://platform.kimi.com/docs/models",
@@ -100,19 +105,17 @@
     },
     "deepseek/deepseek-v4-pro": {
       "reasoning": {
-        "default_level": "high",
-        "source_checked_at": "2026-10-19"
+        "default_level": "high"
       }
     },
     "deepseek/deepseek-v4-flash": {
       "reasoning": {
-        "default_level": "high",
-        "source_checked_at": "2026-10-19"
+        "default_level": "high"
       },
       "metadata": {
         "status": "",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "name": "DeepSeek Flash (legacy alias)",
@@ -187,8 +190,7 @@
     },
     "deepseek/deepseek-flash": {
       "reasoning": {
-        "default_level": "high",
-        "source_checked_at": "2026-10-19"
+        "default_level": "high"
       },
       "metadata": {
         "name": "DeepSeek V4.1 Flash (1017)"
@@ -198,7 +200,7 @@
       "metadata": {
         "status": "",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "name": "DeepSeek Flash (legacy Vision alias)",
@@ -226,8 +228,7 @@
         }
       },
       "reasoning": {
-        "default_level": "high",
-        "source_checked_at": "2026-10-19"
+        "default_level": "high"
       }
     },
     "moonshot/kimi-k3.1-pro": {
@@ -241,14 +242,51 @@
         "disable_supported": false,
         "default_level": "max"
       }
+    },
+    "anthropic/claude-fable-5-2": {
+      "reasoning": {
+        "default_level": "high"
+      }
+    },
+    "google/gemini-pro-latest": {
+      "metadata": {
+        "status": "beta"
+      }
+    },
+    "xai/grok-4.3": {
+      "metadata": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      }
+    },
+    "xai/grok-4.5": {
+      "metadata": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      }
     }
   },
   "exclusion_notes": {
     "openai/gpt-daybreak-blue-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
     "openai/gpt-daybreak-red-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
-    "openai/gpt-6.1-sol": "Tool calling requires Responses; Floret built-in OpenAI transport uses Chat Completions. Hosts with a qualified Responses gateway may expose this model in their own catalog."
-  },
-  "provider_checked_at": {
-    "moonshot": "2026-10-24"
+    "openai/gpt-6.1-sol": "Tool calling requires Responses; Floret built-in OpenAI transport uses Chat Completions. Hosts with a qualified Responses gateway may expose this model in their own catalog.",
+    "openai/gpt-6.1-terra": "Tool calling requires Responses; Floret built-in OpenAI transport uses Chat Completions. Hosts with a qualified Responses gateway may expose this model in their own catalog."
   }
 }

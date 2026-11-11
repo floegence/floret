@@ -39,6 +39,13 @@ provider payload. Dynamic metadata providers such as OpenRouter and local Ollama
 models must not expose static selectable effort values until the provider/model
 metadata has been resolved by the host.
 
+The [November 2026 catalog review](../../scripts/model-catalog/README.md) qualifies
+Fable 5.2 adaptive effort and Gemini 4 foreground Chat requests. GLM 5.2's toggle
+uses `thinking.type: disabled` independently of its high/max effort selector.
+Current public gateway payloads are exercised by both blank-module adoption
+gates. A new catalog entry cannot establish support for a different transport,
+background continuation, subscription entitlement, or attachment modality.
+
 # Guardrails
 
 Do not add provider-name shortcuts to generic capability resolvers. Provider raw

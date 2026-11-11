@@ -1,10 +1,4 @@
 {
-  "provider_sources": {
-    "moonshot": {
-      "sha256": "2df6a44e5be4608d0537cbcf214bfc7f83e2ab16543fbf6df052cec593563c08",
-      "source": "https://models.dev/api.json"
-    }
-  },
   "providers": {
     "anthropic": {
       "claude-fable-5": {
@@ -83,6 +77,45 @@
           }
         ],
         "release_date": "2026-09-01",
+        "tool_call": true
+      },
+      "claude-fable-5-2": {
+        "cost": {
+          "cache_read": 0.2,
+          "cache_write": 10,
+          "input": 8,
+          "output": 40
+        },
+        "id": "claude-fable-5-2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Claude Fable 5.2",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-09",
         "tool_call": true
       },
       "claude-haiku-4-5": {
@@ -516,6 +549,7 @@
           }
         ],
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "tool_call": true
       },
       "claude-sonnet-4-5-20250929": {
@@ -549,6 +583,7 @@
           }
         ],
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "tool_call": true
       },
       "claude-sonnet-4-6": {
@@ -768,6 +803,8 @@
       },
       "glm-4.5v": {
         "cost": {
+          "cache_read": 0.11,
+          "cache_write": 0,
           "input": 0.6,
           "output": 1.8
         },
@@ -828,6 +865,8 @@
       },
       "glm-4.6v": {
         "cost": {
+          "cache_read": 0.05,
+          "cache_write": 0,
           "input": 0.3,
           "output": 0.9
         },
@@ -1092,6 +1131,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "effort",
             "values": [
               "high",
@@ -1257,7 +1299,7 @@
         },
         "id": "deepseek-flash",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "modalities": {
@@ -1269,7 +1311,7 @@
             "text"
           ]
         },
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash 1017",
         "reasoning": true,
         "reasoning_options": [
           {
@@ -1284,7 +1326,7 @@
             ]
           }
         ],
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "tool_call": true
       },
       "deepseek-v4-flash": {
@@ -1296,7 +1338,7 @@
         },
         "id": "deepseek-v4-flash",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "modalities": {
@@ -1323,7 +1365,7 @@
             ]
           }
         ],
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "status": "deprecated",
         "tool_call": true
       },
@@ -1336,7 +1378,7 @@
         },
         "id": "deepseek-v4-flash-vision-exp",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "modalities": {
@@ -1363,7 +1405,7 @@
             ]
           }
         ],
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "status": "deprecated",
         "tool_call": true
       },
@@ -1376,7 +1418,7 @@
         },
         "id": "deepseek-v4-pro",
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "modalities": {
@@ -1402,7 +1444,7 @@
             ]
           }
         ],
-        "release_date": "2026-08-12",
+        "release_date": "2026-08-13",
         "tool_call": true
       }
     },
@@ -1431,7 +1473,7 @@
         },
         "id": "deep-research-max-preview-04-2026",
         "limit": {
-          "context": 131072,
+          "context": 1048576,
           "output": 65536
         },
         "modalities": {
@@ -1477,7 +1519,7 @@
         },
         "id": "deep-research-preview-04-2026",
         "limit": {
-          "context": 131072,
+          "context": 1048576,
           "output": 65536
         },
         "modalities": {
@@ -1599,9 +1641,9 @@
           ]
         },
         "name": "Nano Banana",
-        "reasoning": true,
-        "reasoning_options": [],
+        "reasoning": false,
         "release_date": "2025-08-26",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-2.5-flash-lite": {
@@ -1814,32 +1856,6 @@
         "release_date": "2026-05-28",
         "tool_call": false
       },
-      "gemini-3-pro-image-preview": {
-        "cost": {
-          "input": 2,
-          "output": 120
-        },
-        "id": "gemini-3-pro-image-preview",
-        "limit": {
-          "context": 131072,
-          "output": 32768
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text",
-            "image"
-          ]
-        },
-        "name": "Nano Banana Pro",
-        "reasoning": true,
-        "reasoning_options": [],
-        "release_date": "2025-11-20",
-        "tool_call": false
-      },
       "gemini-3.1-flash-image": {
         "cost": {
           "input": 0.5,
@@ -1874,41 +1890,6 @@
           }
         ],
         "release_date": "2026-05-28",
-        "tool_call": false
-      },
-      "gemini-3.1-flash-image-preview": {
-        "cost": {
-          "input": 0.5,
-          "output": 60
-        },
-        "id": "gemini-3.1-flash-image-preview",
-        "limit": {
-          "context": 65536,
-          "output": 65536
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "pdf"
-          ],
-          "output": [
-            "text",
-            "image"
-          ]
-        },
-        "name": "Nano Banana 2",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2026-02-26",
         "tool_call": false
       },
       "gemini-3.1-flash-lite": {
@@ -2421,6 +2402,84 @@
         "release_date": "2026-09-02",
         "tool_call": true
       },
+      "gemini-4-argon": {
+        "cost": {
+          "cache_read": 0.1,
+          "input": 2,
+          "input_audio": 2,
+          "output": 10
+        },
+        "id": "gemini-4-argon",
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Gemini 4 Argon",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "release_date": "2026-10-13",
+        "tool_call": true
+      },
+      "gemini-4-carbon": {
+        "cost": {
+          "cache_read": 0.1,
+          "input": 2,
+          "input_audio": 2,
+          "output": 10
+        },
+        "id": "gemini-4-carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Gemini 4 Carbon",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "release_date": "2026-11-10",
+        "tool_call": true
+      },
       "gemini-embedding-001": {
         "cost": {
           "input": 0.15,
@@ -2576,6 +2635,60 @@
         "release_date": "2026-06-30",
         "tool_call": false
       },
+      "gemini-pro-latest": {
+        "cost": {
+          "cache_read": 0.2,
+          "context_over_200k": {
+            "cache_read": 0.4,
+            "input": 4,
+            "output": 18
+          },
+          "input": 2,
+          "output": 12,
+          "tiers": [
+            {
+              "cache_read": 0.4,
+              "input": 4,
+              "output": 18,
+              "tier": {
+                "size": 200000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gemini-pro-latest",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Gemini Pro Latest",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "release_date": "2026-02-19",
+        "tool_call": true
+      },
       "gemma-4-26b-a4b-it": {
         "id": "gemma-4-26b-a4b-it",
         "limit": {
@@ -2675,68 +2788,6 @@
         "reasoning": false,
         "release_date": "2026-03-25",
         "tool_call": false
-      },
-      "veo-3.1-fast-generate-preview": {
-        "id": "veo-3.1-fast-generate-preview",
-        "limit": {
-          "context": 480,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "video"
-          ],
-          "output": [
-            "video"
-          ]
-        },
-        "name": "Veo 3.1 fast",
-        "reasoning": false,
-        "release_date": "2025-10-15",
-        "tool_call": false
-      },
-      "veo-3.1-generate-preview": {
-        "id": "veo-3.1-generate-preview",
-        "limit": {
-          "context": 480,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "video"
-          ]
-        },
-        "name": "Veo 3.1",
-        "reasoning": false,
-        "release_date": "2025-10-15",
-        "status": "beta",
-        "tool_call": false
-      },
-      "veo-3.1-lite-generate-preview": {
-        "id": "veo-3.1-lite-generate-preview",
-        "limit": {
-          "context": 480,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "video"
-          ]
-        },
-        "name": "Veo 3.1 lite",
-        "reasoning": false,
-        "release_date": "2026-03-31",
-        "tool_call": false
       }
     },
     "groq": {
@@ -2803,44 +2854,6 @@
         "status": "beta",
         "tool_call": false
       },
-      "groq/compound": {
-        "id": "groq/compound",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Compound",
-        "reasoning": false,
-        "release_date": "2025-09-04",
-        "tool_call": false
-      },
-      "groq/compound-mini": {
-        "id": "groq/compound-mini",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Compound Mini",
-        "reasoning": false,
-        "release_date": "2025-09-04",
-        "tool_call": false
-      },
       "llama-3.1-8b-instant": {
         "cost": {
           "input": 0.05,
@@ -2862,6 +2875,7 @@
         "name": "Llama 3.1 8B",
         "reasoning": false,
         "release_date": "2024-07-23",
+        "status": "deprecated",
         "tool_call": true
       },
       "llama-3.3-70b-versatile": {
@@ -2885,6 +2899,7 @@
         "name": "Llama 3.3 70B",
         "reasoning": false,
         "release_date": "2024-12-06",
+        "status": "deprecated",
         "tool_call": true
       },
       "meta-llama/llama-prompt-guard-2-22m": {
@@ -2907,7 +2922,7 @@
         },
         "name": "Llama Prompt Guard 2 22M",
         "reasoning": false,
-        "release_date": "2025-05-29",
+        "release_date": "2025-04-29",
         "status": "beta",
         "tool_call": false
       },
@@ -2931,7 +2946,7 @@
         },
         "name": "Prompt Guard 2 86M",
         "reasoning": false,
-        "release_date": "2025-05-29",
+        "release_date": "2025-04-29",
         "status": "beta",
         "tool_call": false
       },
@@ -3005,6 +3020,7 @@
       },
       "openai/gpt-oss-safeguard-20b": {
         "cost": {
+          "cache_read": 0.0375,
           "input": 0.075,
           "output": 0.3
         },
@@ -3069,6 +3085,7 @@
           }
         ],
         "release_date": "2026-04-22",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen/qwen3.8-27b": {
@@ -3078,7 +3095,7 @@
         },
         "id": "qwen/qwen3.8-27b",
         "limit": {
-          "context": 131042,
+          "context": 131072,
           "output": 16384
         },
         "modalities": {
@@ -3105,13 +3122,14 @@
           }
         ],
         "release_date": "2026-08-14",
+        "status": "beta",
         "tool_call": true
       },
       "whisper-large-v3": {
         "id": "whisper-large-v3",
         "limit": {
-          "context": 0,
-          "output": 0
+          "context": 448,
+          "output": 448
         },
         "modalities": {
           "input": [
@@ -3123,14 +3141,14 @@
         },
         "name": "Whisper",
         "reasoning": false,
-        "release_date": "2023-09-01",
+        "release_date": "2023-11-06",
         "tool_call": false
       },
       "whisper-large-v3-turbo": {
         "id": "whisper-large-v3-turbo",
         "limit": {
-          "context": 0,
-          "output": 0
+          "context": 448,
+          "output": 448
         },
         "modalities": {
           "input": [
@@ -3365,6 +3383,7 @@
         "name": "chatgpt-image-latest",
         "reasoning": false,
         "release_date": "2025-12-16",
+        "status": "deprecated",
         "tool_call": false
       },
       "gpt-3.5-turbo": {
@@ -3865,40 +3884,6 @@
         "release_date": "2025-12-11",
         "tool_call": true
       },
-      "gpt-5.2-chat-latest": {
-        "cost": {
-          "cache_read": 0.175,
-          "input": 1.75,
-          "output": 14
-        },
-        "id": "gpt-5.2-chat-latest",
-        "limit": {
-          "context": 128000,
-          "output": 16384
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-5.2 Chat",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "medium"
-            ]
-          }
-        ],
-        "release_date": "2025-12-11",
-        "status": "deprecated",
-        "tool_call": true
-      },
       "gpt-5.2-pro": {
         "cost": {
           "input": 21,
@@ -3932,32 +3917,6 @@
           }
         ],
         "release_date": "2025-12-11",
-        "tool_call": true
-      },
-      "gpt-5.3-chat-latest": {
-        "cost": {
-          "cache_read": 0.175,
-          "input": 1.75,
-          "output": 14
-        },
-        "id": "gpt-5.3-chat-latest",
-        "limit": {
-          "context": 128000,
-          "output": 16384
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-5.3 Chat (latest)",
-        "reasoning": false,
-        "release_date": "2026-03-03",
-        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5.3-codex": {
@@ -4793,6 +4752,65 @@
         "release_date": "2026-09-29",
         "tool_call": true
       },
+      "gpt-6.1-terra": {
+        "cost": {
+          "cache_read": 0.05,
+          "cache_write": 1.25,
+          "context_over_200k": {
+            "cache_read": 0.1,
+            "cache_write": 2.5,
+            "input": 2,
+            "output": 7.5
+          },
+          "input": 1,
+          "output": 5,
+          "tiers": [
+            {
+              "cache_read": 0.1,
+              "cache_write": 2.5,
+              "input": 2,
+              "output": 7.5,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.1-terra",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.1 Terra",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-10-26",
+        "tool_call": true
+      },
       "gpt-daybreak-blue-latest": {
         "cost": {
           "cache_read": 0.4,
@@ -4892,28 +4910,6 @@
         "release_date": "2026-08-07",
         "tool_call": true
       },
-      "gpt-image-1": {
-        "id": "gpt-image-1",
-        "limit": {
-          "context": 0,
-          "input": 0,
-          "output": 0
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "image"
-          ]
-        },
-        "name": "gpt-image-1",
-        "reasoning": false,
-        "release_date": "2025-04-24",
-        "status": "deprecated",
-        "tool_call": false
-      },
       "gpt-image-1-mini": {
         "id": "gpt-image-1-mini",
         "limit": {
@@ -4934,6 +4930,7 @@
         "name": "gpt-image-1-mini",
         "reasoning": false,
         "release_date": "2025-09-26",
+        "status": "deprecated",
         "tool_call": false
       },
       "gpt-image-1.5": {
@@ -4956,6 +4953,7 @@
         "name": "gpt-image-1.5",
         "reasoning": false,
         "release_date": "2025-11-25",
+        "status": "deprecated",
         "tool_call": false
       },
       "gpt-image-2": {
@@ -5312,9 +5310,9 @@
     "qwen": {
       "deepseek-v4-flash-0731": {
         "cost": {
-          "cache_read": 0.04,
-          "input": 0.2,
-          "output": 0.4
+          "cache_read": 0.088,
+          "input": 0.44,
+          "output": 1.32
         },
         "id": "deepseek-v4-flash-0731",
         "limit": {
@@ -5338,6 +5336,7 @@
           {
             "type": "effort",
             "values": [
+              "low",
               "high",
               "max"
             ]
@@ -5370,14 +5369,12 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "effort",
             "values": [
-              "none",
-              "minimal",
-              "low",
-              "medium",
               "high",
-              "xhigh",
               "max"
             ]
           }
@@ -5408,6 +5405,9 @@
         "name": "Kimi K3",
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -5443,12 +5443,33 @@
         "reasoning": true,
         "reasoning_options": [],
         "release_date": "2025-03-25",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen-flash": {
         "cost": {
+          "cache_read": 0.01,
+          "cache_write": 0.0625,
+          "context_over_200k": {
+            "cache_read": 0.05,
+            "cache_write": 0.3125,
+            "input": 0.25,
+            "output": 2
+          },
           "input": 0.05,
-          "output": 0.4
+          "output": 0.4,
+          "tiers": [
+            {
+              "cache_read": 0.05,
+              "cache_write": 0.3125,
+              "input": 0.25,
+              "output": 2,
+              "tier": {
+                "size": 256000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen-flash",
         "limit": {
@@ -5543,6 +5564,7 @@
         "name": "Qwen-MT Turbo",
         "reasoning": false,
         "release_date": "2025-01",
+        "status": "deprecated",
         "tool_call": false
       },
       "qwen-omni-turbo": {
@@ -5572,6 +5594,7 @@
         "name": "Qwen-Omni Turbo",
         "reasoning": false,
         "release_date": "2025-01-19",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen-omni-turbo-realtime": {
@@ -5600,13 +5623,36 @@
         "name": "Qwen-Omni Turbo Realtime",
         "reasoning": false,
         "release_date": "2025-05-08",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen-plus": {
         "cost": {
+          "cache_read": 0.08,
+          "cache_write": 0.5,
+          "context_over_200k": {
+            "cache_read": 0.24,
+            "cache_write": 1.5,
+            "input": 1.2,
+            "output": 3.6,
+            "reasoning": 12
+          },
           "input": 0.4,
           "output": 1.2,
-          "reasoning": 4
+          "reasoning": 4,
+          "tiers": [
+            {
+              "cache_read": 0.24,
+              "cache_write": 1.5,
+              "input": 1.2,
+              "output": 3.6,
+              "reasoning": 12,
+              "tier": {
+                "size": 256000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen-plus",
         "limit": {
@@ -5655,7 +5701,7 @@
         "name": "Qwen Plus Character (Japanese)",
         "reasoning": false,
         "release_date": "2024-01",
-        "tool_call": true
+        "tool_call": false
       },
       "qwen-turbo": {
         "cost": {
@@ -5687,6 +5733,7 @@
           }
         ],
         "release_date": "2024-11-01",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen-vl-max": {
@@ -5711,6 +5758,7 @@
         "name": "Qwen-VL Max",
         "reasoning": false,
         "release_date": "2024-04-08",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen-vl-ocr": {
@@ -5759,98 +5807,7 @@
         "name": "Qwen-VL Plus",
         "reasoning": false,
         "release_date": "2024-01-25",
-        "tool_call": true
-      },
-      "qwen2-5-14b-instruct": {
-        "cost": {
-          "input": 0.35,
-          "output": 1.4
-        },
-        "id": "qwen2-5-14b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5 14B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
-        "tool_call": true
-      },
-      "qwen2-5-32b-instruct": {
-        "cost": {
-          "input": 0.7,
-          "output": 2.8
-        },
-        "id": "qwen2-5-32b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5 32B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
-        "tool_call": true
-      },
-      "qwen2-5-72b-instruct": {
-        "cost": {
-          "input": 1.4,
-          "output": 5.6
-        },
-        "id": "qwen2-5-72b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5 72B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
-        "tool_call": true
-      },
-      "qwen2-5-7b-instruct": {
-        "cost": {
-          "input": 0.175,
-          "output": 0.7
-        },
-        "id": "qwen2-5-7b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5 7B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen2-5-omni-7b": {
@@ -5879,54 +5836,7 @@
         "name": "Qwen2.5-Omni 7B",
         "reasoning": false,
         "release_date": "2024-12",
-        "tool_call": true
-      },
-      "qwen2-5-vl-72b-instruct": {
-        "cost": {
-          "input": 2.8,
-          "output": 8.4
-        },
-        "id": "qwen2-5-vl-72b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5-VL 72B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
-        "tool_call": true
-      },
-      "qwen2-5-vl-7b-instruct": {
-        "cost": {
-          "input": 0.35,
-          "output": 1.05
-        },
-        "id": "qwen2-5-vl-7b-instruct",
-        "limit": {
-          "context": 131072,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Qwen2.5-VL 7B Instruct",
-        "reasoning": false,
-        "release_date": "2024-09",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-14b": {
@@ -5959,6 +5869,7 @@
           }
         ],
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-235b-a22b": {
@@ -5991,6 +5902,7 @@
           }
         ],
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-32b": {
@@ -6023,6 +5935,7 @@
           }
         ],
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-8b": {
@@ -6055,13 +5968,10 @@
           }
         ],
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-asr-flash": {
-        "cost": {
-          "input": 0.035,
-          "output": 0.035
-        },
         "id": "qwen3-asr-flash",
         "limit": {
           "context": 53248,
@@ -6119,6 +6029,7 @@
         "name": "Qwen3-Coder 30B-A3B Instruct",
         "reasoning": false,
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-coder-480b-a35b-instruct": {
@@ -6160,12 +6071,47 @@
         "name": "Qwen3-Coder 480B-A35B Instruct",
         "reasoning": false,
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-coder-flash": {
         "cost": {
+          "cache_read": 0.06,
+          "cache_write": 0.375,
           "input": 0.3,
-          "output": 1.5
+          "output": 1.5,
+          "tiers": [
+            {
+              "cache_read": 0.1,
+              "cache_write": 0.625,
+              "input": 0.5,
+              "output": 2.5,
+              "tier": {
+                "size": 32000,
+                "type": "context"
+              }
+            },
+            {
+              "cache_read": 0.16,
+              "cache_write": 1,
+              "input": 0.8,
+              "output": 4,
+              "tier": {
+                "size": 128000,
+                "type": "context"
+              }
+            },
+            {
+              "cache_read": 0.32,
+              "cache_write": 2,
+              "input": 1.6,
+              "output": 9.6,
+              "tier": {
+                "size": 256000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen3-coder-flash",
         "limit": {
@@ -6206,6 +6152,7 @@
         "name": "Qwen3 Coder Plus",
         "reasoning": false,
         "release_date": "2025-07-23",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-livetranslate-flash-realtime": {
@@ -6235,6 +6182,7 @@
         "name": "Qwen3-LiveTranslate Flash Realtime",
         "reasoning": false,
         "release_date": "2025-09-22",
+        "status": "deprecated",
         "tool_call": false
       },
       "qwen3-max": {
@@ -6258,6 +6206,7 @@
         "name": "Qwen3 Max",
         "reasoning": false,
         "release_date": "2025-09-23",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-next-80b-a3b-instruct": {
@@ -6281,6 +6230,7 @@
         "name": "Qwen3-Next 80B-A3B Instruct",
         "reasoning": false,
         "release_date": "2025-09",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-next-80b-a3b-thinking": {
@@ -6309,6 +6259,7 @@
           }
         ],
         "release_date": "2025-09",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-omni-flash": {
@@ -6372,6 +6323,7 @@
         "name": "Qwen3-Omni Flash Realtime",
         "reasoning": false,
         "release_date": "2025-09-15",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-vl-235b-a22b": {
@@ -6402,6 +6354,7 @@
           }
         ],
         "release_date": "2025-04",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3-vl-30b-a3b": {
@@ -6428,6 +6381,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "budget_tokens"
           }
         ],
@@ -6436,9 +6392,32 @@
       },
       "qwen3-vl-plus": {
         "cost": {
+          "cache_read": 0.04,
+          "cache_write": 0.25,
           "input": 0.2,
           "output": 1.6,
-          "reasoning": 4.8
+          "tiers": [
+            {
+              "cache_read": 0.06,
+              "cache_write": 0.375,
+              "input": 0.3,
+              "output": 2.4,
+              "tier": {
+                "size": 32000,
+                "type": "context"
+              }
+            },
+            {
+              "cache_read": 0.12,
+              "cache_write": 0.75,
+              "input": 0.6,
+              "output": 4.8,
+              "tier": {
+                "size": 128000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen3-vl-plus",
         "limit": {
@@ -6481,8 +6460,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6515,8 +6493,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6549,8 +6526,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6583,8 +6559,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6641,9 +6616,23 @@
       },
       "qwen3.5-plus": {
         "cost": {
+          "context_over_200k": {
+            "input": 0.5,
+            "output": 3
+          },
           "input": 0.4,
           "output": 2.4,
-          "reasoning": 2.4
+          "reasoning": 2.4,
+          "tiers": [
+            {
+              "input": 0.5,
+              "output": 3,
+              "tier": {
+                "size": 256000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen3.5-plus",
         "limit": {
@@ -6687,8 +6676,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6709,8 +6697,8 @@
       },
       "qwen3.6-35b-a3b": {
         "cost": {
-          "input": 0.248,
-          "output": 1.485
+          "input": 0.375,
+          "output": 2.25
         },
         "id": "qwen3.6-35b-a3b",
         "limit": {
@@ -6721,8 +6709,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "audio"
+            "video"
           ],
           "output": [
             "text"
@@ -6743,9 +6730,28 @@
       },
       "qwen3.6-flash": {
         "cost": {
-          "cache_write": 0.234375,
-          "input": 0.1875,
-          "output": 1.125
+          "cache_read": 0.025,
+          "cache_write": 0.3125,
+          "context_over_200k": {
+            "cache_read": 0.1,
+            "cache_write": 1.25,
+            "input": 1,
+            "output": 4
+          },
+          "input": 0.25,
+          "output": 1.5,
+          "tiers": [
+            {
+              "cache_read": 0.1,
+              "cache_write": 1.25,
+              "input": 1,
+              "output": 4,
+              "tier": {
+                "size": 256000,
+                "type": "context"
+              }
+            }
+          ]
         },
         "id": "qwen3.6-flash",
         "limit": {
@@ -6806,6 +6812,7 @@
           }
         ],
         "release_date": "2026-04-20",
+        "status": "deprecated",
         "tool_call": true
       },
       "qwen3.6-plus": {
@@ -6863,13 +6870,13 @@
       },
       "qwen3.7-flash": {
         "cost": {
-          "cache_read": 0.003,
+          "cache_read": 0.006,
           "cache_write": 0.0375,
           "input": 0.03,
           "output": 0.13,
           "tiers": [
             {
-              "cache_read": 0.01,
+              "cache_read": 0.02,
               "cache_write": 0.125,
               "input": 0.1,
               "output": 0.4,
@@ -6879,7 +6886,7 @@
               }
             },
             {
-              "cache_read": 0.02,
+              "cache_read": 0.04,
               "cache_write": 0.25,
               "input": 0.2,
               "output": 0.8,
@@ -6955,10 +6962,10 @@
       },
       "qwen3.7-plus": {
         "cost": {
-          "cache_read": 0.04,
+          "cache_read": 0.08,
           "cache_write": 0.5,
           "context_over_200k": {
-            "cache_read": 0.12,
+            "cache_read": 0.24,
             "cache_write": 1.5,
             "input": 1.2,
             "output": 4.8
@@ -6967,7 +6974,7 @@
           "output": 1.6,
           "tiers": [
             {
-              "cache_read": 0.12,
+              "cache_read": 0.24,
               "cache_write": 1.5,
               "input": 1.2,
               "output": 4.8,
@@ -7156,6 +7163,7 @@
         "reasoning": true,
         "reasoning_options": [],
         "release_date": "2025-03-05",
+        "status": "deprecated",
         "tool_call": true
       }
     },
@@ -7344,7 +7352,8 @@
               "none",
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ]
           }
         ],
@@ -7396,7 +7405,8 @@
             "values": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ]
           }
         ],
@@ -7561,39 +7571,15 @@
         "modalities": {
           "input": [
             "text",
-            "image",
-            "pdf"
+            "image"
           ],
           "output": [
-            "image",
-            "pdf"
+            "image"
           ]
         },
         "name": "Grok Imagine Image",
         "reasoning": false,
         "release_date": "2026-01-28",
-        "tool_call": false
-      },
-      "grok-imagine-image-quality": {
-        "id": "grok-imagine-image-quality",
-        "limit": {
-          "context": 16000,
-          "output": 0
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "pdf"
-          ],
-          "output": [
-            "image",
-            "pdf"
-          ]
-        },
-        "name": "Grok Imagine Image Quality",
-        "reasoning": false,
-        "release_date": "2026-04-03",
         "tool_call": false
       },
       "grok-imagine-video": {
@@ -7606,8 +7592,7 @@
           "input": [
             "text",
             "image",
-            "video",
-            "pdf"
+            "video"
           ],
           "output": [
             "video"
@@ -7628,8 +7613,7 @@
           "input": [
             "text",
             "image",
-            "audio",
-            "pdf"
+            "audio"
           ],
           "output": [
             "video"
@@ -7649,8 +7633,7 @@
         "modalities": {
           "input": [
             "text",
-            "image",
-            "pdf"
+            "image"
           ],
           "output": [
             "video"
@@ -7663,6 +7646,6 @@
       }
     }
   },
-  "sha256": "a6af79756a8a8efb5fd3144a83bd01f333e503043998d5f26f3c98bf9181d36c",
+  "sha256": "d821c11956a5e995ae246e98eb45c304dbd98e79bec9956a77b54dc258e744be",
   "source": "https://models.dev/api.json"
 }

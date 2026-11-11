@@ -18,6 +18,8 @@ func TestGeneratedModelReasoningRequests(t *testing.T) {
 		{catalog.ProviderOpenAI, "gpt-6-astra", provider.ReasoningLevelMax, "max"},
 		{catalog.ProviderOpenAI, "gpt-5.6-sol", provider.ReasoningLevelOff, "none"},
 		{catalog.ProviderGoogle, "gemini-3.8-flash", provider.ReasoningLevelLow, "low"},
+		{catalog.ProviderGoogle, "gemini-4-argon", provider.ReasoningLevelMedium, "medium"},
+		{catalog.ProviderGoogle, "gemini-4-carbon", provider.ReasoningLevelHigh, "high"},
 		{catalog.ProviderMoonshot, "kimi-k3", provider.ReasoningLevelMax, "max"},
 		{catalog.ProviderMoonshot, "kimi-k3.1-pro", provider.ReasoningLevelHigh, "high"},
 		{catalog.ProviderMoonshot, "kimi-k3.1-pro-highspeed", provider.ReasoningLevelLow, "low"},
@@ -58,6 +60,48 @@ func TestQwenEffortAndBudgetAreExclusive(t *testing.T) {
 	_, err := p.chatRequestBody(provider.Request{Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelLow, BudgetTokens: 4096}})
 	if err == nil {
 		t.Fatal("combined effort and budget must fail before dispatch")
+	}
+}
+
+func TestGLMEffortModelDisablesThinkingWithoutNoneEffort(t *testing.T) {
+	model, ok := catalog.FindModel(catalog.ProviderChatGLM, "glm-5.2")
+	if !ok {
+		t.Fatal("missing GLM 5.2")
+	}
+	p := OpenAICompatibleProvider{Model: model.ID, CostModel: model}
+	raw, err := p.chatRequestBody(provider.Request{Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelOff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" || body["reasoning_effort"] != nil {
+		t.Fatalf("GLM Off must use thinking.type, not a synthetic effort: %s", raw)
+	}
+}
+
+func TestFable52AdaptiveReasoningControls(t *testing.T) {
+	model, ok := catalog.FindModel(catalog.ProviderAnthropic, "claude-fable-5-2")
+	if !ok {
+		t.Fatal("missing Fable 5.2")
+	}
+	p := AnthropicProvider{Model: model.ID, CostModel: model}
+	for _, level := range model.Reasoning.SupportedLevels {
+		var out anthropicRequest
+		if err := p.applyAnthropicReasoning(&out, provider.Request{Reasoning: provider.ReasoningSelection{Level: level}}, 8192); err != nil {
+			t.Fatal(err)
+		}
+		if out.Thinking == nil || out.Thinking.Type != "adaptive" || out.OutputConfig == nil || out.OutputConfig.Effort != string(level) {
+			t.Fatalf("%s request = %+v", level, out)
+		}
+	}
+	for _, selection := range []provider.ReasoningSelection{{Level: provider.ReasoningLevelOff}, {BudgetTokens: 2048}} {
+		if err := p.applyAnthropicReasoning(&anthropicRequest{}, provider.Request{Reasoning: selection}, 8192); err == nil {
+			t.Fatalf("always-on adaptive model accepted %+v", selection)
+		}
 	}
 }
 

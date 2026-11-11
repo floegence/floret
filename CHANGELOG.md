@@ -1,5 +1,18 @@
 # Changelog
 
+## v7.114.0
+
+- Refresh all nine embedded provider inventories from the November 10 models.dev
+  snapshot. Add Claude Fable 5.2, Gemini 4 Argon/Carbon and the Gemini Pro alias;
+  retain preview labels and omit retired Sonnet 4.5 and Qwen entries.
+- Update DeepSeek context limits and Groq Qwen capacity, preserve official
+  DeepSeek aliases, and correct unsupported pre-4.6 Grok `xhigh` metadata.
+- Support GLM 5.2's reviewed thinking toggle with `thinking.type: disabled`;
+  qualify the exact public gateway payload in candidate and published consumers.
+- Record GPT-6.1 Terra's Responses-only tool boundary and Qwen4's limited Token
+  Plan preview. Neither is added to the built-in Chat catalog; qualified hosts
+  may expose supported models through their own gateway and reviewed inventory.
+
 ## Unreleased
 
 - Preserve canonical completed host-work notices admitted after a failed-turn retry checkpoint. Retry and restart retain the confirmed tool result without replaying its effect, while ordinary message suffixes still fail prefix validation.

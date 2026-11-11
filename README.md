@@ -1607,6 +1607,13 @@ corrections. Hosts own credentials, enabled models, and discovery. Updating the
 snapshot does not select a model for an existing conversation or add a public
 catalog API. See [catalog maintenance](scripts/model-catalog/README.md).
 
+The November 10, 2026 review adds Claude Fable 5.2 and Gemini 4 Argon/Carbon,
+updates provider capacities and reasoning controls, and removes retired entries
+from the selectable inventory. GPT-6.1 Terra requires a host-owned Responses
+gateway for tools; it is not advertised by the built-in OpenAI Chat transport.
+Model selection, account access, and historical conversation identity remain
+host-owned and are never changed by a catalog refresh.
+
 ## Development
 
 Public API compatibility starts at the published **v7.16.2** release. That
