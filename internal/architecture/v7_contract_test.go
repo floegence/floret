@@ -158,7 +158,7 @@ func TestApplicationStorageSourceIsOpaque(t *testing.T) {
 
 func TestPublicPackageDependencyDirection(t *testing.T) {
 	allowed := map[string]map[string]bool{
-		"tools":       {"identity": true, "tools": true, "internal/activitymerge": true, "internal/toolinput": true},
+		"tools":       {"identity": true, "tools": true, "internal/activitymerge": true, "internal/toolinput": true, "internal/toolcontext": true},
 		"observation": {"config": true, "identity": true, "tools": true, "internal/usageaccounting": true, "internal/providertransport": true},
 	}
 	for directory, packageAllowlist := range allowed {
@@ -194,9 +194,9 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 }
 
 // Shared tool-domain helpers must not depend on runtime, storage or downstream
-// presentation. Keep the error identity and field selector dependency-free.
+// presentation. Keep error identity, field selection and execution context dependency-free.
 func TestToolDomainHelpersHaveNoDomainDependencies(t *testing.T) {
-	for _, directory := range []string{"internal/activitymerge", "internal/toolinput"} {
+	for _, directory := range []string{"internal/activitymerge", "internal/toolinput", "internal/toolcontext"} {
 		t.Run(directory, func(t *testing.T) {
 			files, err := filepath.Glob(directory + "/*.go")
 			if err != nil || len(files) == 0 {

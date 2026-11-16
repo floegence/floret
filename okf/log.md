@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-11-16: Separate steering from dispatched-effect cancellation. Retain turn
+  and host restrictions, withdraw pending authorization and expose an optional
+  yield signal for observations of independently managed work.
+
 - 2026-11-10: Refresh reviewed provider inventories, document Gemini 4 foreground
   limits and Responses/subscription boundaries, and qualify GLM thinking controls
   through published public gateways.

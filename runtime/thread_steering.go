@@ -16,7 +16,8 @@ import (
 )
 
 // ThreadSteeringController is an optional capability of Host.ThreadService.
-// Steering interrupts the current execution fragment, preserving the task and
+// Steering interrupts provider work and pending authorization; dispatched tools
+// settle under turn and host cancellation before continuation, preserving the task and
 // confirmed tool results. Accepted input is durable before this method returns.
 type ThreadSteeringController interface {
 	Steer(context.Context, SteerInput) (ThreadView, error)

@@ -152,17 +152,16 @@ func TestSteerAckInterruptsProviderAndContinuesSameExecution(t *testing.T) {
 }
 
 func TestSteerSettlesToolsBeforeApplyingInput(t *testing.T) {
-	for _, scenario := range []string{"cancelled", "completed", "unconfirmed", "timeout"} {
+	for _, scenario := range []string{"completed", "unconfirmed"} {
 		t.Run(scenario, func(t *testing.T) {
-			started, release := make(chan struct{}), make(chan struct{})
-			defer close(release)
+			started, release := make(chan context.Context, 1), make(chan struct{})
+			var releaseOnce sync.Once
+			releaseTool := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseTool()
 			work := tools.Define[map[string]any](tools.Definition{Name: "work", Effects: []tools.Effect{tools.EffectWrite}, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, inv tools.Invocation[map[string]any]) (tools.Result, error) {
-				close(started)
-				<-ctx.Done()
+				started <- ctx
+				<-release
 				switch scenario {
-				case "timeout":
-					<-release
-					return tools.CanceledResult(inv.CallID, inv.Name, "late"), nil
 				case "unconfirmed":
 					return tools.Result{}, context.Canceled
 				case "completed":
@@ -189,7 +188,12 @@ func TestSteerSettlesToolsBeforeApplyingInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			waitClosed(t, started, "tool did not start")
+			var toolCtx context.Context
+			select {
+			case toolCtx = <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("tool did not start")
+			}
 			accepted, err := service.(ThreadSteeringController).Steer(t.Context(), SteerInput{ThreadID: created.ThreadID, Input: UserInput{Text: "new instruction"}, RequestKey: "guide"})
 			if err != nil {
 				t.Fatal(err)
@@ -197,6 +201,15 @@ func TestSteerSettlesToolsBeforeApplyingInput(t *testing.T) {
 			if accepted.RunID != first.RunID || len(accepted.Queue) != 0 {
 				t.Fatal("steering changed execution")
 			}
+			select {
+			case <-toolCtx.Done():
+				t.Fatal("steering cancelled an executing tool")
+			case <-time.After(25 * time.Millisecond):
+			}
+			if len(gateway.Requests()) != 1 {
+				t.Fatal("provider continued before tool settlement")
+			}
+			releaseTool()
 			waitDeadline := time.Now().Add(8 * time.Second)
 			var final ThreadView
 			for time.Now().Before(waitDeadline) {
@@ -345,10 +358,10 @@ func TestSteerStopCancelsPendingWithoutRestart(t *testing.T) {
 	if _, err := controller.Steer(t.Context(), command); err != nil {
 		t.Fatal(err)
 	}
-	waitClosed(t, cancelled, "tool was not cancelled")
 	if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: child.ThreadID, RequestKey: "stop"}); err != nil {
 		t.Fatal(err)
 	}
+	waitClosed(t, cancelled, "explicit stop did not cancel tool")
 	final := waitThreadView(t, service, child.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
 	if len(gateway.Requests()) != 1 {
 		t.Fatal("stop revived execution")
@@ -430,13 +443,11 @@ func TestSteerRecoversPendingAdmissionFromSQLite(t *testing.T) {
 }
 
 func TestSteerAcceptsOrderedInstructionsDuringToolSettlement(t *testing.T) {
-	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	started, release := make(chan struct{}), make(chan struct{})
 	work := tools.Define[map[string]any](tools.Definition{Name: "work", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, inv tools.Invocation[map[string]any]) (tools.Result, error) {
 		close(started)
-		<-ctx.Done()
-		close(cancelled)
 		<-release
-		return tools.CanceledResult(inv.CallID, inv.Name, "cancelled"), nil
+		return tools.Result{Text: "completed"}, nil
 	})
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "steering", StateCompatibilityKey: "test:steering"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "work", Name: "work", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
@@ -461,7 +472,6 @@ func TestSteerAcceptsOrderedInstructionsDuringToolSettlement(t *testing.T) {
 	if _, err := controller.Steer(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
-	waitClosed(t, cancelled, "tool did not cancel")
 	if _, err := controller.Steer(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}

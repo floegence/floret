@@ -1,5 +1,14 @@
 # Changelog
 
+## v7.116.0
+
+- Preserve dispatched tools when steering an active task; withdraw pending
+  authorization, commit confirmed results, and retain explicit Stop, deadlines,
+  host cancellation and unknown-effect protection.
+- Add `tools.YieldSignal` so tools observing independently managed work can
+  return current progress promptly when the model receives new instructions.
+  The signal does not cancel, complete, detach or authorize work.
+
 ## v7.115.0
 
 - Add optional `ThreadSteeringCommandService.SteerAck` and

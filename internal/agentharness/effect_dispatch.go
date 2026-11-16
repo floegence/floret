@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/toolcontext"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -47,10 +49,26 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	if gate == nil {
 		return t.rejectEffectAttempt(ctx, repo, prepared.Attempt, fingerprint, ErrAuthorizationUnavailable)
 	}
+	// Steering may withdraw authorization until dispatch is claimed. Once claimed,
+	// the effect and its result belong to the turn, including its Stop/deadline.
+	// Give the host this context before it derives any narrower execution scope.
+	fragmentCtx := ctx
+	ctx, cancelDispatch := context.WithCancelCause(toolcontext.WithYield(toolcontext.Turn(ctx), fragmentCtx.Done()))
+	var admissionMu sync.Mutex
+	claimed := false
+	stopFragment := context.AfterFunc(fragmentCtx, func() {
+		admissionMu.Lock()
+		defer admissionMu.Unlock()
+		if !claimed {
+			cancelDispatch(context.Cause(fragmentCtx))
+		}
+	})
 	authorizationRequest := effectAuthorizationRequest(request, prepared.Attempt, fingerprint)
 	ready := make(chan tools.Result, 1)
 	finalize := make(chan effectFinalizeRequest, 1)
 	gateDone := make(chan effectGateOutcome, 1)
+	dispatchReturned := make(chan struct{})
+	defer close(dispatchReturned)
 	dispatchStarted := make(chan struct{})
 	seal := "effect-dispatch:" + sessiontree.StableHash(prepared.Attempt.EffectAttemptID+"\x00"+fingerprint)
 	authorizedEffect := func(dispatchCtx context.Context, proof EffectAuthorizationProof) (EffectDispatchResult, error) {
@@ -71,6 +89,21 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		}
 		if err := validateEffectAuthorizationProof(authorizationRequest, proof); err != nil {
 			return EffectDispatchResult{}, err
+		}
+		admissionMu.Lock()
+		if !claimed && fragmentCtx.Err() != nil {
+			cancelDispatch(context.Cause(fragmentCtx))
+		}
+		admissionErr := ctx.Err()
+		if admissionErr == nil && !claimed {
+			claimed = true
+			stopFragment()
+		} else if admissionErr == nil {
+			admissionErr = ErrAuthorizationContract
+		}
+		admissionMu.Unlock()
+		if admissionErr != nil {
+			return EffectDispatchResult{}, admissionErr
 		}
 		proofHash := sessiontree.StableHash(proof.AuditReference + "\x00" + proof.AuditHash + "\x00" + proof.PolicyRevision)
 		if _, err := repo.BeginEffectDispatch(dispatchCtx, sessiontree.BeginEffectDispatchRequest{
@@ -166,6 +199,9 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				outcome.err = fmt.Errorf("%w: authorization gate panicked: %v", ErrAuthorizationContract, recovered)
 			}
 			gateDone <- outcome
+			<-dispatchReturned
+			stopFragment()
+			cancelDispatch(context.Canceled)
 		}()
 		outcome.result, outcome.err = gate.Dispatch(ctx, authorizationRequest, authorizedEffect)
 		if outcome.err == nil && outcome.result.seal != seal {

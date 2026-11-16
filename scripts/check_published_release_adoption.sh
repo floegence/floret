@@ -34,6 +34,7 @@ sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/user_input_policy_external_test.go" > user_input_policy_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/thread_message_edit_external_test.go" > thread_message_edit_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/thread_steering_commands_external_test.go" > thread_steering_commands_test.go
+sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/thread_steering_tools_external_test.go" > thread_steering_tools_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/thread_turn_failure_external_test.go" > thread_turn_failure_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/stream_stop_external_test.go" > stream_stop_test.go
 sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/thread_output_external_test.go" > thread_output_test.go

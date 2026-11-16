@@ -27,6 +27,7 @@ import (
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/toolcontext"
 	"github.com/floegence/floret/v7/internal/toolinput"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
@@ -1348,6 +1349,11 @@ steps:
 				EffectBatchPreflight: opts.EffectBatchPreflight,
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
+			if dispatch := toolRunOptions.EffectDispatcher; dispatch != nil {
+				toolRunOptions.EffectDispatcher = func(fragment context.Context, request tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {
+					return dispatch(toolcontext.WithTurn(fragment, rootCtx), request, invoke)
+				}
+			}
 			for _, call := range classifiedCalls.Ordinary {
 				if validationErr := validateModelToolArguments(opts.toolDefinitions, call); validationErr != nil {
 					validationErrors[call.ID] = validationErr
@@ -1531,7 +1537,7 @@ steps:
 				msg := stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(calls[i], validationErr))
 				msg.BuiltinTool = callMessages[i].BuiltinTool
 				if opts.CommitMessages != nil {
-					messages, err := opts.CommitMessages(ctx, []session.Message{msg})
+					messages, err := opts.CommitMessages(rootCtx, []session.Message{msg})
 					if err != nil {
 						return err
 					}
@@ -1557,7 +1563,7 @@ steps:
 				if !result.RequiresEffectFinalization() || opts.EffectResultFinalizer == nil {
 					return EffectResultFinalizationResult{}, nil
 				}
-				return opts.EffectResultFinalizer(ctx, EffectResultFinalizationRequest{
+				return opts.EffectResultFinalizer(rootCtx, EffectResultFinalizationRequest{
 					RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID,
 					ToolCallID: result.CallID, Message: session.CloneMessage(message), FullOutput: cloneFullOutput(fullOutput),
 				})
@@ -1627,7 +1633,7 @@ steps:
 				return err
 			}
 			if !finalized.Handled && opts.CommitMessages != nil {
-				messages, err := opts.CommitMessages(ctx, []session.Message{toolMessages[i]})
+				messages, err := opts.CommitMessages(rootCtx, []session.Message{toolMessages[i]})
 				if err != nil {
 					return err
 				}

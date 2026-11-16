@@ -3032,6 +3032,7 @@ type WebSearchActivityResult struct
 field WebSearchActivityResult.Snippet string tag="json:\"snippet,omitempty\""
 field WebSearchActivityResult.Title string tag="json:\"title\""
 field WebSearchActivityResult.URL string tag="json:\"url\""
+func YieldSignal func(ctx context.Context) <-chan struct{}
 
 package github.com/floegence/floret/v7/tools/webfetch
 type DeepSeekClient struct
