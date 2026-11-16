@@ -98,6 +98,59 @@ func TestSteerInterruptsProviderAndContinuesSameExecution(t *testing.T) {
 	}
 }
 
+func TestSteerAckInterruptsProviderAndContinuesSameExecution(t *testing.T) {
+	gateway := &steeringGateway{started: make(chan struct{}), interrupted: make(chan struct{})}
+	_, service := testThreadService(t, gateway)
+	child, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Send(t.Context(), SendInput{ThreadID: child.ThreadID, Input: UserInput{Text: "original"}, RequestKey: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, gateway.started, "provider did not start")
+	controller, ok := service.(ThreadSteeringCommandService)
+	if !ok {
+		t.Fatal("thread steering capability is missing")
+	}
+	command := SteerInput{ThreadID: child.ThreadID, Input: UserInput{Text: "new direction", References: []MessageReference{{ReferenceID: "source", Kind: MessageReferenceText, Label: "Source", Text: "complete source"}}, Context: []MessageContextItem{{Kind: "facts", Title: "Facts", Text: "frozen context"}}}, RequestKey: "guide"}
+	accepted, err := controller.SteerAck(t.Context(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.TurnID != first.TurnID || accepted.RunID != first.RunID {
+		t.Fatalf("steer changed execution or queued input: %#v", accepted)
+	}
+	waitClosed(t, gateway.interrupted, "old provider was not interrupted")
+	final := waitThreadView(t, service, child.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+	if final.LastOutcome == nil || *final.LastOutcome != TurnOutcomeCompleted || final.TurnID != first.TurnID || final.RunID != first.RunID {
+		t.Fatalf("final=%#v", final)
+	}
+	gateway.mu.Lock()
+	requests := append([]provider.Request(nil), gateway.requests...)
+	gateway.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d", len(requests))
+	}
+	found := false
+	for _, message := range requests[1].Messages {
+		if strings.Contains(message.Text, "new direction") && strings.Contains(message.Text, "complete source") && strings.Contains(message.Text, "frozen context") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("steering was not in provider context: %#v", requests[1].Messages)
+	}
+	if _, err := controller.SteerAck(t.Context(), command); err != nil {
+		t.Fatal(err)
+	}
+	command.Input.Text = "conflicting"
+	if _, err := controller.SteerAck(t.Context(), command); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("conflict=%v", err)
+	}
+}
+
 func TestSteerSettlesToolsBeforeApplyingInput(t *testing.T) {
 	for _, scenario := range []string{"cancelled", "completed", "unconfirmed", "timeout"} {
 		t.Run(scenario, func(t *testing.T) {

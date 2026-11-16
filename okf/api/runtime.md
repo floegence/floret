@@ -878,3 +878,12 @@ transactionally maintained lifecycle source references and the existing current
 queue sources without creating actors or replaying complete history. The original
 summary reducer retains semantic authority. Missing source metadata belongs to
 one-time preparation; a prepared summary budget is not product UI qualification.
+
+## Steering command acknowledgments
+
+`ThreadSteeringCommandService.SteerAck` admits through the existing steering
+owner without materializing complete history. `ThreadSteeringReader.LookupSteer`
+reads the original accepted input for explicit retry, including idle admission,
+application, cancellation and restart. The acknowledgment names the original
+execution on replay. Existing steering and ordinary queued Send remain available.
+See [the public boundary tests](../../runtime/thread_steering_commands_external_test.go).

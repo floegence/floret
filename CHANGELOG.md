@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.115.0
+
+- Add optional `ThreadSteeringCommandService.SteerAck` and
+  `ThreadSteeringReader.LookupSteer` for responsive host steering and immutable
+  transport retry after restart, without hydrating complete presentation history.
+- Preserve the original steering execution identity on acknowledgment replay.
+
 ## v7.114.0
 
 - Require Go 1.27.4 to include the standard-library fix for GO-2026-6859.

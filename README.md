@@ -1672,6 +1672,13 @@ changes use the existing observable request boundary.
 
 ### Immediate thread steering
 
+`ThreadSteeringCommandService.SteerAck` returns admission identity without loading
+complete presentation history. `ThreadSteeringReader.LookupSteer` returns the
+original accepted input for explicit transport retries, including frozen context
+and resources after restart. A replay acknowledges the original execution even
+when another turn is now active. Both use the existing canonical steering owner;
+`ThreadSteeringController` and ordinary `Send` retain their contracts.
+
 Hosts may opt into `runtime.ThreadSteeringController`. `Steer` durably accepts an instruction and interrupts the current provider attempt or cancellable tool batch while preserving the same task and execution identity. `SteerQueued` atomically consumes an exact queued item. Cancelled steering carries a reason code (`stopped`, `effect_outcome_unknown`, `task_ended`, or `fork`); hosts may offer explicit resubmission after `stopped`, and must not automatically replay uncertain effects. Ordinary `Send` remains queued while a thread is active; steering requests are idempotent by request key and stale queue content returns `ErrRequestConflict`.
 
 

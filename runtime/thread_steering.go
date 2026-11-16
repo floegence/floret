@@ -55,7 +55,7 @@ type ThreadSteering struct {
 var _ ThreadSteeringController = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) Steer(ctx context.Context, in SteerInput) (ThreadView, error) {
-	view, err := service.steer(ctx, in, nil)
+	view, err := service.steer(ctx, in, nil, threadFullResult)
 	return service.completeViewResult(ctx, view, err)
 }
 
@@ -63,11 +63,11 @@ func (service *threadRuntimeService) SteerQueued(ctx context.Context, in SteerQu
 	if strings.TrimSpace(in.QueueItemID) == "" {
 		return ThreadView{}, ErrRequestConflict
 	}
-	view, err := service.steer(ctx, SteerInput{ThreadID: in.ThreadID, Input: in.ExpectedInput, RequestKey: in.RequestKey}, &in)
+	view, err := service.steer(ctx, SteerInput{ThreadID: in.ThreadID, Input: in.ExpectedInput, RequestKey: in.RequestKey}, &in, threadFullResult)
 	return service.completeViewResult(ctx, view, err)
 }
 
-func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, queued *SteerQueuedInput) (ThreadView, error) {
+func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, queued *SteerQueuedInput, mode threadResultMode) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -104,7 +104,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 					return ErrRequestConflict
 				}
 				replay = true
-				current = cloneThreadRuntimeView(actor.state.view)
+				current = threadResult(actor.state.view, mode)
 				return nil
 			}
 			if !errors.Is(readErr, sessiontree.ErrEntryNotFound) {
@@ -117,7 +117,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 						return ErrRequestConflict
 					}
 					replay = true
-					current = cloneThreadRuntimeView(actor.state.view)
+					current = threadResult(actor.state.view, mode)
 					return nil
 				}
 				if !errors.Is(readErr, sessiontree.ErrEntryNotFound) {
@@ -131,7 +131,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 					return ErrRequestConflict
 				}
 				replay = true
-				current = cloneThreadRuntimeView(actor.state.view)
+				current = threadResult(actor.state.view, mode)
 				return nil
 			}
 			if actor.state.view.Cancellation != nil && actor.state.view.Activity == ThreadActivityActive {
@@ -187,7 +187,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 				actor.state.fragmentCancel(&agentharness.GracefulCancellation{Deadline: time.Now().Add(gracefulCancellationLimit)})
 			}
 			suspended = actor.state.cancel == nil
-			current = cloneThreadRuntimeView(actor.state.view)
+			current = threadResult(actor.state.view, mode)
 			return nil
 		})
 		if err != nil {
@@ -202,7 +202,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 				return ThreadView{}, ctx.Err()
 			case <-wait:
 			}
-			latest := service.currentView(actor)
+			latest := service.currentResult(actor, mode)
 			if latest.Cancellation != nil {
 				return ThreadView{}, ErrRequestConflict
 			}
@@ -210,9 +210,9 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 		}
 		if idle {
 			if queued != nil {
-				current, err = service.startAccepted(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, queued)
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, mode, queued)
 			} else {
-				current, err = service.startAccepted(ctx, actor, in.ThreadID, input, nil, key, "", "")
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, "", "", mode)
 			}
 			if errors.Is(err, ErrThreadBusy) {
 				continue

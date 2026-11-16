@@ -1983,3 +1983,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-11-09: document canonical reads across earlier-turn host-work settlement and restart qualification.
 
 - Add immutable message revision contracts, schema 38 and logical format 13.
+
+- 2026-11-16: Document optional steering acknowledgment and original-input lookup; retain canonical ownership and request-bound replay identity.

@@ -1098,6 +1098,9 @@ field LookupQueuedEditInput.RequestKey github.com/floegence/floret/v7/runtime.Re
 type LookupSendInput struct
 field LookupSendInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field LookupSendInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type LookupSteerInput struct
+field LookupSteerInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field LookupSteerInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type LookupToolResultInput struct
 field LookupToolResultInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field LookupToolResultInput.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
@@ -1924,8 +1927,10 @@ field ThreadSteering.Status github.com/floegence/floret/v7/runtime.ThreadSteerin
 field ThreadSteering.Reason string tag="json:\"reason,omitempty\""
 const ThreadSteeringApplied github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "applied"
 const ThreadSteeringCancelled github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "cancelled"
+type ThreadSteeringCommandService interface interface{SteerAck(context.Context, github.com/floegence/floret/v7/runtime.SteerInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error)}
 type ThreadSteeringController interface interface{Steer(context.Context, github.com/floegence/floret/v7/runtime.SteerInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SteerQueued(context.Context, github.com/floegence/floret/v7/runtime.SteerQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 const ThreadSteeringPending github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "pending"
+type ThreadSteeringReader interface interface{LookupSteer(context.Context, github.com/floegence/floret/v7/runtime.LookupSteerInput) (github.com/floegence/floret/v7/runtime.UserInput, bool, error)}
 type ThreadSteeringStatus string
 type ThreadSummary struct
 field ThreadSummary.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
