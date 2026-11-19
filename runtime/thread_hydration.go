@@ -73,7 +73,8 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 					if err := contextProjection.Append([]sessiontree.Entry{next}); err != nil {
 						return runtimeHostError(err)
 					}
-					if next.Message.ModelContextSnapshot != nil || next.ModelContextBaseline != nil {
+					// Applied steering projects the request's snapshot under the application ID.
+					if next.Message.ModelContextSnapshot != nil || next.ModelContextBaseline != nil || next.Type == sessiontree.EntrySteeringApplied {
 						contextSources = append(contextSources, sessiontree.Entry{ID: next.ID, PathDepth: next.PathDepth, TurnID: next.TurnID, RunID: next.RunID, CreatedAt: next.CreatedAt})
 					}
 					if nextContext == len(selected) {

@@ -99,7 +99,10 @@ func (service *threadRuntimeService) modelContextFromHistory(ctx context.Context
 		if next == nil {
 			continue
 		}
-		entry := byID[message.EntryID]
+		entry, found := byID[message.EntryID]
+		if !found {
+			return nil, ErrAuthorityCorrupt
+		}
 		changed, removed := session.ModelContextChanges(current, next)
 		out = &ThreadModelContext{Snapshot: *runtimeModelContext(next), EntryID: entry.ID, PathDepth: entry.PathDepth, TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), UpdatedAt: entry.CreatedAt, ChangedKeys: changed, RemovedKeys: removed}
 		current = next

@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.116.1
+
+- Preserve the applied steering entry's execution identity when rebuilding managed context from existing threads after restart. Historical views and window updates remain readable without rewriting conversation data.
+
 ## v7.116.0
 
 - Preserve dispatched tools when steering an active task; withdraw pending

@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -64,10 +65,25 @@ func TestSteeringCommandsRetainInputAndExecutionAfterRestart(t *testing.T) {
 			inputPolicyWait(t, service, created.ThreadID, func(v runtime.ThreadView) bool {
 				return v.Activity == runtime.ThreadActivityIdle && v.TurnID != ack.TurnID
 			})
+			before, err := service.View(t.Context(), created.ThreadID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err = host.Shutdown(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			_, service = inputPolicyService(t, source, gateway)
+			restored, err := service.View(t.Context(), created.ThreadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := restored.Context.ModelContext
+			if model == nil || model.EntryID == "" || model.TurnID != ack.TurnID || model.RunID == "" || !reflect.DeepEqual(model, before.Context.ModelContext) {
+				t.Fatalf("restored context lost its admitted execution: %+v", model)
+			}
+			if _, err := json.Marshal(restored); err != nil {
+				t.Fatal(err)
+			}
 			reader := service.(runtime.ThreadSteeringReader)
 			got, found, err := reader.LookupSteer(t.Context(), runtime.LookupSteerInput{ThreadID: created.ThreadID, RequestKey: "guide"})
 			if err != nil || !found || !reflect.DeepEqual(got, input) {
