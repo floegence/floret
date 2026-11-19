@@ -53,6 +53,23 @@ func projectionGroupIDs(ctx context.Context, repo *BackendRepo, group projection
 	return ids, err
 }
 
+func TestTurnClosureReadsOnlySelectedBranchAndTurn(t *testing.T) {
+	backend, repo := projectionSourcesFixture(t, 150)
+	if err := repo.MoveLeaf(t.Context(), "thread", "call"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := ReadTurnClosureEntries(t.Context(), repo, "thread", "turn")
+	if err != nil || len(selected) != 2 || selected[0].ID != "start" || selected[1].ID != "call" || selected[1].Message.ToolArgs != "{}" {
+		t.Fatalf("closure entries=%v err=%v", selected, err)
+	}
+	counted := &projectionReadBackend{Backend: backend, turnMemberPrefix: backendDomainKey("turn_member", "thread", "absent")}
+	repo.backend = counted
+	selected, err = ReadTurnClosureEntries(t.Context(), repo, "thread", "absent")
+	if err != nil || len(selected) != 0 || counted.sources > 10 {
+		t.Fatalf("unrelated turn leaked %d entries, %d source reads: %v", len(selected), counted.sources, err)
+	}
+}
+
 type projectionReadBackend struct {
 	spi.Backend
 	turnMemberPrefix []byte

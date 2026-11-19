@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -40,7 +41,11 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 			return nil, true, err
 		}
 	}
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+	source := repo.backend
+	if threadID == "" {
+		source = &retentionReadBudget{Backend: source, started: time.Now()}
+	}
+	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: source}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
 	// Inventory enumeration uses the repository owner only for short metadata
 	// transactions; journal scans release both locks between bounded pages.
 	inventoryView := func(read func(spi.ReadTx) error) error {
@@ -146,4 +151,23 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 		return nil, true, err
 	}
 	return result, true, nil
+}
+
+type retentionReadBudget struct {
+	spi.Backend
+	started time.Time
+}
+
+func (budget *retentionReadBudget) View(ctx context.Context, read func(spi.ReadTx) error) error {
+	if elapsed := time.Since(budget.started); elapsed >= 3*time.Millisecond {
+		timer := time.NewTimer(min(100*time.Millisecond, 5*elapsed))
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+		budget.started = time.Now()
+	}
+	return budget.Backend.View(ctx, read)
 }

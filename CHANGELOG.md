@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.117.1
+
+- Bound interrupted-turn tool closure reads to the selected turn and branch. Pace whole-store media retention scans outside storage transactions without weakening their final verification or changing scoped reads.
+
 ## v7.117.0
 
 - Expose read-only `runtime.ThreadSendStateReader` to distinguish queued, removed, redirected, and started sends by their original request key. Existing journals require no migration.

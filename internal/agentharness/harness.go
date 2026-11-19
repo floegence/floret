@@ -372,7 +372,11 @@ func isTerminalTurnMarker(status sessiontree.TurnMarkerStatus) bool {
 	}
 }
 
-func (h *AgentHarness) closeInterruptedTurnToolCalls(ctx context.Context, threadID, turnID string, path []sessiontree.Entry) error {
+func (h *AgentHarness) closeInterruptedTurnToolCalls(ctx context.Context, threadID, turnID string) error {
+	path, err := sessiontree.ReadTurnClosureEntries(ctx, h.options.Repo, threadID, turnID)
+	if err != nil {
+		return err
+	}
 	calls := unresolvedToolCallsForTurn(path, turnID)
 	if len(calls) == 0 {
 		return nil
@@ -1195,15 +1199,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		turn.FailureCode = failureCode
 		return turn, err
 	}
-	meta, readErr := t.harness.options.Repo.Thread(ctx, t.id)
-	if readErr != nil {
-		return TurnResult{}, readErr
-	}
-	path, readErr := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
-	if readErr != nil {
-		return TurnResult{}, readErr
-	}
-	if closeErr := t.harness.closeInterruptedTurnToolCalls(ctx, t.id, turnID, path); closeErr != nil {
+	if closeErr := t.harness.closeInterruptedTurnToolCalls(ctx, t.id, turnID); closeErr != nil {
 		return TurnResult{}, closeErr
 	}
 	metadata := markerMetadata(runID, result)
@@ -2317,11 +2313,7 @@ func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) e
 	if status != engine.Cancelled && status != engine.Failed {
 		return nil
 	}
-	path, err := p.thread.harness.options.Repo.Path(p.ctx, p.thread.id, "")
-	if err != nil {
-		return err
-	}
-	return p.thread.harness.closeInterruptedTurnToolCalls(p.ctx, p.thread.id, p.turnID, path)
+	return p.thread.harness.closeInterruptedTurnToolCalls(p.ctx, p.thread.id, p.turnID)
 }
 
 func (p *turnProjection) responseEntries(output engine.ResponseOutput) ([]sessiontree.Entry, error) {

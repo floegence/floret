@@ -18,6 +18,11 @@ and stop behavior retain the canonical path semantics. Host-work admission uses
 the active branch's sparse work sources, not the continuation cancellation
 inventory. Its cost still depends on historical host-work sources.
 
+Failure, cancellation and steering query tool closure on the selected branch
+and turn. Global media retention yields outside backend transactions between
+short work slices; targeted media reads remain unpaced. Only a completed and
+revalidated inventory authorizes collection, never an intermediate slice.
+
 ## Send request identity lookup
 
     GOWORK=off go test ./internal/sessiontree -run TestTurnRequest -count=1
