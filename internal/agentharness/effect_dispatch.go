@@ -163,22 +163,31 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		}
 		var finalizationOutcome effectFinalizeOutcome
 		defer func() { finalization.outcome <- finalizationOutcome }()
-		finishCtx, cancelFinish := t.harness.effectFinalizationContext(finalization.ctx)
-		defer cancelFinish()
 		outcomeFingerprint, fingerprintErr := t.harness.effectOutcomeFingerprinter(handlerResult, finalization.request.Message, finalization.request.FullOutput)
 		if fingerprintErr != nil {
 			finalizationOutcome.err = fingerprintErr
 			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "outcome_fingerprint_error", fingerprintErr)
 		}
-		finished, finishErr := repo.FinishEffectDispatch(finishCtx, sessiontree.FinishEffectDispatchRequest{
+		commitRequest := sessiontree.FinishEffectDispatchRequest{
 			EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
 			OutcomeFingerprint: outcomeFingerprint, Failed: handlerResult.IsError || effectMessageFailed(finalization.request.Message), Now: t.harness.now(),
 			Result:     sessiontree.Entry{ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), Type: sessiontree.EntryToolResult, Message: session.CloneMessage(finalization.request.Message)},
 			FullOutput: cloneEffectFullOutput(finalization.request.FullOutput),
-		})
+		}
+		commit := func() (sessiontree.FinishEffectDispatchResult, error) {
+			finishCtx, cancelFinish := t.harness.effectFinalizationContext(finalization.ctx)
+			defer cancelFinish()
+			return repo.FinishEffectDispatch(finishCtx, commitRequest)
+		}
+		finished, finishErr := commit()
+		if finishErr != nil && dispatchCtx.Err() == nil && !errors.Is(finishErr, sessiontree.ErrRequestConflict) && !errors.Is(finishErr, sessiontree.ErrAuthorityCorrupt) && !errors.Is(finishErr, sessiontree.ErrInvalidThreadAuthority) && !errors.Is(finishErr, sessiontree.ErrStaleAuthority) {
+			// The transaction checks the original invocation and fingerprint before
+			// returning its stored result or admitting the same result exactly once.
+			finished, finishErr = commit()
+		}
 		if finishErr != nil {
-			finalizationOutcome.err = finishErr
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
+			finalizationOutcome.err = t.convergeDispatchedEffect(ctx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
+			return EffectDispatchResult{}, finalizationOutcome.err
 		}
 		committed, validateErr := validateCommittedEffectFinalization(finalization.request, prepared.Attempt, finished)
 		if validateErr != nil {

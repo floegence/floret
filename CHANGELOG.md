@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.117.2
+
+- Reconcile a live tool's observed result once across a failed storage commit or lost acknowledgment. Reuse the original invocation and result; never reauthorize or dispatch the tool again.
+
 ## v7.117.1
 
 - Bound interrupted-turn tool closure reads to the selected turn and branch. Pace whole-store media retention scans outside storage transactions without weakening their final verification or changing scoped reads.

@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-11-19: Document bounded live effect-result reconciliation without tool replay.
+
 - 2026-11-16: Separate steering from dispatched-effect cancellation. Retain turn
   and host restrictions, withdraw pending authorization and expose an optional
   yield signal for observations of independently managed work.

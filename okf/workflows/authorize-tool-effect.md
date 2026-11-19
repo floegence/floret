@@ -37,3 +37,10 @@ lifecycle remains the [`runtime` API](../api/runtime.md), not a host audit log.
 Floret owns generic permission/effect metadata, durable approval identity and
 lifecycle, dispatch, and result projection. The host owns policy, approver
 identity, user-facing language, concrete domain action, and visual treatment.
+
+If a live handler returned a complete result and its storage acknowledgment
+fails, the harness reconciles the frozen result once through the same
+identity-checked transaction. An existing matching result is reused; only a
+still-dispatching invocation can admit a new result. This does not run the
+handler again, infer completion from host-work notifications, or resume a
+stopped turn. Output retention failure is distinct from execution failure.

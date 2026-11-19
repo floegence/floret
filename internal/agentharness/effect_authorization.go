@@ -253,7 +253,7 @@ func validateCommittedEffectFinalization(req engine.EffectResultFinalizationRequ
 		return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization integrity: %w", err)
 	}
 	committedRef := finished.Result.Message.ToolResult.FullOutput
-	if req.FullOutput == nil {
+	if req.FullOutput == nil || finished.Result.Message.ToolResult.OutputUnavailable != "" {
 		if committedRef != nil || finished.Artifact != nil {
 			return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization artifact: %w", sessiontree.ErrAuthorityCorrupt)
 		}

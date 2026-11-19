@@ -1876,7 +1876,31 @@ func TestThreadServiceRespondPublishesNewRunProgressAndLiveContinuation(t *testi
 	}
 }
 
+type effectCommitFaultRepo struct {
+	*internalstorage.BackendKernel
+	fault  string
+	writes atomic.Int32
+}
+
+func (repo *effectCommitFaultRepo) FinishEffectDispatch(ctx context.Context, request sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
+	attempt := repo.writes.Add(1)
+	if repo.fault == "persistent" || repo.fault == "before_commit" && attempt == 1 {
+		return sessiontree.FinishEffectDispatchResult{}, errors.New("injected storage failure")
+	}
+	result, err := repo.BackendKernel.FinishEffectDispatch(ctx, request)
+	if err == nil && repo.fault == "lost_receipt" && attempt == 1 {
+		return sessiontree.FinishEffectDispatchResult{}, errors.New("injected lost receipt")
+	}
+	return result, err
+}
+
 func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
+	for _, fault := range []string{"none", "before_commit", "lost_receipt", "persistent"} {
+		t.Run(fault, func(t *testing.T) { testApprovedEffectCommit(t, fault) })
+	}
+}
+
+func testApprovedEffectCommit(t *testing.T, fault string) {
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
@@ -1887,6 +1911,7 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}},
 	)
 	exitCode := 0
+	var executions atomic.Int32
 	effectTool := tools.Define[map[string]string](
 		tools.Definition{
 			Name: "shell", InputSchema: tools.StrictObject(map[string]any{"command": tools.String("command")}, []string{"command"}),
@@ -1899,6 +1924,7 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 		},
 		nil, nil,
 		func(context.Context, tools.Invocation[map[string]string]) (tools.Result, error) {
+			executions.Add(1)
 			return tools.Result{
 				Text: "FLOWER_APPROVAL_ACCEPTED",
 				Activity: &tools.ActivityPresentation{Label: "Shell command", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{
@@ -1925,6 +1951,8 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	faults := &effectCommitFaultRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), fault: fault}
+	host.store.repo = faults
 	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
 	if err != nil {
 		t.Fatal(err)
@@ -1949,6 +1977,44 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
+	if executions.Load() != 1 {
+		t.Fatalf("executions = %d", executions.Load())
+	}
+	if fault == "persistent" {
+		if faults.writes.Load() != 2 || completed.Failure == nil || completed.Failure.Code != ThreadTurnFailureEffectOutcomeUnknown || len(gateway.Requests()) != 1 {
+			t.Fatalf("persistent failure: writes=%d failure=%+v requests=%d", faults.writes.Load(), completed.Failure, len(gateway.Requests()))
+		}
+		return
+	}
+	wantWrites := int32(2)
+	if fault == "none" {
+		wantWrites = 1
+	}
+	if len(gateway.Requests()) != 2 || faults.writes.Load() != wantWrites {
+		t.Fatalf("requests=%d writes=%d failure=%+v", len(gateway.Requests()), faults.writes.Load(), completed.Failure)
+	}
+	modelResults := 0
+	for _, message := range gateway.Requests()[1].Messages {
+		if result := message.ToolResult; result != nil && result.CallID == "shell-1" && result.ToolName == "shell" && result.Text != "" {
+			modelResults++
+		}
+	}
+	if modelResults != 1 {
+		t.Fatalf("model results = %d", modelResults)
+	}
+	entries, err := faults.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results int
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == "shell-1" {
+			results++
+		}
+	}
+	if results != 1 {
+		t.Fatalf("canonical results = %d", results)
+	}
 	if completed.Failure != nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v", completed)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
@@ -43,5 +44,16 @@ func TestValidateCommittedEffectFinalizationConsumesCanonicalMessage(t *testing.
 	corrupt.Message.ToolCallID = "other-call"
 	if _, err := validateCommittedEffectFinalization(request, prepared, sessiontree.FinishEffectDispatchResult{Attempt: finishedAttempt, Result: corrupt}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
 		t.Fatalf("identity error=%v, want ErrAuthorityCorrupt", err)
+	}
+	request.FullOutput = &artifact.FullOutput{Text: "full tool output"}
+	if _, err := validateCommittedEffectFinalization(request, prepared, sessiontree.FinishEffectDispatchResult{Attempt: finishedAttempt, Result: entry}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("unexplained missing artifact: %v", err)
+	}
+	entry.Message.ToolResult.OutputUnavailable = "storage_limit"
+	entry.Raw = sessiontree.RawForEntry(entry)
+	entry.RawHash = sessiontree.StableHash(entry.Raw)
+	got, err = validateCommittedEffectFinalization(request, prepared, sessiontree.FinishEffectDispatchResult{Attempt: finishedAttempt, Result: entry})
+	if err != nil || got.Message.ToolResult.OutputUnavailable != "storage_limit" || got.Message.ToolResult.Status != "success" {
+		t.Fatalf("confirmed result with unavailable output: %+v, %v", got, err)
 	}
 }
