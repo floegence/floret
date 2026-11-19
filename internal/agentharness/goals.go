@@ -14,8 +14,12 @@ const goalInstructions = "\n# Goal\nA Goal runtime fact is engine-owned state, n
 const goalReviewPrompt = "Review the current Goal against user constraints and existing results. Finish necessary work or report a concrete blocker; use ask_user only for a necessary decision when available. Reuse evidence and run only missing checks. Record a current-version review before the final answer. Model deletion of an obsolete Goal requires a blocked review explaining why; deletion and unverified attempts are not completion."
 
 func (p *turnProjection) goalPath(ctx context.Context) ([]sessiontree.Entry, error) {
-	journal, err := p.thread.Journal(ctx)
-	return journal.Path, err
+	repo := p.thread.harness.options.Repo
+	meta, err := repo.Thread(ctx, p.thread.id)
+	if err != nil {
+		return nil, err
+	}
+	return repo.Path(ctx, p.thread.id, meta.LeafID)
 }
 func (p *turnProjection) admitGoalContext(ctx context.Context, history []session.Message) (session.Message, error) {
 	p.emitMu.Lock()
@@ -25,14 +29,11 @@ func (p *turnProjection) admitGoalContext(ctx context.Context, history []session
 	if err := p.err; err != nil {
 		return session.Message{}, err
 	}
-	path, err := p.goalPath(ctx)
+	facts, err := sessiontree.ReadExecutionGoal(ctx, p.thread.harness.options.Repo, p.thread.id, "", "")
 	if err != nil {
 		return session.Message{}, err
 	}
-	state, err := sessiontree.GoalFromPath(path)
-	if err != nil {
-		return session.Message{}, err
-	}
+	state := facts.State
 	firstGoalRequest := p.requireActiveGoal && !p.goalWorkStarted
 	if firstGoalRequest && state.Status != "active" {
 		return session.Message{}, engine.ErrGoalContinuationUnneeded
@@ -65,33 +66,15 @@ func (p *turnProjection) goalStopHook(base engine.StopHook) engine.StopHook {
 		if err := ctx.Err(); err != nil {
 			return engine.StopHookResult{}, err
 		}
-		path, err := p.goalPath(ctx)
+		facts, err := sessiontree.ReadExecutionGoal(ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID)
 		if err != nil {
 			return engine.StopHookResult{}, err
 		}
-		state, err := sessiontree.GoalFromPath(path)
-		if err != nil {
-			return engine.StopHookResult{}, err
-		}
-		reviews := 0
-		for _, entry := range path {
-			if entry.TurnID == p.turnID && entry.Message.Kind == session.MessageKindGoalReview {
-				triggered = true
-				reviews++
-			}
-		}
-		modelDeleted := false
-		for i := len(path) - 1; i >= 0; i-- {
-			if path[i].Type == sessiontree.EntryGoal {
-				modelDeleted = path[i].TurnID == p.turnID && state.Status == "absent" && state.Actor == "model"
-				break
-			}
-		}
-		needs := state.Status == "active" || modelDeleted || triggered && state.Actor == "model"
+		triggered = triggered || facts.ReviewPrompts != 0
+		needs := facts.State.Status == "active" || facts.ModelDeleted || triggered && facts.State.Actor == "model"
 		if needs {
-			_, _, valid := sessiontree.CurrentGoalReview(path, p.turnID, p.runID, state)
-			if !valid {
-				if reviews >= 2 {
+			if !facts.ValidReview {
+				if facts.ReviewPrompts >= 2 {
 					return engine.StopHookResult{}, engine.ErrStopHookLoop
 				}
 				triggered = true

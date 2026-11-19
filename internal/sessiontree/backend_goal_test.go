@@ -27,9 +27,18 @@ func TestV32GoalReviewAndSuppressionUseMetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkReview := func(valid bool) {
+		t.Helper()
+		facts, err := ReadExecutionGoal(t.Context(), repo, "thread", "turn", "run")
+		if err != nil || facts.ValidReview != valid {
+			t.Fatalf("review facts=%+v err=%v", facts, err)
+		}
+	}
+	checkReview(true)
 	if _, err := repo.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", RequestKey: "delete", Actor: "user", Operation: "delete", ExpectedVersion: 1}); err != nil {
 		t.Fatal(err)
 	}
+	checkReview(false)
 	if _, err := repo.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", TurnID: "turn", RunID: "run", RequestKey: "model", Actor: "model", Operation: "set", Text: "Deliver result", ExpectedVersion: 2, NewTask: true}); err == nil {
 		t.Fatal("recreated suppressed goal")
 	}

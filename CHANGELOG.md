@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.116.2
+
+- Read Goal facts at provider and stop boundaries without restoring unrelated conversation bodies. Check host-work notice admission without reconstructing continuation state. No public API or storage format changes.
+
 ## v7.116.1
 
 - Preserve the applied steering entry's execution identity when rebuilding managed context from existing threads after restart. Historical views and window updates remain readable without rewriting conversation data.

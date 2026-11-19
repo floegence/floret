@@ -55,8 +55,9 @@ func projectionGroupIDs(ctx context.Context, repo *BackendRepo, group projection
 
 type projectionReadBackend struct {
 	spi.Backend
-	sources int
-	scans   int
+	turnMemberPrefix []byte
+	sources          int
+	scans            int
 }
 type projectionReadTx struct {
 	spi.ReadTx
@@ -76,6 +77,9 @@ func (tx projectionReadTx) Get(ns string, key []byte) ([]byte, error) {
 	return tx.ReadTx.Get(ns, key)
 }
 func (tx projectionReadTx) Scan(req spi.ScanRequest) (spi.ScanPage, error) {
+	if prefix := tx.owner.turnMemberPrefix; len(prefix) > 0 && req.Namespace == backendEntryIndexNamespace && string(req.Start) == string(prefix) && string(req.End) == string(backendKeyRangeEnd(prefix)) {
+		return tx.ReadTx.Scan(req)
+	}
 	if req.Namespace != projectionSourcesNamespace {
 		return spi.ScanPage{}, errors.New("dependency lookup scanned history")
 	}

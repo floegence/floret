@@ -9,6 +9,15 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Fixed-history SQLite mutation
 
+Goal admission reads the active leaf's canonical Goal sources at each logical
+request. Natural stop additionally reads the selected turn's review metadata;
+when a review or model deletion matters it walks backward to its work boundary
+or latest change. Neither operation needs an unrelated conversation body.
+`TestExecutionGoalReadsOnlyCurrentSources` guards source reads; complete Goal
+and stop behavior retain the canonical path semantics. Host-work admission uses
+the active branch's sparse work sources, not the continuation cancellation
+inventory. Its cost still depends on historical host-work sources.
+
 ## Send request identity lookup
 
     GOWORK=off go test ./internal/sessiontree -run TestTurnRequest -count=1

@@ -63,6 +63,21 @@ func TestGoalWindowCurrentSourcesDoNotReadGoalHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutionGoalReadsOnlyCurrentSources(t *testing.T) {
+	for _, count := range []int{25, 250} {
+		backend, repo := goalSourceFixture(t, count)
+		measured := &projectionReadBackend{Backend: backend, turnMemberPrefix: backendDomainKey("turn_member", "thread", "turn")}
+		repo.backend = measured
+		for _, turn := range []string{"", "turn"} {
+			measured.sources = 0
+			facts, err := ReadExecutionGoal(t.Context(), repo, "thread", turn, "run")
+			if err != nil || facts.State.Version != int64(count) || facts.ReviewPrompts != 0 || facts.ValidReview || facts.ModelDeleted || measured.sources > 16 {
+				t.Fatalf("turn=%q facts=%+v reads=%d err=%v", turn, facts, measured.sources, err)
+			}
+		}
+	}
+}
 func TestGoalSourceStateRetainsResetCompletionForkAndRollback(t *testing.T) {
 	backend, repo := goalSourceFixture(t, 3)
 	check := func() {
@@ -74,6 +89,10 @@ func TestGoalSourceStateRetainsResetCompletionForkAndRollback(t *testing.T) {
 		want, err := GoalFromPath(path)
 		if err != nil {
 			t.Fatal(err)
+		}
+		facts, err := ReadExecutionGoal(t.Context(), repo, "thread", "", "")
+		if err != nil || facts.State != want {
+			t.Fatalf("execution goal=%+v want=%+v err=%v", facts.State, want, err)
 		}
 		got, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1}, func(PathMetadata, bool) []string { return nil })
 		if err != nil || got.Facts.Goal == nil || !reflect.DeepEqual(*got.Facts.Goal, want) {

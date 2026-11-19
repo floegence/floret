@@ -148,7 +148,7 @@ func hostWorkPath(m *canonicalJournalMutation) ([]Entry, error) {
 	return canonicalHostWorkPath(m.ctx, m.tx, m.meta)
 }
 
-func canonicalHostWorkPath(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]Entry, error) {
+func canonicalHostWorkEntries(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]Entry, error) {
 	var path []Entry
 	if meta.LeafID == "" {
 		return path, nil
@@ -185,6 +185,11 @@ func canonicalHostWorkPath(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) 
 		}
 		return nil
 	})
+	return path, err
+}
+
+func canonicalHostWorkPath(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]Entry, error) {
+	path, err := canonicalHostWorkEntries(ctx, tx, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +230,7 @@ func (r *BackendRepo) HostWorks(ctx context.Context, id string) ([]HostWork, err
 	}
 	var works []HostWork
 	err := r.canonicalThreadView(ctx, id, func(tx spi.ReadTx, meta ThreadMeta) error {
-		path, err := canonicalHostWorkPath(ctx, tx, meta)
+		path, err := canonicalHostWorkEntries(ctx, tx, meta)
 		if err != nil {
 			return err
 		}
@@ -360,7 +365,7 @@ func (r *BackendRepo) AdmitHostWork(ctx context.Context, thread, turn, run strin
 		if cancelled {
 			return ErrStaleAuthority
 		}
-		path, err := hostWorkPath(m)
+		path, err := canonicalHostWorkEntries(ctx, m.tx, m.meta)
 		if err != nil {
 			return err
 		}
