@@ -166,6 +166,11 @@ or over-budget output preserves the original effective context. The 20,000-token
 summary ceiling is separate from the 50,000-token compacted-context target.
 
 
+`ThreadSendStateReader.LookupSendState` resolves the canonical queue or original
+turn marker by request key. A missing key is distinct from removal. A queue item
+consumed by another command is redirected; callers must not cancel the other
+execution. Only a started send returns its own turn and initial run identity.
+
 The optional `ThreadSendReader.LookupSend` reads the original admitted
 `UserInput` by thread and request key. Queue edits and promotion do not change
 that original transport identity; a removed queue item also retains its send

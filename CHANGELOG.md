@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.117.0
+
+- Expose read-only `runtime.ThreadSendStateReader` to distinguish queued, removed, redirected, and started sends by their original request key. Existing journals require no migration.
+
 ## v7.116.2
 
 - Read Goal facts at provider and stop boundaries without restoring unrelated conversation bodies. Check host-work notice admission without reconstructing continuation state. No public API or storage format changes.

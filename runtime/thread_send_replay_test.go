@@ -35,6 +35,10 @@ func TestSendReplayPreservesOriginalInputAfterQueueEditAndPromotion(t *testing.T
 	if err != nil || replay.TurnID != view.TurnID {
 		t.Fatalf("original send replay after promotion: %v", err)
 	}
+	state, found, err := service.(ThreadSendStateReader).LookupSendState(t.Context(), LookupSendInput{ThreadID: created.ThreadID, RequestKey: original.RequestKey})
+	if err != nil || !found || state != (SendDisposition{State: SendStarted, TurnID: view.TurnID, RunID: view.RunID}) {
+		t.Fatalf("promoted send lost its execution: %+v, %v, %v", state, found, err)
+	}
 	got, found, lookupErr := service.(ThreadSendReader).LookupSend(t.Context(), LookupSendInput{ThreadID: created.ThreadID, RequestKey: original.RequestKey})
 	if lookupErr != nil || !found || got.Text != "original" {
 		t.Fatalf("promoted lookup: %#v %v %v", got, found, lookupErr)

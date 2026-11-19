@@ -536,6 +536,10 @@ The optional `runtime.ThreadSendReader.LookupSend` returns original admitted
 input for a request key, including after queue edits, promotion, removal, or
 restart. Hosts can validate transport retries against canonical input without
 refreshing context or resolving attachments again.
+`runtime.ThreadSendStateReader.LookupSendState` reads the disposition of that
+same send. A queued item, a removed item, and input redirected into another
+command have no independently cancellable execution. A started send identifies
+its own turn and initial run even when another turn is active.
 
 `Host.MediaInventory(ctx)` exposes opaque media descriptors retained by every
 canonical journal, including archived threads, inactive paths, and queue facts,

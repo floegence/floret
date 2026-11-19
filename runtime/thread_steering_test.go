@@ -321,6 +321,10 @@ func TestSteerQueuedConsumesExactInputAndRejectsStaleContent(t *testing.T) {
 	if len(accepted.Queue) != 0 || accepted.RunID != first.RunID {
 		t.Fatal("queue was not atomically consumed")
 	}
+	d, found, err := service.(ThreadSendStateReader).LookupSendState(t.Context(), LookupSendInput{ThreadID: child.ThreadID, RequestKey: "queued"})
+	if err != nil || !found || d != (SendDisposition{State: SendRedirected}) {
+		t.Fatalf("steering assigned a shared execution to the original send: %+v, %v, %v", d, found, err)
+	}
 	waitClosed(t, gateway.interrupted, "provider did not stop")
 	waitThreadView(t, service, child.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
 	if _, err := controller.SteerQueued(t.Context(), command); err != nil {
