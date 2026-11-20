@@ -54,6 +54,7 @@ type CompleteHostWorkInput struct {
 	Output *string
 }
 type HostWork struct {
+	ToolName        string          `json:"tool_name,omitempty"`
 	StreamingOutput bool            `json:"streaming_output,omitempty"`
 	Result          json.RawMessage `json:"result,omitempty"`
 	Inherited       bool            `json:"inherited,omitempty"`
@@ -152,9 +153,13 @@ func (s *threadRuntimeService) ListHostWork(ctx context.Context, id identity.Thr
 	}
 	out := make([]HostWork, 0, len(works))
 	for _, w := range works {
-		out = append(out, HostWork{StreamingOutput: w.OutputStream != "", Result: append(json.RawMessage(nil), w.Result...), Inherited: w.Inherited, WorkID: w.ID, TurnID: identity.TurnID(w.Invocation.TurnID), RunID: identity.RunID(w.Invocation.RunID), ToolCallID: w.Invocation.ToolCallID, State: w.State, Notice: w.Notice, OutputAvailable: w.Output != nil})
+		out = append(out, publicHostWork(w))
 	}
 	return out, nil
+}
+
+func publicHostWork(w sessiontree.HostWork) HostWork {
+	return HostWork{ToolName: w.Invocation.ToolName, StreamingOutput: w.OutputStream != "", Result: append(json.RawMessage(nil), w.Result...), Inherited: w.Inherited, WorkID: w.ID, TurnID: identity.TurnID(w.Invocation.TurnID), RunID: identity.RunID(w.Invocation.RunID), ToolCallID: w.Invocation.ToolCallID, State: w.State, Notice: w.Notice, OutputAvailable: w.Output != nil}
 }
 func (s *threadRuntimeService) ReadHostWorkOutput(ctx context.Context, id identity.ThreadID, workID string) (string, error) {
 	if _, err := s.ensureThread(ctx, id); err != nil {

@@ -88,8 +88,11 @@ func entryAncestor(ctx context.Context, tx spi.ReadTx, threadID string, node ent
 			id, want = node.Skip, skipDepth
 		}
 		parent, err := readEntryLocator(tx, threadID, id)
-		if err != nil || parent.Depth != want || parent.Ordinal >= node.Ordinal {
-			return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
+		if err != nil {
+			return entryLocator{}, requiredRecordError(err)
+		}
+		if parent.Depth != want || parent.Ordinal >= node.Ordinal {
+			return entryLocator{}, ErrAuthorityCorrupt
 		}
 		node = parent
 	}
@@ -332,7 +335,7 @@ func readLocatedEntry(tx spi.ReadTx, format backendDomainFormat, threadID string
 
 	encoded, err := tx.Get(format.namespace, backendDomainEntryKey(threadID, locator.Ordinal))
 	if err != nil {
-		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		return Entry{}, requiredRecordError(err)
 	}
 	record, stored, err := decodeCanonicalEntryRecord(format, encoded)
 	if err != nil || record.ID != locator.ID || record.ThreadID != threadID || record.Ordinal != locator.Ordinal {
@@ -344,6 +347,13 @@ func readLocatedEntry(tx spi.ReadTx, format backendDomainFormat, threadID string
 	entry := stored.Entry
 	entry.bodyFields = stored.Fields
 	return entry, nil
+}
+
+func requiredRecordError(err error) error {
+	if errors.Is(err, ErrEntryNotFound) || errors.Is(err, spi.ErrNotFound) {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return err
 }
 
 func verifyThreadEntryLocators(ctx context.Context, tx spi.ReadTx, memory *MemoryRepo) error {

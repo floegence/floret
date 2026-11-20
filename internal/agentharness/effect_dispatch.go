@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/toolcontext"
+	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -179,11 +182,28 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			defer cancelFinish()
 			return repo.FinishEffectDispatch(finishCtx, commitRequest)
 		}
-		finished, finishErr := commit()
-		if finishErr != nil && dispatchCtx.Err() == nil && !errors.Is(finishErr, sessiontree.ErrRequestConflict) && !errors.Is(finishErr, sessiontree.ErrAuthorityCorrupt) && !errors.Is(finishErr, sessiontree.ErrInvalidThreadAuthority) && !errors.Is(finishErr, sessiontree.ErrStaleAuthority) {
-			// The transaction checks the original invocation and fingerprint before
-			// returning its stored result or admitting the same result exactly once.
+		var finished sessiontree.FinishEffectDispatchResult
+		var finishErr error
+		for try := 1; try <= 2; try++ {
+			started := time.Now()
 			finished, finishErr = commit()
+			if finishErr == nil {
+				break
+			}
+			class, retry := effectCommitDisposition(finishErr)
+			decision := "retry_frozen_result"
+			switch {
+			case !retry:
+				decision = "authority_rejected"
+			case dispatchCtx.Err() != nil:
+				decision = "dispatch_ended"
+			case try == 2:
+				decision = "retry_exhausted"
+			}
+			slog.WarnContext(ctx, "floret tool result commit failed", "stage", "finish_effect_dispatch", "effect_attempt_id", prepared.Attempt.EffectAttemptID, "attempt", try, "elapsed_ms", time.Since(started).Milliseconds(), "error_class", class, "decision", decision)
+			if decision != "retry_frozen_result" {
+				break
+			}
 		}
 		if finishErr != nil {
 			finalizationOutcome.err = t.convergeDispatchedEffect(ctx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
@@ -255,5 +275,26 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			}
 			return effectDispatchError(request.CallID, request.Name, contextCancellationError(ctx))
 		}
+	}
+}
+
+func effectCommitDisposition(err error) (string, bool) {
+	switch {
+	case errors.Is(err, sessiontree.ErrRequestConflict):
+		return "request_conflict", false
+	case errors.Is(err, sessiontree.ErrAuthorityCorrupt):
+		return "authority_corrupt", false
+	case errors.Is(err, sessiontree.ErrInvalidThreadAuthority):
+		return "invalid_authority", false
+	case errors.Is(err, sessiontree.ErrStaleAuthority):
+		return "stale_authority", false
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded", true
+	case errors.Is(err, context.Canceled):
+		return "cancelled", true
+	case errors.Is(err, spi.ErrConflict):
+		return "transaction_conflict", true
+	default:
+		return "storage_error", true
 	}
 }

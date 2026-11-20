@@ -1007,6 +1007,7 @@ method *Host.PrepareDisplayThread func(ctx context.Context, threadID github.com/
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type HostWork struct
+field HostWork.ToolName string tag="json:\"tool_name,omitempty\""
 field HostWork.StreamingOutput bool tag="json:\"streaming_output,omitempty\""
 field HostWork.Result encoding/json.RawMessage tag="json:\"result,omitempty\""
 field HostWork.Inherited bool tag="json:\"inherited,omitempty\""
@@ -2023,6 +2024,7 @@ field ThreadTurn.IntermediateItemIDs []string tag="json:\"intermediate_item_ids,
 field ThreadTurn.FinalItemIDs []string tag="json:\"final_item_ids\""
 field ThreadTurn.FinalBoundaryComplete bool tag="json:\"final_boundary_complete\""
 type ThreadTurnFailure struct
+field ThreadTurnFailure.UnconfirmedEffects *github.com/floegence/floret/v7/runtime.UnconfirmedEffectEvidence tag="json:\"unconfirmed_effects,omitempty\""
 field ThreadTurnFailure.ToolRepetition *github.com/floegence/floret/v7/tools.RepetitionDetails tag="json:\"tool_repetition,omitempty\""
 field ThreadTurnFailure.Reason github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason tag="json:\"reason,omitempty\""
 field ThreadTurnFailure.ProviderTimeout *github.com/floegence/floret/v7/provider.RequestTimeoutDetails tag="json:\"provider_timeout,omitempty\""
@@ -2280,6 +2282,8 @@ field TurnSupplementalContextItem.Text string
 field TurnSupplementalContextItem.Metadata map[string]string
 field TurnSupplementalContextItem.Sensitive bool
 field TurnSupplementalContextItem.Truncated bool
+type UnconfirmedEffectEvidence struct
+field UnconfirmedEffectEvidence.CompletedWork []github.com/floegence/floret/v7/runtime.HostWork tag="json:\"completed_work\""
 type UserInput = github.com/floegence/floret/v7/runtime.UserInput
 field UserInput.ModelContextSnapshot *github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"model_context_snapshot,omitempty\""
 field UserInput.Text string tag="json:\"text,omitempty\""

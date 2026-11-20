@@ -15,7 +15,7 @@ import (
 )
 
 func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
-	for _, mode := range []string{"unknown", "completed", "stopped", "suspended", "overlapping"} {
+	for _, mode := range []string{"unknown", "completed", "stopped", "suspended", "overlapping", "completion_before_dispatch_failure"} {
 		complete := mode != "unknown"
 		t.Run(mode, func(t *testing.T) {
 			var completionGate chan struct{}
@@ -33,6 +33,12 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				binding.WorkID = "process-1"
 				if err := service.(ThreadHostWorkService).BindHostWork(ctx, binding); err != nil {
 					return tools.Result{}, err
+				}
+				if mode == "completion_before_dispatch_failure" {
+					if err := service.(ThreadHostWorkService).CompleteHostWork(ctx, CompleteHostWorkInput{ThreadID: binding.ThreadID, WorkID: binding.WorkID, Notice: "finished", Result: []byte(`{"exit_code":0}`)}); err != nil {
+						return tools.Result{}, err
+					}
+					return tools.Result{DispatchErr: context.DeadlineExceeded}, nil
 				}
 				return tools.Result{Text: "running process-1", Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "running", Summary: "command running"}}}, nil
 			})
@@ -84,6 +90,20 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 					time.Sleep(10 * time.Millisecond)
 				}
 				t.Fatalf("not settled: requests=%d", len(gateway.Requests()))
+			}
+			if mode == "completion_before_dispatch_failure" {
+				v := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.Failure != nil })
+				for range 2 {
+					facts, err := service.(ThreadTurnFailureReader).ReadTurnFailure(t.Context(), threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{created.ThreadID}}, ThreadTurnFailureInput{ThreadID: created.ThreadID, TurnID: v.TurnID, RunID: v.RunID})
+					if err != nil || facts == nil || facts.Code != ThreadTurnFailureEffectOutcomeUnknown || facts.UnconfirmedEffects == nil || len(facts.UnconfirmedEffects.CompletedWork) != 1 || string(facts.UnconfirmedEffects.CompletedWork[0].Result) != `{"exit_code":0}` || len(gateway.Requests()) != 1 {
+						t.Fatalf("evidence=%+v err=%v", facts, err)
+					}
+					if err := host.Shutdown(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					host = open()
+				}
+				return
 			}
 			wait(2)
 			if mode == "stopped" {

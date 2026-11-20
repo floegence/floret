@@ -136,6 +136,12 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 		entry.CreatedAt = time.Now()
 	}
 	admitOutputSources(&entry)
+	if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.ObservedHostWork != "" {
+		_, err := hostWorkOnBranch(ctx, tx, entry.ThreadID, entry.ParentID, entry.Message.ToolResult.ObservedHostWork, false)
+		if err != nil {
+			return fail(requiredRecordError(err))
+		}
+	}
 	if err := validateCanonicalOutputSources(ctx, tx, entry); err != nil {
 		return fail(err)
 	}

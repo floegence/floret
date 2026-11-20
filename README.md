@@ -837,6 +837,8 @@ while a target's saved status describes the child at that operation's boundary.
 start/end times, elapsed milliseconds, waiting milliseconds, and work duration.
 `ThreadTurn.HasFailure` reports retained diagnostics for each failed or
 interrupted turn, including history pages and selected windows. Authorized
+On explicit failure reads, `ThreadTurnFailure.UnconfirmedEffects` contains completed host facts matched to the exact unconfirmed invocations. Interpret only host-owned result data; these facts do not authorize retry.
+
 `ThreadTurnFailureReader.ReadTurnFailure` reads the complete canonical error for
 an exact ThreadID/TurnID/RunID after continuation and restart. Diagnostic bodies
 stay outside bounded turn metadata. Hosts never need a second error store.

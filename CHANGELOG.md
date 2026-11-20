@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.118.0
+
+- Validate one host-work binding, settlement or observation against its exact journal branch without scanning unrelated history. Keep storage read deadlines distinct from contradictory records and report failed result commits without logging commands or output.
+- On an authorized `ReadTurnFailure`, expose completed host work for the exact unconfirmed invocations in `ThreadTurnFailure.UnconfirmedEffects`. This evidence does not change model history, confirm the tool result or permit replay.
+
 ## v7.117.2
 
 - Reconcile a live tool's observed result once across a failed storage commit or lost acknowledgment. Reuse the original invocation and result; never reauthorize or dispatch the tool again.

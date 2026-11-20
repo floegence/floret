@@ -1006,9 +1006,14 @@ const (
 	ThreadTurnFailureToolArgumentCorrectionExhausted ThreadTurnFailureReason = "tool_argument_correction_exhausted"
 )
 
+type UnconfirmedEffectEvidence struct {
+	CompletedWork []HostWork `json:"completed_work"`
+}
+
 type ThreadTurnFailure struct {
-	ToolRepetition *tools.RepetitionDetails `json:"tool_repetition,omitempty"`
-	Reason         ThreadTurnFailureReason  `json:"reason,omitempty"`
+	UnconfirmedEffects *UnconfirmedEffectEvidence `json:"unconfirmed_effects,omitempty"`
+	ToolRepetition     *tools.RepetitionDetails   `json:"tool_repetition,omitempty"`
+	Reason             ThreadTurnFailureReason    `json:"reason,omitempty"`
 
 	ProviderTimeout *publicprovider.RequestTimeoutDetails `json:"provider_timeout,omitempty"`
 	Code            ThreadTurnFailureCode                 `json:"code"`

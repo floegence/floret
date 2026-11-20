@@ -191,6 +191,36 @@ func hostWorksFromPath(path []Entry) ([]HostWork, map[string]bool, error) {
 	return out, admitted, nil
 }
 
+func CompletedWorkForUnknownEffects(entries []CanonicalTurnPathEntry, run string) ([]HostWork, error) {
+	unknown := make(map[EffectInvocationIdentity]bool)
+	for _, item := range entries {
+		entry := item.Entry
+		if entry.Type != EntryEffectAttempt || entry.RunID != run {
+			continue
+		}
+		attempt, err := DecodeCanonicalEffectAttempt(entry)
+		if err != nil {
+			return nil, err
+		}
+		unknown[attempt.Invocation] = attempt.State == EffectAttemptUnknown
+	}
+	var result []HostWork
+	for _, item := range entries {
+		entry := item.Entry
+		if entry.Type != EntryHostWork || entry.RunID != run {
+			continue
+		}
+		work, err := decodeHostWork(entry)
+		if err != nil {
+			return nil, err
+		}
+		if work.State == "completed" && unknown[work.Invocation] {
+			result = append(result, work)
+		}
+	}
+	return result, nil
+}
+
 func bindHostWorkEntry(w HostWork, path []Entry) (Entry, error) {
 	if w.Inherited || w.State != "bound" || w.Notify || w.Notice != "" || w.Output != nil || w.OutputUnavailable {
 		return Entry{}, ErrInvalidThreadAuthority

@@ -88,11 +88,6 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 	if err := validateCompletedToolInputEntries([]Entry{entry}, true); err != nil {
 		return err
 	}
-	if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.ObservedHostWork != "" {
-		if _, err := canonicalHostWorkPath(ctx, tx, meta); err != nil {
-			return err
-		}
-	}
 	validation := []Entry{entry}
 	if entry.Type == EntryEffectAttempt {
 		attempt, err := decodeEffectAttempt(entry)

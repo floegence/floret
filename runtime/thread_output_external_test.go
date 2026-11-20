@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/runtime"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -41,6 +42,11 @@ func newOutputRuntimeFixture(t *testing.T, stream bool, result tools.Result) *ou
 			f.binding.WorkID = "stream"
 			f.binding.StreamOutput = true
 			if err := f.service.(runtime.ThreadHostWorkService).BindHostWork(ctx, f.binding); err != nil {
+				return tools.Result{}, err
+			}
+		}
+		if result.DispatchErr != nil {
+			if err := f.service.(runtime.ThreadHostWorkService).CompleteHostWork(ctx, runtime.CompleteHostWorkInput{ThreadID: f.binding.ThreadID, WorkID: f.binding.WorkID, Notice: "finished", Result: []byte(`{"exit_code":0}`)}); err != nil {
 				return tools.Result{}, err
 			}
 		}
@@ -85,6 +91,9 @@ func newOutputRuntimeFixture(t *testing.T, stream bool, result tools.Result) *ou
 			t.Fatal(err)
 		}
 		if view.Failure != nil {
+			if result.DispatchErr != nil && view.Failure.Code == runtime.ThreadTurnFailureEffectOutcomeUnknown && view.Activity == runtime.ThreadActivityIdle {
+				return f
+			}
 			t.Fatalf("tool failed: %+v", view.Failure)
 		}
 		if view.Activity == runtime.ThreadActivityIdle && len(f.gateway.Requests()) >= 2 {
@@ -94,6 +103,28 @@ func newOutputRuntimeFixture(t *testing.T, stream bool, result tools.Result) *ou
 	}
 	t.Fatal("output tool did not settle")
 	return nil
+}
+
+func TestUnconfirmedTurnExposesOnlyMatchedCompletionOnRead(t *testing.T) {
+	f := newOutputRuntimeFixture(t, true, tools.Result{DispatchErr: context.DeadlineExceeded})
+	for index := range 2 {
+		if index > 0 {
+			if err := f.host.Shutdown(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			f.reopen()
+		}
+		thread := f.binding.ThreadID
+		scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{thread}}
+		failure, err := f.service.(runtime.ThreadTurnFailureReader).ReadTurnFailure(t.Context(), scope, runtime.ThreadTurnFailureInput{ThreadID: thread, TurnID: f.binding.TurnID, RunID: f.binding.RunID})
+		if err != nil || failure == nil || failure.UnconfirmedEffects == nil || len(failure.UnconfirmedEffects.CompletedWork) != 1 {
+			t.Fatalf("failure=%+v err=%v", failure, err)
+		}
+		work := failure.UnconfirmedEffects.CompletedWork[0]
+		if work.ToolName != "output" || work.ToolCallID != f.binding.ToolCallID || string(work.Result) != `{"exit_code":0}` || len(f.gateway.Requests()) != 1 {
+			t.Fatalf("unexpected evidence %+v", work)
+		}
+	}
 }
 
 func TestOutputFullPlanProviderWireAndAuthorizedPages(t *testing.T) {

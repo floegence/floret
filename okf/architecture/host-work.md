@@ -21,6 +21,8 @@ authorized invocation, immutable completion facts, notice admission and continua
 
 # Execution and delivery
 
+Single-work mutations resolve the stable binding/final entry IDs and check active branch membership without reading unrelated history. An explicit authorized failure read joins completed host facts to unknown attempts by complete invocation identity. The evidence does not alter the failure, authorize replay or synthesize a model result.
+
 `BindHostWork` requires an exact dispatching effect attempt. A work ID has one
 binding and one immutable final fact. Result JSON is at most 16 KiB; notices are
 at most 2 KiB; optional retained output is at most 8 MiB. Output-storage failure

@@ -49,5 +49,18 @@ func (service *threadRuntimeService) ReadTurnFailure(ctx context.Context, scope 
 	if turnID != input.TurnID || runID != input.RunID {
 		return nil, threadquery.ErrRecordUnavailable
 	}
-	return cloneThreadTurnFailure(failure), nil
+	result := cloneThreadTurnFailure(failure)
+	if result != nil && result.Code == ThreadTurnFailureEffectOutcomeUnknown {
+		works, err := sessiontree.CompletedWorkForUnknownEffects(read.Turn.Entries, input.RunID.String())
+		if err != nil {
+			return nil, runtimeHostError(err)
+		}
+		if len(works) > 0 {
+			result.UnconfirmedEffects = &UnconfirmedEffectEvidence{}
+			for _, work := range works {
+				result.UnconfirmedEffects.CompletedWork = append(result.UnconfirmedEffects.CompletedWork, publicHostWork(work))
+			}
+		}
+	}
+	return result, nil
 }

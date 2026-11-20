@@ -148,6 +148,40 @@ func hostWorkPath(m *canonicalJournalMutation) ([]Entry, error) {
 	return canonicalHostWorkPath(m.ctx, m.tx, m.meta)
 }
 
+func hostWorkOnBranch(ctx context.Context, tx spi.ReadTx, thread, leaf, work string, final bool) (Entry, error) {
+	loc, err := readEntryLocator(tx, thread, hostWorkEntryID(work, final))
+	if err != nil {
+		return Entry{}, err
+	}
+	if leaf == "" {
+		return Entry{}, ErrEntryNotFound
+	}
+	tip, err := readEntryLocator(tx, thread, leaf)
+	if err != nil {
+		return Entry{}, requiredRecordError(err)
+	}
+	ancestor, err := entryAncestor(ctx, tx, thread, tip, loc.Depth)
+	if err != nil {
+		return Entry{}, err
+	}
+	if ancestor.ID != loc.ID {
+		return Entry{}, ErrEntryNotFound
+	}
+	entry, err := readLocatedEntry(tx, backendDomainV32Format, thread, loc)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry, err = completeLocatedEntry(ctx, tx, entry)
+	if err != nil {
+		return Entry{}, err
+	}
+	binding, err := decodeHostWork(entry)
+	if err != nil || binding.ID != work || (binding.State != "bound") != final {
+		return Entry{}, ErrAuthorityCorrupt
+	}
+	return entry, nil
+}
+
 func canonicalHostWorkEntries(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]Entry, error) {
 	var path []Entry
 	if meta.LeafID == "" {
@@ -240,9 +274,6 @@ func (r *BackendRepo) HostWorks(ctx context.Context, id string) ([]HostWork, err
 	return works, err
 }
 func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, error) {
-	if err := r.prepareSparseSources(ctx, w.Invocation.ThreadID); err != nil {
-		return HostWork{}, err
-	}
 	err := r.canonicalJournalUpdate(ctx, w.Invocation.ThreadID, func(m *canonicalJournalMutation) error {
 		if err := lifecycleRejectsWrite(m.meta); err != nil {
 			return err
@@ -254,8 +285,9 @@ func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, e
 		if cancelled {
 			return context.Canceled
 		}
-		path, err := hostWorkPath(m)
-		if err != nil {
+		if _, err := readEntryLocator(m.tx, m.meta.ID, hostWorkEntryID(w.ID, false)); err == nil {
+			return ErrRequestConflict
+		} else if !errors.Is(err, ErrEntryNotFound) {
 			return err
 		}
 		attempt, err := readCanonicalEffectAttempt(m.tx, m.meta.ID, effectAttemptID(w.Invocation))
@@ -266,8 +298,7 @@ func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, e
 		if err != nil {
 			return err
 		}
-		path = append(path, attemptEntry)
-		entry, err := bindHostWorkEntry(w, path)
+		entry, err := bindHostWorkEntry(w, []Entry{attemptEntry})
 		if err != nil {
 			return err
 		}
@@ -285,16 +316,22 @@ func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, e
 	return w, err
 }
 func (r *BackendRepo) SettleHostWork(ctx context.Context, req HostWorkSettlement) (HostWork, error) {
-	if err := r.prepareSparseSources(ctx, req.ThreadID); err != nil {
-		return HostWork{}, err
-	}
 	var result HostWork
 	err := r.canonicalJournalUpdate(ctx, req.ThreadID, func(m *canonicalJournalMutation) error {
 		if err := lifecycleRejectsWrite(m.meta); err != nil {
 			return err
 		}
-		path, err := hostWorkPath(m)
+		binding, err := hostWorkOnBranch(ctx, m.tx, m.meta.ID, m.meta.LeafID, req.ID, false)
 		if err != nil {
+			return err
+		}
+		path := []Entry{binding}
+		if final, err := hostWorkOnBranch(ctx, m.tx, m.meta.ID, m.meta.LeafID, req.ID, true); err == nil {
+			if final.PathDepth <= binding.PathDepth {
+				return ErrAuthorityCorrupt
+			}
+			path = append(path, final)
+		} else if !errors.Is(err, ErrEntryNotFound) || errors.Is(err, ErrAuthorityCorrupt) {
 			return err
 		}
 		entry, w, replayed, err := settleHostWorkEntry(req, path)
