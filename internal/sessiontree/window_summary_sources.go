@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,7 @@ import (
 // its tool and all other historical interactions back into a sidebar read.
 // Use the same canonical source groups and window readiness owner; retain no
 // second lifecycle projection and never read Goal or compaction components.
-func readSummaryProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, fields func(PathMetadata, bool) []string) (WindowProjection, error) {
+func readSummaryProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, fields func(PathMetadata, bool) []string, presentation bool) (WindowProjection, error) {
 	var stored storedWindowSources
 	if err := readItemJSON(tx, windowSourcesKey(meta.ID), &stored); err != nil {
 		return WindowProjection{}, err
@@ -111,6 +112,20 @@ func readSummaryProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, 
 			}
 		}
 	}
+	queue, err := readCurrentQueueSources(ctx, tx, meta.ID)
+	if err != nil {
+		return WindowProjection{}, err
+	}
+	result.QueueSources = &queue
+	if !presentation {
+		for _, entry := range entries {
+			result.Entries = append(result.Entries, PathProjectionEntry{Entry: entry})
+		}
+		slices.SortFunc(result.Entries, func(left, right PathProjectionEntry) int {
+			return cmp.Compare(left.Entry.PathDepth, right.Entry.PathDepth)
+		})
+		return result, nil
+	}
 	groups := map[projectionSourceGroup]bool{}
 	for id, sourceID := range stored.Pending {
 		entry, err := activeLocatedEntry(ctx, tx, meta, sourceID)
@@ -185,10 +200,5 @@ func readSummaryProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, 
 	if err != nil {
 		return WindowProjection{}, err
 	}
-	queue, err := readCurrentQueueSources(ctx, tx, meta.ID)
-	if err != nil {
-		return WindowProjection{}, err
-	}
-	result.QueueSources = &queue
 	return result, nil
 }

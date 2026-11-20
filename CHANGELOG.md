@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.119.0
+
+- Add optional `runtime.ThreadSchedulingReader` for coherent turn and queue membership reads without constructing a presentation.
+- Admit unobserved host-work notices from the committed path without repeated inventory scans, publish settlements to the existing reading window and carry the installed compaction estimate directly into live observation. Existing storage formats are unchanged.
+
 ## v7.118.0
 
 - Validate one host-work binding, settlement or observation against its exact journal branch without scanning unrelated history. Keep storage read deadlines distinct from contradictory records and report failed result commits without logging commands or output.

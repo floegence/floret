@@ -133,11 +133,39 @@ func (s *threadRuntimeService) CompleteHostWork(ctx context.Context, in Complete
 	if err != nil {
 		return runtimeHostError(err)
 	}
-	s.refreshCanonical(in.ThreadID, "")
+	if err := s.publishHostWorkSettlement(in.ThreadID); err != nil && !errors.Is(err, ErrThreadDeleted) && !errors.Is(err, ErrHostClosed) {
+		s.host.store.reportBackgroundError(err)
+	}
 	if in.Notify {
 		go s.continueHostWork(in.ThreadID)
 	}
 	return nil
+}
+
+func (s *threadRuntimeService) publishHostWorkSettlement(id identity.ThreadID) error {
+	s.runtimesMu.Lock()
+	actor := s.runtimes[id.String()]
+	s.runtimesMu.Unlock()
+	if actor == nil {
+		return nil
+	}
+	ctx := context.Background()
+	var window *ThreadWindowInput
+	err := actor.apply(ctx, func() error {
+		if actor.sourceWindow != nil {
+			input := actor.sourceWindow.input
+			window = &input
+			return nil
+		}
+		if actor.state.view.ViewVersion == 0 {
+			return nil
+		}
+		return s.advanceCanonical(ctx, actor)
+	})
+	if err == nil && window != nil {
+		err = s.hydrateThreadWindow(ctx, *window, actor)
+	}
+	return err
 }
 func (s *threadRuntimeService) ListHostWork(ctx context.Context, id identity.ThreadID) ([]HostWork, error) {
 	if _, err := s.ensureThread(ctx, id); err != nil {

@@ -145,7 +145,7 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 	}
 	tx = newProjectionSourceTx(tx)
 	if options.SummaryOnly {
-		return readSummaryProjection(ctx, tx, meta, fields)
+		return readSummaryProjection(ctx, tx, meta, fields, options.Summary)
 	}
 	var err error
 	result.Membership, err = readItemMembershipWindow(ctx, tx, meta, options)

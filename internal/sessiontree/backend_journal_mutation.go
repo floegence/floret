@@ -11,13 +11,15 @@ import (
 // A mutation owns only new facts and the current thread metadata. Canonical
 // records remain the authority; derived cache changes publish after commit.
 type canonicalJournalMutation struct {
-	ctx      context.Context
-	repo     *BackendRepo
-	tx       spi.WriteTx
-	meta     ThreadMeta
-	query    *queryThread
-	entries  []Entry
-	parentID string
+	ctx           context.Context
+	repo          *BackendRepo
+	tx            spi.WriteTx
+	meta          ThreadMeta
+	query         *queryThread
+	entries       []Entry
+	parentID      string
+	workWindow    *workAdmissionWindow
+	validatedWork bool
 }
 
 func (repo *BackendRepo) canonicalJournalUpdate(ctx context.Context, threadID string, mutate func(*canonicalJournalMutation) error, legacy func(*MemoryRepo) error) error {
@@ -99,6 +101,7 @@ func (repo *BackendRepo) canonicalJournalUpdateWithRecords(ctx context.Context, 
 }
 
 func (repo *BackendRepo) installJournalMutation(mutation *canonicalJournalMutation) {
+	repo.advanceWorkAdmission(mutation)
 	repo.threadMemoryID, repo.threadMemory = "", nil
 	repo.rememberVerifiedThread(mutation.meta.ID, mutation.meta.LeafID)
 	if mutation.query != nil {

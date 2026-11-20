@@ -15,6 +15,11 @@ timestamp: 2026-08-18T00:00:00Z
 the product boundary. The service owns one durable thread journal and one
 in-process actor for each active thread.
 
+Use the optional `ThreadSchedulingReader` for a single observation of current
+turn activity, outcome and queued request keys. It neither creates an actor nor
+returns conversation or queued input bodies. Consumers must authorize the read;
+an error is not evidence that a thread is idle or that a request left the queue.
+
 ## Storage startup
 
 `runtime.Open` returns a Host after bounded storage-source preparation and

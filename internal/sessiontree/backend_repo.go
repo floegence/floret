@@ -42,6 +42,7 @@ type BackendRepo struct {
 	queryPreparationCursor               []byte
 	threadQuerySnapshots                 *querySnapshots
 	queryThreads                         map[string]*queryThread
+	workAdmissions                       map[string]*workAdmissionWindow
 	parentEventObserver                  func([]string)
 	startupProgress                      StartupProgress
 	startupPhase                         StartupPhase

@@ -17,6 +17,88 @@ type ThreadSummaryReader interface {
 
 var _ ThreadSummaryReader = (*threadRuntimeService)(nil)
 
+// ThreadSchedulingReader reads turn and queue identities from one state without
+// constructing a presentation or activating a thread. Hosts authorize the read.
+type ThreadSchedulingReader interface {
+	SchedulingState(context.Context, identity.ThreadID) (ThreadSchedulingState, error)
+}
+
+type ThreadSchedulingState struct {
+	TurnID            identity.TurnID
+	Activity          ThreadActivity
+	LastOutcome       *TurnOutcome
+	QueuedRequestKeys []string
+}
+
+func (service *threadRuntimeService) SchedulingState(ctx context.Context, id identity.ThreadID) (ThreadSchedulingState, error) {
+	var state ThreadSchedulingState
+	if ctx == nil {
+		return state, errors.New("thread scheduling requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	if _, err := identity.ParseThreadID(id.String()); err != nil {
+		return state, err
+	}
+	if err := service.host.available(); err != nil {
+		return state, err
+	}
+	service.runtimesMu.Lock()
+	actor := service.runtimes[id.String()]
+	service.runtimesMu.Unlock()
+	if actor != nil {
+		found := false
+		err := actor.apply(ctx, func() error {
+			if actor.state.contextErr != nil {
+				return actor.state.contextErr
+			}
+			view := &actor.state.view
+			if view.ViewVersion == 0 {
+				return nil
+			}
+			found = true
+			state.TurnID, state.Activity = view.TurnID, view.Activity
+			if view.LastOutcome != nil {
+				outcome := *view.LastOutcome
+				state.LastOutcome = &outcome
+			}
+			for _, item := range view.Queue {
+				state.QueuedRequestKeys = append(state.QueuedRequestKeys, item.RequestKey)
+			}
+			return nil
+		})
+		if found || err != nil {
+			return state, err
+		}
+	}
+	reader, ok := service.host.store.repo.(sessiontree.WindowProjectionReader)
+	if !ok {
+		return state, ErrUnsupportedStoreCapability
+	}
+	window, err := reader.ReadWindowProjection(ctx, sessiontree.ItemMembershipWindowOptions{ThreadID: id.String(), Limit: 1, SummaryOnly: true}, func(sessiontree.PathMetadata, bool) []string { return nil })
+	if err != nil {
+		return state, runtimeHostError(err)
+	}
+	var lifecycle threadLifecycleProjection
+	for _, source := range window.Entries {
+		lifecycle.observe(source.Entry)
+	}
+	state.TurnID, _, state.Activity, state.LastOutcome, _ = lifecycle.snapshot()
+	entries := window.Queue
+	if window.QueueSources != nil {
+		entries = window.QueueSources.Pending
+	}
+	queue, err := canonicalQueueFromEntries(entries)
+	if err != nil {
+		return ThreadSchedulingState{}, err
+	}
+	for _, item := range queue {
+		state.QueuedRequestKeys = append(state.QueuedRequestKeys, item.RequestKey)
+	}
+	return state, nil
+}
+
 func (service *threadRuntimeService) Summary(ctx context.Context, id identity.ThreadID) (ThreadSummary, error) {
 	if ctx == nil {
 		return ThreadSummary{}, errors.New("thread summary requires a context and valid thread ID")

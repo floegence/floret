@@ -58,7 +58,7 @@ func TestCanonicalEngineMessagesSurviveRepeatedAutomaticCompactionAndReopen(t *t
 	if err := thread.appendContextPolicyEvent(t.Context(), "turn", "run", "test", "model", policy); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(engine.Config{Provider: scripted, Tools: registry, SystemPrompt: "Inspect.", Compactor: &durableCompactionManager{thread: thread, turnID: "turn"}, Options: engine.Options{RunID: "run", ThreadID: "thread", TurnID: "turn", ProviderName: "test", Model: "model", ContextPolicy: policy, DuplicateToolLimit: 100, CommitProviderContext: projection.commitProviderContext, CommitMessages: projection.commitMessages}})
+	eng, err := engine.New(engine.Config{Provider: scripted, Tools: registry, SystemPrompt: "Inspect.", Compactor: &durableCompactionManager{turnProjection: projection}, Options: engine.Options{RunID: "run", ThreadID: "thread", TurnID: "turn", ProviderName: "test", Model: "model", ContextPolicy: policy, DuplicateToolLimit: 100, CommitProviderContext: projection.commitProviderContext, CommitMessages: projection.commitMessages}})
 	if err != nil {
 		t.Fatal(err)
 	}

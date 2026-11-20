@@ -900,7 +900,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		Prompt:       t.harness.options.PromptStore,
 		SystemPrompt: t.harness.options.SystemPrompt,
 		StopHook:     stopHook,
-		Compactor:    &durableCompactionManager{thread: t, turnID: turnID, finishTurn: opts.TurnKind == sessiontree.TurnKindContextCompaction},
+		Compactor:    &durableCompactionManager{turnProjection: projection, finishTurn: opts.TurnKind == sessiontree.TurnKindContextCompaction},
 		Options:      engineOptions,
 	})
 	if err != nil {
@@ -1830,27 +1830,30 @@ func markerMetadata(runID string, result engine.Result) map[string]string {
 }
 
 type durableCompactionManager struct {
-	thread     *Thread
-	turnID     string
+	*turnProjection
 	finishTurn bool
 }
 
 func (m *durableCompactionManager) Compact(ctx context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
-	if m == nil || m.thread == nil {
+	if m == nil || m.turnProjection == nil || m.thread == nil {
 		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
 	}
-	snap, err := m.thread.Journal(ctx)
+	meta, err := m.thread.harness.options.Repo.Thread(ctx, m.thread.id)
 	if err != nil {
 		return compaction.Result{}, nil, engine.WithFailureOrigin(err, engine.FailureOriginStorage)
 	}
-	canonical, err := sessiontree.BuildContextChecked(snap.Path, sessiontree.ContextOptions{})
+	path, err := m.thread.harness.options.Repo.Path(ctx, m.thread.id, meta.LeafID)
+	if err != nil {
+		return compaction.Result{}, nil, engine.WithFailureOrigin(err, engine.FailureOriginStorage)
+	}
+	canonical, err := sessiontree.BuildContextChecked(path, sessiontree.ContextOptions{})
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
 	if !reflect.DeepEqual(canonical, req.History) {
 		return compaction.Result{}, nil, errors.New("active context differs from canonical provider projection")
 	}
-	previous := latestCompactionEntry(snap.Path)
+	previous := latestCompactionEntry(path)
 	if strings.TrimSpace(previous.CompactionID) != strings.TrimSpace(req.PreviousCompactionID) ||
 		previous.CompactionGeneration != req.PreviousGeneration ||
 		strings.TrimSpace(previous.CompactionWindowID) != strings.TrimSpace(req.PreviousWindowID) ||
@@ -1901,7 +1904,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 }
 
 func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req engine.CompactionCommitRequest) (compaction.Result, []session.Message, error) {
-	if m == nil || m.thread == nil {
+	if m == nil || m.turnProjection == nil || m.thread == nil {
 		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
 	}
 	result := req.Result
@@ -1946,6 +1949,10 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 		return compaction.Result{}, nil, err
 	}
 	entry := committed.Summary
+	m.mu.Lock()
+	m.contextUsage.ApplyCompaction(complete)
+	m.contextUsage.ApplyStatus(status)
+	m.mu.Unlock()
 	for _, fact := range committed.Facts {
 		m.thread.harness.emitEntryCommitted(fact, req.RunID)
 	}
@@ -2107,7 +2114,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.mu.Unlock()
 			return
 		}
-		compact, ok, err := subAgentContextCompactionFromEvent(ev)
+		_, ok, err := subAgentContextCompactionFromEvent(ev)
 		if err != nil {
 			p.mu.Lock()
 			p.err = err
@@ -2116,16 +2123,6 @@ func (p *turnProjection) Emit(ev event.Event) {
 		}
 		if ok {
 			p.mu.Lock()
-			p.contextUsage.ApplyCompaction(compact)
-			if compact.Phase == string(observation.CompactionPhaseComplete) {
-				snapshot, readErr := p.thread.harness.ReadThreadContext(context.WithoutCancel(p.ctx), p.thread.id)
-				if readErr != nil {
-					p.err = readErr
-					p.mu.Unlock()
-					return
-				}
-				p.contextUsage.Usage = event.CloneThreadContextUsage(snapshot.ContextUsage)
-			}
 			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.Usage)
 			p.lastCompaction = ev
 			p.mu.Unlock()

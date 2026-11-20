@@ -1921,6 +1921,12 @@ field ThreadRuntimeFacts.Failure *github.com/floegence/floret/v7/runtime.ThreadT
 field ThreadRuntimeFacts.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadRuntimeFacts.RunProgress *github.com/floegence/floret/v7/runtime.ThreadRunProgress tag="json:\"run_progress,omitempty\""
 field ThreadRuntimeFacts.QueueCount int tag="json:\"queue_count\""
+type ThreadSchedulingReader interface interface{SchedulingState(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadSchedulingState, error)}
+type ThreadSchedulingState struct
+field ThreadSchedulingState.TurnID github.com/floegence/floret/v7/identity.TurnID
+field ThreadSchedulingState.Activity github.com/floegence/floret/v7/runtime.ThreadActivity
+field ThreadSchedulingState.LastOutcome *github.com/floegence/floret/v7/runtime.TurnOutcome
+field ThreadSchedulingState.QueuedRequestKeys []string
 type ThreadScope struct
 field ThreadScope.ParentID *github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_id,omitempty\""
 type ThreadSendReader interface interface{LookupSend(context.Context, github.com/floegence/floret/v7/runtime.LookupSendInput) (github.com/floegence/floret/v7/runtime.UserInput, bool, error)}

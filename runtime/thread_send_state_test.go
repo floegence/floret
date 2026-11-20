@@ -32,6 +32,10 @@ func TestLookupSendStateTracksOriginalRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := assert(service, "next", SendQueued)
+	state, err := service.(ThreadSchedulingReader).SchedulingState(t.Context(), created.ThreadID)
+	if err != nil || state.Activity != ThreadActivityActive || state.TurnID != first.TurnID || len(state.QueuedRequestKeys) != 1 || state.QueuedRequestKeys[0] != "next" {
+		t.Fatalf("scheduling state: %+v %v", state, err)
+	}
 	if d.QueueItemID == "" || d.TurnID != "" || d.RunID != "" {
 		t.Fatalf("queued request inherited running turn: %+v", d)
 	}
@@ -48,6 +52,10 @@ func TestLookupSendStateTracksOriginalRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert(reopened, "next", SendRemoved)
+	state, err = reopened.(ThreadSchedulingReader).SchedulingState(t.Context(), created.ThreadID)
+	if err != nil || len(state.QueuedRequestKeys) != 0 {
+		t.Fatalf("removed queue member: %+v %v", state, err)
+	}
 	assert(reopened, "remove", "")
 	assert(reopened, "first", SendStarted)
 }

@@ -1723,6 +1723,10 @@ large transcript and ordinary activity bodies are not hydrated. The remaining
 metadata scan and interaction/lifecycle state are still proportional to history
 for unprepared paths. Prepared bounded-window actors retain a canonical summary
 source and do not rescan historical metadata for the preview.
+`runtime.ThreadSchedulingReader.SchedulingState` returns the current turn,
+activity, last outcome and queued request keys together, without constructing a
+thread view or activating an unopened thread. Authorize the thread before
+reading; absence of a supported reader is not proof that its queue is empty.
 Options.StartupWorkProgress reports real completed thread
 projections and known totals. StartupPhaseIndexing is deprecated and never emitted.
 

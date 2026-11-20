@@ -63,6 +63,66 @@ func TestHostWorkMutationsNeedNoInventoryScan(t *testing.T) {
 
 type failedWorkRead struct{ spi.ReadTx }
 
+func TestHostWorkAdmissionDoesNotRescanActiveHistory(t *testing.T) {
+	backend, repo, attempt := canonicalSettlementFixture(t, true)
+	admit := func(want bool) {
+		t.Helper()
+		entry, err := repo.AdmitHostWork(t.Context(), "thread", "turn", "run")
+		if err != nil || (entry.ID != "") != want {
+			t.Fatalf("admission %q: %v (want notice %v)", entry.ID, err, want)
+		}
+	}
+	work := HostWork{ID: "selected", ExecutorID: "executor", Invocation: attempt.Invocation, State: "bound"}
+	if _, err := repo.BindHostWork(t.Context(), work); err != nil {
+		t.Fatal(err)
+	}
+	admit(false)
+	repo.backend = workPointReadBackend{backend}
+	admit(false)
+	if _, err := repo.SettleHostWork(t.Context(), HostWorkSettlement{ID: work.ID, ThreadID: "thread", ExecutorID: "executor", State: "completed", Notice: "exited"}); err != nil {
+		t.Fatal(err)
+	}
+	admit(true)
+	admit(false)
+}
+
+func TestHostWorkAdmissionWindowFollowsCommittedFacts(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		backend, repo, attempt := canonicalSettlementFixture(t, true)
+		work := HostWork{ID: "selected", ExecutorID: "executor", Invocation: attempt.Invocation, State: "bound"}
+		if _, err := repo.BindHostWork(t.Context(), work); err != nil {
+			t.Fatal(err)
+		}
+		admit := func() (Entry, error) { return repo.AdmitHostWork(t.Context(), "thread", "turn", "run") }
+		if entry, err := admit(); err != nil || entry.ID != "" {
+			t.Fatalf("warm: %q %v", entry.ID, err)
+		}
+		if observed {
+			request := canonicalEffectRequest(attempt)
+			request.Result.Message.ToolResult.ObservedHostWork = work.ID
+			if _, err := repo.FinishEffectDispatch(t.Context(), request); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := repo.SettleHostWork(t.Context(), HostWorkSettlement{ID: work.ID, ThreadID: "thread", ExecutorID: "executor", State: "completed", Notice: "exited"}); err != nil {
+			t.Fatal(err)
+		}
+		injected := errors.New("rollback admission")
+		repo.backend = &domainCommitBoundaryBackend{Backend: backend, afterCallback: func() error { return injected }}
+		if _, err := admit(); !errors.Is(err, injected) {
+			t.Fatalf("rollback: %v", err)
+		}
+		repo.backend = workPointReadBackend{backend}
+		entry, err := admit()
+		if err != nil || (entry.ID == "") != observed {
+			t.Fatalf("observed=%v entry=%q: %v", observed, entry.ID, err)
+		}
+		if entry, err = admit(); err != nil || entry.ID != "" {
+			t.Fatalf("duplicate: %q %v", entry.ID, err)
+		}
+	}
+}
+
 func (failedWorkRead) Get(string, []byte) ([]byte, error) { return nil, context.DeadlineExceeded }
 
 func TestAncestorReadDeadlineIsNotCorruptAuthority(t *testing.T) {

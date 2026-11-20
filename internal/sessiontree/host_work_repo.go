@@ -311,6 +311,7 @@ func (r *BackendRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, e
 			}
 		}
 		_, err = m.append(entry, AppendOptions{ID: entry.ID})
+		m.validatedWork = true
 		return err
 	}, func(memory *MemoryRepo) error { _, err := memory.BindHostWork(ctx, w); return err })
 	return w, err
@@ -372,6 +373,7 @@ func (r *BackendRepo) SettleHostWork(ctx context.Context, req HostWorkSettlement
 			}
 		}
 		entry, err = m.appendFact(entry, AppendOptions{ID: entry.ID}, true)
+		m.validatedWork = true
 		if err != nil {
 			return err
 		}
@@ -402,11 +404,7 @@ func (r *BackendRepo) AdmitHostWork(ctx context.Context, thread, turn, run strin
 		if cancelled {
 			return ErrStaleAuthority
 		}
-		path, err := canonicalHostWorkEntries(ctx, m.tx, m.meta)
-		if err != nil {
-			return err
-		}
-		entry, err := hostWorkAdmission(path, thread, turn, run)
+		entry, err := m.nextHostWorkNotice(turn, run)
 		if err != nil || entry.ID == "" {
 			return err
 		}

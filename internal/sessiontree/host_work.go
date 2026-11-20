@@ -341,6 +341,10 @@ func hostWorkAdmission(path []Entry, threadID, turnID, runID string) (Entry, err
 	if err != nil {
 		return Entry{}, err
 	}
+	return hostWorkAdmissionForWorks(works, admitted, threadID, turnID, runID)
+}
+
+func hostWorkAdmissionForWorks(works []HostWork, admitted map[string]bool, threadID, turnID, runID string) (Entry, error) {
 	var ids []string
 	var text strings.Builder
 	for _, w := range works {
