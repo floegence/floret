@@ -17,9 +17,10 @@ const backendDomainNamespace = "floret.domain"
 // BackendKernel is the single domain kernel shared by every public Backend.
 type BackendKernel struct {
 	*sessiontree.BackendRepo
-	promptMu      sync.Mutex
-	promptBackend spi.Backend
-	pending       map[string]promptBatch
+	promptMu       sync.Mutex
+	promptBackend  spi.Backend
+	pending        map[string]promptBatch
+	promptDeletion uint64
 }
 
 // NewDeferredBackendKernel creates the stable runtime facade before domain
@@ -264,23 +265,8 @@ func (kernel *BackendKernel) AppendProviderRequest(ctx context.Context, value ca
 }
 
 func (kernel *BackendKernel) Segments(ctx context.Context, scope, provider, model string) ([]cache.Segment, error) {
-	kernel.promptMu.Lock()
-	defer kernel.promptMu.Unlock()
-	batch, err := kernel.readPromptCategory(ctx, scope, promptSegment)
-	if err != nil {
-		return nil, err
-	}
-	values, err := decodePromptBatch[cache.Segment](batch)
-	if err != nil {
-		return nil, err
-	}
-	var result []cache.Segment
-	for _, value := range values {
-		if (provider == "" || value.Provider == provider) && (model == "" || value.Model == model) {
-			result = append(result, value)
-		}
-	}
-	return result, nil
+	reader := executionSegmentReader{kernel: kernel, scope: scope}
+	return reader.Segments(ctx, scope, provider, model)
 }
 
 func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scope, provider, model string) (cache.ToolsetSnapshot, bool, error) {
@@ -374,6 +360,7 @@ func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopes ...s
 		return nil
 	})
 	if err == nil {
+		kernel.promptDeletion++
 		kernel.clearPending(scopes...)
 	}
 	return err
@@ -391,6 +378,7 @@ func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, root string) (r
 		return nil
 	})
 	if err == nil {
+		kernel.promptDeletion++
 		kernel.clearPending(result.ThreadIDs...)
 	}
 	return result, err

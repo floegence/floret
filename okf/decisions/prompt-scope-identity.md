@@ -31,6 +31,13 @@ a new Turn switch models or adopt a corrected projection without changing
 canonical history while preserving an exact raw prefix whenever the same
 rendering surface is used again.
 
+During one execution the storage reader can retain a bounded prefix of immutable
+committed segments. Each preparation still reads the complete uncached suffix
+and pending segments under the kernel lock, then applies the requested provider
+and model filter. Successful scope deletion invalidates retained prefixes;
+restart, retry and new executions start fresh. This introduces no persisted
+index and does not change which messages or tool results enter a request.
+
 # Related
 
 * [Execution Identities](../architecture/identities.md)

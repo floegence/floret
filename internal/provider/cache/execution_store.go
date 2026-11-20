@@ -5,18 +5,32 @@ import (
 	"strings"
 )
 
-// executionStore belongs to one sequential Engine execution. It retains only
-// the first surface and model invariant for that execution's turn, not history.
 // A new execution (including restart and retry) reads canonical facts afresh.
 type executionStore struct {
 	Store
+	segments    SegmentReader
 	scope, turn string
 	loaded      bool
 	facts       TurnRequestFacts
 }
 
 func NewExecutionStore(base Store, scope, turn string) Store {
-	return &executionStore{Store: base, scope: scope, turn: turn}
+	store := &executionStore{Store: base, scope: scope, turn: turn}
+	if source, ok := base.(interface{ NewExecutionSegmentReader(string) SegmentReader }); ok {
+		store.segments = source.NewExecutionSegmentReader(scope)
+	}
+	return store
+}
+
+type SegmentReader interface {
+	Segments(context.Context, string, string, string) ([]Segment, error)
+}
+
+func (s *executionStore) Segments(ctx context.Context, scope, provider, model string) ([]Segment, error) {
+	if s.segments != nil && scope == s.scope {
+		return s.segments.Segments(ctx, scope, provider, model)
+	}
+	return s.Store.Segments(ctx, scope, provider, model)
 }
 
 type TurnRequestFacts struct {

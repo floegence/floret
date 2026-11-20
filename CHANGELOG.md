@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.3
+
+- Reuse a bounded prefix of committed prompt segments during one execution. Tool steps still read every new or pending segment and preserve attachment ownership, request lineage, and the existing storage format.
+
 ## v7.120.2
 
 - Reuse bounded, immutable text prefixes and direct-child identities during repeated foreground reads without changing storage formats, authorization, window membership, or observation traffic.
