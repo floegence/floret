@@ -2150,7 +2150,12 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 	defer actor.recoveryMu.Unlock()
 	ctx := context.Background()
 	active := false
+	var candidateTurn identity.TurnID
+	var candidateRun identity.RunID
 	if err := actor.apply(ctx, func() error {
+		if actor.state.view.Activity == ThreadActivityActive {
+			candidateTurn, candidateRun = actor.state.turnID, actor.state.runID
+		}
 		if actor.state.executionDone != nil {
 			select {
 			case <-actor.state.executionDone:
@@ -2160,6 +2165,9 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		}
 		return nil
 	}); err != nil || active {
+		return
+	}
+	if candidateTurn != "" && candidateRun != "" && service.confirmPersistedCompletion(ctx, threadID, candidateTurn, candidateRun) {
 		return
 	}
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
@@ -2183,6 +2191,9 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		return
 	}
 	if service.failRecoveredUnknownEffectTurn(ctx, threadID, turnID, runID, entries) {
+		return
+	}
+	if (turnID != candidateTurn || runID != candidateRun) && service.confirmPersistedCompletion(ctx, threadID, turnID, runID) {
 		return
 	}
 	view := service.currentView(actor)
@@ -3757,6 +3768,10 @@ func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRun
 // actor transition so a preparation failure cannot look complete in memory
 // while the journal still contains an active turn.
 func (service *threadRuntimeService) finishUnloadedTerminal(executionCtx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
+	if errors.Is(runErr, sessiontree.ErrFinishConfirmationPending) {
+		service.exposePendingConfirmation(actor, turnID, runID)
+		return
+	}
 	if completed.Status == TurnStatusCancelled || executionCtx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 		service.finishUnloadedCancellation(actor, threadID, turnID, runID)
 		return
@@ -3768,6 +3783,9 @@ func (service *threadRuntimeService) finishUnloadedTerminal(executionCtx context
 	}
 	status := sessiontree.TurnFailed
 	failureCode := sessiontree.TurnFailureEngineContract
+	if errors.Is(runErr, sessiontree.ErrTerminalPersistence) {
+		failureCode = sessiontree.TurnFailureStorage
+	}
 	outcome := "failed"
 	failureMessage := ""
 	if runErr != nil {

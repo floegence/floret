@@ -184,7 +184,7 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 39 is the current schema. The exact version 2 to version 3
+  lineage. Version 40 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
@@ -219,7 +219,8 @@ Rules:
   version 36 tool-only pending Activity membership migration, and version 36 to
   version 37 built-in semantic identity migration, and version 37 to version 38
   immutable message revision migration, and version 38 to version 39
-  segmented tool-output retention migration are required
+  segmented tool-output retention migration, and version 39 to version 40
+  completed-turn confirmation migration are required
   automatic edges. Version 14 makes
   explicit marker `Entry.RunID` authoritative. Its migration may use only a
   validated canonical marker identity or an unambiguous same-path ancestor;

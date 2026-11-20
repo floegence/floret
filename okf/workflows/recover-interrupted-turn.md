@@ -33,6 +33,7 @@ identity, following the wrong user, or replaying an irreversible effect.
 6. If the journal already contains a cancel request without its terminal,
    complete the same canonical cancellation transaction during hydration. Do
    not create a second cancel fact or redispatch the old effect.
+7. A completed-turn intent identifies the exact terminal request, not merely the model's output. Recovery confirms the same request against the current cancellation, effect and Goal guards before any redispatch. Repeated timeouts expose `awaiting_confirmation`; `ThreadFinishConfirmer.ConfirmTurnFinish` accepts only the authorized thread, turn and run. Confirming never edits a prior failure or treats an old save point as a successful turn.
 
 # Verify
 

@@ -29,7 +29,7 @@ go run . "${root}/history.sqlite"
 cd "${root}/reader"
 go mod init example.com/logical-fence-reader
 cp "${repository_root}/scripts/testdata/logical-storage-fence/reader.go" main.go
-for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0; do
+for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0 v7.119.1; do
   go get "github.com/floegence/floret/v7@${reader_version}"
   go mod tidy
   go mod verify

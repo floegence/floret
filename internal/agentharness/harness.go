@@ -983,10 +983,12 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
 	savePointMetadata["reason"] = "run_result"
-	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "save_point_error", engine.FailureOriginStorage, &result)
-	} else {
-		t.harness.emitEntryCommitted(entry, runID)
+	if status != sessiontree.TurnCompleted {
+		if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "save_point_error", engine.FailureOriginStorage, &result)
+		} else {
+			t.harness.emitEntryCommitted(entry, runID)
+		}
 	}
 	terminalMetadata := markerMetadata(runID, result)
 	if goalsInstalled && result.Status == engine.Completed {
@@ -1047,7 +1049,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if result.Err != nil {
 		failureMessage = result.Err.Error()
 	}
-	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateCompatibilityKey); err != nil {
+	if _, err := t.persistTurnFinish(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateCompatibilityKey, savePointMetadata); err != nil {
+		if errors.Is(err, sessiontree.ErrFinishConfirmationPending) {
+			return TurnResult{}, err
+		}
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "turn_finalization_error", engine.FailureOriginStorage, &result)
 	}
 	eventType := EventTurnCompleted
@@ -1076,41 +1081,55 @@ func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) e
 }
 
 func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, stateCompatibilityKey string) (sessiontree.FinishTurnResult, error) {
+	return t.persistTurnFinish(ctx, turnID, runID, terminalEntryID, status, metadata, failureMessage, stateCompatibilityKey, nil)
+}
+
+func (t *Thread) persistTurnFinish(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, stateCompatibilityKey string, savePoint map[string]string) (sessiontree.FinishTurnResult, error) {
 	repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return sessiontree.FinishTurnResult{}, errors.New("session tree repo does not support canonical turn finish")
 	}
-	payload, err := json.Marshal(struct {
-		ThreadID         string                       `json:"thread_id"`
-		TurnID           string                       `json:"turn_id"`
-		RunID            string                       `json:"run_id"`
-		TerminalEntryID  string                       `json:"terminal_entry_id"`
-		Status           sessiontree.TurnMarkerStatus `json:"status"`
-		Metadata         map[string]string            `json:"metadata,omitempty"`
-		FailureMessage   string                       `json:"failure_message,omitempty"`
-		CompatibilityKey string                       `json:"compatibility_key,omitempty"`
-	}{
-		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID),
-		TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status, Metadata: cloneStringMap(metadata),
-		FailureMessage:   strings.TrimSpace(failureMessage),
-		CompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
-	})
-	if err != nil {
-		return sessiontree.FinishTurnResult{}, err
-	}
 	request := sessiontree.FinishTurnRequest{
 		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID), TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status,
 		Metadata: cloneStringMap(metadata), FailureMessage: strings.TrimSpace(failureMessage),
-		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: t.harness.now(),
-		PreserveProviderState: true, StateCompatibilityKey: stateCompatibilityKey,
+		Now: t.harness.now(), PreserveProviderState: true, StateCompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
 	}
+	fingerprint, err := sessiontree.TurnFinishFingerprint(request)
+	if err != nil {
+		return sessiontree.FinishTurnResult{}, err
+	}
+	request.OutcomeFingerprint = fingerprint
 	started := time.Now()
+	if status == sessiontree.TurnCompleted && savePoint != nil {
+		entry, err := sessiontree.AppendCompletedTurnIntent(ctx, t.harness.options.Repo, request, savePoint)
+		if sessiontree.IsStorageDeadline(err) {
+			confirmCtx, cancel := turnFinalizationContext(ctx)
+			persisted, found, readErr := sessiontree.ReadCompletedTurnIntent(confirmCtx, t.harness.options.Repo, t.id, turnID, runID)
+			cancel()
+			if readErr != nil {
+				return sessiontree.FinishTurnResult{}, errors.Join(sessiontree.ErrTerminalPersistence, readErr)
+			}
+			if found {
+				if persisted.OutcomeFingerprint != request.OutcomeFingerprint {
+					return sessiontree.FinishTurnResult{}, sessiontree.ErrRequestConflict
+				}
+				return sessiontree.FinishTurnResult{}, sessiontree.ErrFinishConfirmationPending
+			}
+		}
+		if err != nil {
+			return sessiontree.FinishTurnResult{}, err
+		}
+		t.harness.emitEntryCommitted(entry, runID)
+	}
 	result, err := repo.FinishTurn(ctx, request)
-	if status == sessiontree.TurnCompleted && err == context.DeadlineExceeded {
+	if status == sessiontree.TurnCompleted && sessiontree.IsStorageDeadline(err) {
 		slog.WarnContext(ctx, "floret reconciling timed out turn finish", "thread_id", t.id, "turn_id", turnID, "run_id", runID, "elapsed_ms", time.Since(started).Milliseconds())
 		confirmCtx, cancel := turnFinalizationContext(ctx)
 		result, err = repo.FinishTurn(confirmCtx, request)
 		cancel()
+		if sessiontree.IsStorageDeadline(err) && savePoint != nil {
+			return sessiontree.FinishTurnResult{}, errors.Join(sessiontree.ErrFinishConfirmationPending, err)
+		}
 	}
 	slog.DebugContext(ctx, "floret turn finish", "thread_id", t.id, "turn_id", turnID, "run_id", runID, "elapsed_ms", time.Since(started).Milliseconds(), "success", err == nil, "replayed", result.Replayed)
 	if err != nil {
@@ -1159,7 +1178,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		return t.acceptedTurnReplayResult(ctx, sessiontree.AcceptTurnResult{Terminal: outcome}, turnID, runID)
 	}
 	if terminalErr != nil && !errors.Is(terminalErr, sessiontree.ErrEntryNotFound) {
-		return TurnResult{}, terminalErr
+		return TurnResult{}, errors.Join(sessiontree.ErrTerminalPersistence, terminalErr)
 	}
 	if status == "" {
 		status = engine.Failed
@@ -1203,7 +1222,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		return turn, err
 	}
 	if closeErr := t.harness.closeInterruptedTurnToolCalls(ctx, t.id, turnID); closeErr != nil {
-		return TurnResult{}, closeErr
+		return TurnResult{}, errors.Join(sessiontree.ErrTerminalPersistence, closeErr)
 	}
 	metadata := markerMetadata(runID, result)
 	mergeTerminalMetadata(metadata, diagnostics)
@@ -1219,7 +1238,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		failureMessage = err.Error()
 	}
 	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, t.harness.options.StateCompatibilityKey); finishErr != nil {
-		return TurnResult{}, finishErr
+		return TurnResult{}, errors.Join(sessiontree.ErrTerminalPersistence, finishErr)
 	}
 	eventType := EventTurnFailed
 	if status == engine.Cancelled {

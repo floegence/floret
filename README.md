@@ -1405,14 +1405,16 @@ reconstruction uses fixed metadata windows; it does not retain transcript bodies
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
 prompt history and the permanent session-tree lineage. Logical storage version
-14 fences domain schema 39 from older runtimes while preserving the exact
-logical 11, 12 and 13 migration paths and bounded resumable preparation. Incompatible domain
+15 fences domain schema 40 from older runtimes while preserving the exact
+logical 11, 12, 13 and 14 migration paths and bounded resumable preparation. Incompatible domain
 envelopes must advance the logical fence; released old readers return
 `ErrStoreTooNew` before interpreting newer domain authority. Source recognition and
 logical publication commit together; each complete thread then publishes in its
 own transaction, and retained sources are removed only after full inventory
 verification. Released KV term documents are removed; current metadata uses its
 own namespace. Inspection reports required upgrades without writing the source.
+
+`runtime.ThreadFinishConfirmer` confirms the original completed-turn request for an exact thread, turn and run. Hosts may offer this operation when `RunProgress.Phase` is `awaiting_confirmation`. It does not repeat user input, model calls or tools. An ordinary save point is not proof of completion. See [interrupted turns](okf/workflows/recover-interrupted-turn.md).
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
 without rebuilding the database. A host that owns an older SQLite file may call

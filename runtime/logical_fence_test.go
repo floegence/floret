@@ -258,7 +258,7 @@ func (b logicalFenceCancelBackend) Update(ctx context.Context, mutate func(spi.W
 }
 
 func TestLogicalFenceRejectsFutureVersionsWithoutReclassifyingReservedMigration(t *testing.T) {
-	for _, version := range []string{"15", "16", "999"} {
+	for _, version := range []string{"17", "16", "999"} {
 		t.Run(version, func(t *testing.T) {
 			backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 			if err != nil {

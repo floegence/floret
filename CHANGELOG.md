@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.120.0
+
+- Persist the original completed-turn request at its save point. After repeated storage timeouts, expose `awaiting_confirmation` instead of replacing it with a failure. A recovering runtime or an authorized host using `ThreadFinishConfirmer` can confirm the same terminal without replaying the model or tools. Ordinary save points and historical failures are unchanged.
+- Advance the logical storage fence to 15 and the domain manifest to 40. Earlier writers cannot redispatch a turn whose completed request is awaiting confirmation.
+
 ## v7.119.2
 
 - Open prepared linear threads by reading only outstanding local host-work bindings, not the complete work inventory. Released stores rebuild missing locators from canonical sources without holding the database throughout the scan. Restart still marks unobserved prior-executor work unknown without replay.
