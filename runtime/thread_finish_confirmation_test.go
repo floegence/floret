@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/floegence/floret/v7/florettest"
@@ -15,16 +16,23 @@ import (
 
 type unavailableFinishKernel struct {
 	*internalstorage.BackendKernel
+	reject *atomic.Bool
 }
 
 func (kernel unavailableFinishKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
-	if request.Status == sessiontree.TurnCompleted {
+	if request.Status == sessiontree.TurnCompleted && kernel.reject.Load() {
 		return sessiontree.FinishTurnResult{}, context.DeadlineExceeded
 	}
 	return kernel.BackendKernel.FinishTurn(ctx, request)
 }
 
 func TestFinishConfirmationAfterRestartDoesNotRedispatch(t *testing.T) {
+	for _, scenario := range []string{"restart", "confirm", "cancel"} {
+		t.Run(scenario, func(t *testing.T) { exerciseFinishConfirmation(t, scenario) })
+	}
+}
+
+func exerciseFinishConfirmation(t *testing.T, scenario string) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "turn.db")
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:finish"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "confirmed response"}, {Type: provider.EventDone, Reason: "stop"}}})
@@ -46,7 +54,9 @@ func TestFinishConfirmationAfterRestartDoesNotRedispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host.store.repo = unavailableFinishKernel{host.store.repo.(*internalstorage.BackendKernel)}
+	var reject atomic.Bool
+	reject.Store(true)
+	host.store.repo = unavailableFinishKernel{host.store.repo.(*internalstorage.BackendKernel), &reject}
 	if _, err := service.Send(ctx, SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "work"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +66,31 @@ func TestFinishConfirmationAfterRestartDoesNotRedispatch(t *testing.T) {
 	if pending.Failure != nil || pending.LastOutcome != nil || len(gateway.Requests()) != 1 {
 		t.Fatalf("premature settlement: %+v", pending)
 	}
-	if err := host.Shutdown(ctx); err != nil {
-		t.Fatal(err)
+	switch scenario {
+	case "restart":
+		if err := host.Shutdown(ctx); err != nil {
+			t.Fatal(err)
+		}
+		host, service = open()
+	case "confirm":
+		reject.Store(false)
+		if err := service.(ThreadFinishConfirmer).ConfirmTurnFinish(ctx, pending.ThreadID, pending.TurnID, pending.RunID); err != nil {
+			t.Fatal(err)
+		}
+	case "cancel":
+		if _, err := service.Cancel(ctx, CancelInput{ThreadID: pending.ThreadID, RequestKey: "cancel"}); err != nil {
+			t.Fatal(err)
+		}
+		reject.Store(false)
+		if err := service.(ThreadFinishConfirmer).ConfirmTurnFinish(ctx, pending.ThreadID, pending.TurnID, pending.RunID); err == nil {
+			t.Fatal("confirmation replaced a cancellation")
+		}
+		cancelled, err := service.View(ctx, pending.ThreadID)
+		if err != nil || cancelled.LastOutcome == nil || *cancelled.LastOutcome != TurnOutcomeCancelled || len(gateway.Requests()) != 1 {
+			t.Fatalf("cancellation changed: %+v err=%v", cancelled, err)
+		}
+		return
 	}
-	host, service = open()
 	final := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.Activity == ThreadActivityIdle && view.LastOutcome != nil })
 	if final.TurnID != pending.TurnID || final.RunID != pending.RunID || *final.LastOutcome != TurnOutcomeCompleted || final.Failure != nil || len(gateway.Requests()) != 1 {
 		t.Fatalf("wrong recovered completion: %+v; provider calls=%d", final, len(gateway.Requests()))

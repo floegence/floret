@@ -32,7 +32,29 @@ func (service *threadRuntimeService) exposePendingConfirmation(actor *threadRunt
 func (service *threadRuntimeService) confirmPersistedCompletion(ctx context.Context, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) bool {
 	found, err := service.confirmTurnIntent(ctx, threadID, turnID, runID)
 	if found && (errors.Is(err, context.Canceled) || errors.Is(err, sessiontree.ErrEffectOutcomeUnknown)) {
-		return false
+		reader, ok := service.host.store.repo.(sessiontree.CanonicalTurnReadRepo)
+		if !ok {
+			service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
+			return true
+		}
+		selected, readErr := reader.ReadCanonicalTurn(ctx, threadID.String(), turnID.String())
+		if readErr != nil {
+			service.host.store.reportBackgroundError(readErr)
+			return true
+		}
+		var entries []sessiontree.Entry
+		for _, item := range selected.Turn.Entries {
+			if item.Entry.RunID == runID.String() {
+				entries = append(entries, item.Entry)
+			}
+		}
+		if turnHasCancelRequest(entries, turnID) {
+			service.finishUnloadedCancellation(service.runtime(threadID), threadID, turnID, runID)
+			return true
+		}
+		if service.failRecoveredUnknownEffectTurn(ctx, threadID, turnID, runID, entries) {
+			return true
+		}
 	}
 	if err != nil {
 		service.host.store.reportBackgroundError(err)
