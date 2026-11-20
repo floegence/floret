@@ -3,11 +3,51 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
+
+type deadlineFinishRepo struct {
+	*sessiontree.MemoryRepo
+	committed bool
+	requests  []sessiontree.FinishTurnRequest
+}
+
+func (repo *deadlineFinishRepo) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	repo.requests = append(repo.requests, request)
+	if len(repo.requests) == 1 {
+		if repo.committed {
+			if _, err := repo.MemoryRepo.FinishTurn(ctx, request); err != nil {
+				return sessiontree.FinishTurnResult{}, err
+			}
+		}
+		return sessiontree.FinishTurnResult{}, context.DeadlineExceeded
+	}
+	return repo.MemoryRepo.FinishTurn(ctx, request)
+}
+
+func TestCompletedTurnReconcilesOriginalFinish(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		committed bool
+	}{{"before_commit", false}, {"after_commit", true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			memory, thread := newUsageProjectionThread(t)
+			repo := &deadlineFinishRepo{MemoryRepo: memory, committed: scenario.committed}
+			thread.harness.options.Repo = repo
+			result, err := thread.finishTurn(t.Context(), "turn", "run", "terminal", sessiontree.TurnCompleted, nil, "", "")
+			if err != nil || result.Terminal.TurnStatus != sessiontree.TurnCompleted || result.Replayed != scenario.committed {
+				t.Fatalf("finish=%+v err=%v", result, err)
+			}
+			if len(repo.requests) != 2 || !reflect.DeepEqual(repo.requests[0], repo.requests[1]) {
+				t.Fatal("reconciliation changed the original finish request")
+			}
+		})
+	}
+}
 
 func TestNormalizeCancelledEngineResultOverridesLateProviderFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

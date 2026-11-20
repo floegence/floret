@@ -28,6 +28,13 @@ Goal mutations and reviews retain their journal writer; paired results retain
 the Engine's canonical message commit path. There is no additional durable owner,
 public ownership flag or schema migration.
 
+Natural stop retains only the checked review ID. The terminal transaction reads
+Goal sources for its own active branch and revalidates any claimed review against
+the current version and work boundary. An absent Goal does not require loading
+historical messages or rebuilding model context. A timed-out completed-turn
+submission can reconcile the identical terminal request once, without running
+the provider or dispatching tools. A save point alone does not establish success.
+
 # Contract
 
 SetGoal and DeleteGoal carry a stable request key and expected Goal version.

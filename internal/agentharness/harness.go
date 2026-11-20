@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strconv"
@@ -990,24 +991,18 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	terminalMetadata := markerMetadata(runID, result)
 	if goalsInstalled && result.Status == engine.Completed {
 		terminalMetadata["goal_guard"] = "1"
-		journal, goalErr := t.Journal(persistCtx)
-		if goalErr != nil {
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, goalErr, "goal_read_error", engine.FailureOriginStorage, &result)
-		}
-		goal, goalErr := sessiontree.GoalFromPath(journal.Path)
-		if goalErr != nil {
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, goalErr, "goal_read_error", engine.FailureOriginStorage, &result)
-		}
-		if review, _, valid := sessiontree.CurrentGoalReview(journal.Path, turnID, runID, goal); valid {
-			terminalMetadata[sessiontree.GoalReviewMetadataKey] = review.ID
+		if projection.goalReviewID != "" {
+			terminalMetadata[sessiontree.GoalReviewMetadataKey] = projection.goalReviewID
 		}
 	}
 	if result.Status == engine.Completed && projection.acceptedFinal {
+		started := time.Now()
 		canonical, ok := t.harness.options.Repo.(sessiontree.CanonicalTurnReadRepo)
 		if !ok {
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, errors.New("session tree repo does not support canonical turn reads"), "final_boundary_read_error", engine.FailureOriginStorage, &result)
 		}
 		finalTurn, readErr := canonical.ReadCanonicalTurn(persistCtx, t.id, turnID)
+		slog.DebugContext(persistCtx, "floret final response boundary read", "thread_id", t.id, "turn_id", turnID, "run_id", runID, "elapsed_ms", time.Since(started).Milliseconds(), "success", readErr == nil)
 		if readErr != nil {
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, readErr, "final_boundary_read_error", engine.FailureOriginStorage, &result)
 		}
@@ -1109,7 +1104,15 @@ func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID 
 		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: t.harness.now(),
 		PreserveProviderState: true, StateCompatibilityKey: stateCompatibilityKey,
 	}
+	started := time.Now()
 	result, err := repo.FinishTurn(ctx, request)
+	if status == sessiontree.TurnCompleted && err == context.DeadlineExceeded {
+		slog.WarnContext(ctx, "floret reconciling timed out turn finish", "thread_id", t.id, "turn_id", turnID, "run_id", runID, "elapsed_ms", time.Since(started).Milliseconds())
+		confirmCtx, cancel := turnFinalizationContext(ctx)
+		result, err = repo.FinishTurn(confirmCtx, request)
+		cancel()
+	}
+	slog.DebugContext(ctx, "floret turn finish", "thread_id", t.id, "turn_id", turnID, "run_id", runID, "elapsed_ms", time.Since(started).Milliseconds(), "success", err == nil, "replayed", result.Replayed)
 	if err != nil {
 		return sessiontree.FinishTurnResult{}, err
 	}
@@ -2004,6 +2007,7 @@ type ProviderOutputSink interface {
 type turnProjection struct {
 	requireActiveGoal     bool
 	goalWorkStarted       bool
+	goalReviewID          string
 	thread                *Thread
 	stateCompatibilityKey string
 	ctx                   context.Context

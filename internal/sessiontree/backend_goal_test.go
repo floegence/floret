@@ -3,10 +3,44 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
 )
+
+func TestGuardedFinishReadsOnlyCurrentGoalSources(t *testing.T) {
+	for _, history := range []int{16, 512} {
+		t.Run(fmt.Sprint(history), func(t *testing.T) {
+			memory := newMemoryRepo(time.Now)
+			if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			for index := range history {
+				if _, err := memory.Append(t.Context(), Entry{ThreadID: "thread", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "prior history"}}, AppendOptions{ID: fmt.Sprint(index)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := memory.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", RequestFingerprint: "turn", InputRequestFingerprint: "input", Input: session.Message{Role: session.User, Content: "Reply"}}); err != nil {
+				t.Fatal(err)
+			}
+			base, repo := openV31ReviewFixture(t, memory)
+			if err := repo.PrepareQueryThread(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
+			bounded := &appendBoundedBackend{Backend: base}
+			repo.backend = bounded
+			if _, err := repo.FinishTurn(t.Context(), FinishTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", TerminalEntryID: "done", OutcomeFingerprint: "finish", Status: TurnCompleted, Metadata: map[string]string{"goal_guard": "1"}}); err != nil {
+				t.Fatal(err)
+			}
+			if bounded.reads > 180 {
+				t.Fatalf("finishing a turn without a goal read %d records for %d historical messages", bounded.reads, history)
+			}
+		})
+	}
+}
 
 func TestV32GoalReviewAndSuppressionUseMetadataOnly(t *testing.T) {
 	memory := goalTestTurn(t)

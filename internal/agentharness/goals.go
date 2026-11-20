@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/session"
@@ -66,11 +68,17 @@ func (p *turnProjection) goalStopHook(base engine.StopHook) engine.StopHook {
 		if err := ctx.Err(); err != nil {
 			return engine.StopHookResult{}, err
 		}
+		started := time.Now()
 		facts, err := sessiontree.ReadExecutionGoal(ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID)
+		slog.DebugContext(ctx, "floret goal stop check", "thread_id", p.thread.id, "turn_id", p.turnID, "run_id", p.runID, "elapsed_ms", time.Since(started).Milliseconds(), "success", err == nil)
 		if err != nil {
 			return engine.StopHookResult{}, err
 		}
 		triggered = triggered || facts.ReviewPrompts != 0
+		p.goalReviewID = ""
+		if facts.ValidReview {
+			p.goalReviewID = facts.ReviewEntry.ID
+		}
 		needs := facts.State.Status == "active" || facts.ModelDeleted || triggered && facts.State.Actor == "model"
 		if needs {
 			if !facts.ValidReview {

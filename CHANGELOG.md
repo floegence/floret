@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.119.1
+
+- Finalize Goal-enabled turns against validated branch sources instead of rebuilding the thread journal. Reconfirm a timed-out completed-turn commit once with the exact original terminal request, without repeating provider or tool execution.
+
 ## v7.119.0
 
 - Add optional `runtime.ThreadSchedulingReader` for coherent turn and queue membership reads without constructing a presentation.

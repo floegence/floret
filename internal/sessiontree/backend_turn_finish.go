@@ -253,11 +253,15 @@ func (mutation *canonicalJournalMutation) finishTurn(req FinishTurnRequest, resu
 	}
 	req.Metadata = cloneStringMap(req.Metadata)
 	if req.Status == TurnCompleted && req.Metadata["goal_guard"] == "1" {
-		facts, err := readCanonicalGoalContext(ctx, mutation.tx, mutation.meta, req.TurnID, req.RunID)
-		if err != nil {
+		var facts ExecutionGoalFacts
+		reviewTurn := ""
+		if req.Metadata[GoalReviewMetadataKey] != "" {
+			reviewTurn = req.TurnID
+		}
+		if err := readExecutionGoalFacts(ctx, mutation.tx, mutation.meta, reviewTurn, req.RunID, &facts); err != nil {
 			return err
 		}
-		req.Metadata, err = finishGoalMetadata(facts.goal.State, facts.reviewEntry, facts.review, facts.validReview(), req)
+		req.Metadata, err = finishGoalMetadata(facts.State, facts.ReviewEntry, facts.Review, facts.ValidReview, req)
 		if err != nil {
 			return err
 		}
