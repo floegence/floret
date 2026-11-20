@@ -97,6 +97,7 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 	if err != nil {
 		return DeleteRootTreeResult{}, err
 	}
+	repo.childrenByParent = nil
 	for _, id := range result.ThreadIDs {
 		delete(repo.queryThreads, id)
 		delete(repo.verifiedThreadLeaves, id)

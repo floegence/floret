@@ -82,6 +82,9 @@ func (repo *BackendRepo) forkCanonicalThread(ctx context.Context, opts ForkOptio
 		return ThreadMeta{}, Entry{}, err
 	}
 	repo.installJournalMutation(mutation)
+	if mutation.meta.ParentThreadID != "" {
+		repo.childrenByParent = nil
+	}
 	return mutation.meta, saved, nil
 }
 

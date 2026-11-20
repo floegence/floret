@@ -38,6 +38,7 @@ type BackendRepo struct {
 	parentEvents                         bool
 	threadMemoryID                       string
 	threadMemory                         *MemoryRepo
+	childrenByParent                     map[string][]string
 	verifiedThreadLeaves                 map[string]string
 	queryPreparationCursor               []byte
 	threadQuerySnapshots                 *querySnapshots

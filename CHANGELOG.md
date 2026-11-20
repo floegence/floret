@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.2
+
+- Reuse bounded, immutable text prefixes and direct-child identities during repeated foreground reads without changing storage formats, authorization, window membership, or observation traffic.
+
 ## v7.120.1
 
 - Deliver short live assistant and reasoning text inline when its bounded window already includes every byte. Later in-budget growth uses ordinary byte-offset appends; a genuinely truncated prefix still has an authorized body locator. No API or storage format changes.

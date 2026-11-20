@@ -1074,7 +1074,7 @@ func loadBackendDomainMigrationInventory(ctx context.Context, tx spi.ReadTx, now
 func (repo *BackendRepo) ListThreads(ctx context.Context, options ListThreadsOptions) ([]ThreadMeta, error) {
 	var result []ThreadMeta
 	err := repo.canonicalMetadataView(ctx, func(tx spi.ReadTx) error {
-		return repo.visitThreadMetadata(ctx, tx, func(meta ThreadMeta) error {
+		return repo.visitListedThreads(ctx, tx, options.ParentThreadID, func(meta ThreadMeta) error {
 			if meta.Archived && !options.IncludeArchived || options.RootOnly && strings.TrimSpace(meta.ParentThreadID) != "" || !threadAfterListCursor(meta, options) {
 				return nil
 			}
@@ -1094,6 +1094,72 @@ func (repo *BackendRepo) ListThreads(ctx context.Context, options ListThreadsOpt
 		return nil, err
 	}
 	return ApplyThreadListOptions(result, options), nil
+}
+
+func (repo *BackendRepo) visitListedThreads(ctx context.Context, tx spi.ReadTx, parent string, visit func(ThreadMeta) error) error {
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.visitListedThreads(ctx, tx, parent, visit)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if parent != "" && repo.childrenByParent != nil && repo.migrationSource == nil {
+		for _, id := range repo.childrenByParent[parent] {
+			meta, err := readPublishedThreadMeta(tx, repo.domainFormat(), id)
+			if err != nil || meta.ParentThreadID != parent {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if err := repo.validateListedParents(ctx, tx, repo.domainFormat(), meta); err != nil {
+				return err
+			}
+			if err := visit(meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var children map[string][]string
+	if repo.childrenByParent == nil && repo.migrationSource == nil {
+		children = make(map[string][]string)
+	}
+	bytes := 0
+	err := repo.visitThreadMetadata(ctx, tx, func(meta ThreadMeta) error {
+		if children != nil && meta.ParentThreadID != "" {
+			bytes += 96 + len(meta.ID) + len(meta.ParentThreadID)
+			if bytes > 1<<20 {
+				children = nil
+			} else {
+				children[meta.ParentThreadID] = append(children[meta.ParentThreadID], meta.ID)
+			}
+		}
+		if parent == "" || meta.ParentThreadID == parent {
+			return visit(meta)
+		}
+		return nil
+	})
+	if err == nil && children != nil {
+		repo.childrenByParent = children
+	}
+	return err
+}
+
+func (repo *BackendRepo) validateListedParents(ctx context.Context, tx spi.ReadTx, format backendDomainFormat, meta ThreadMeta) error {
+	seen := map[string]bool{meta.ID: true}
+	for parentID := meta.ParentThreadID; parentID != ""; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if seen[parentID] {
+			return ErrAuthorityCorrupt
+		}
+		seen[parentID] = true
+		parent, err := readPublishedThreadMeta(tx, format, parentID)
+		if err != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		parentID = parent.ParentThreadID
+	}
+	return nil
 }
 
 func (repo *BackendRepo) PendingAutomaticThreadTitles(ctx context.Context) ([]ThreadMeta, error) {
@@ -1195,17 +1261,8 @@ func (repo *BackendRepo) visitThreadMetadata(ctx context.Context, tx spi.ReadTx,
 							return errors.Join(ErrAuthorityCorrupt, err)
 						}
 					}
-					seen := map[string]bool{meta.ID: true}
-					for parentID := meta.ParentThreadID; parentID != ""; {
-						if seen[parentID] {
-							return ErrAuthorityCorrupt
-						}
-						seen[parentID] = true
-						parent, err := readPublishedThreadMeta(tx, format, parentID)
-						if err != nil {
-							return errors.Join(ErrAuthorityCorrupt, err)
-						}
-						parentID = parent.ParentThreadID
+					if err := repo.validateListedParents(ctx, tx, format, meta); err != nil {
+						return err
 					}
 				}
 				if err := visit(meta); err != nil {

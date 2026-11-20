@@ -46,3 +46,41 @@ func TestV32CreateThreadAndInitialEntryShareOneCommit(t *testing.T) {
 		t.Fatalf("duplicate=%v", err)
 	}
 }
+
+func TestWarmChildInventoryReadsOnlyMatchingThreadMetadata(t *testing.T) {
+	backend := newMigrationTestBackend()
+	var repo *BackendRepo
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) (err error) {
+		repo, err = NewFreshCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(meta ThreadMeta) {
+		t.Helper()
+		if _, err := repo.CreateThread(t.Context(), meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(parent string, count int) []ThreadMeta {
+		t.Helper()
+		rows, err := repo.ListThreads(t.Context(), ListThreadsOptions{ParentThreadID: parent})
+		if err != nil || len(rows) != count {
+			t.Fatalf("parent=%s count=%d err=%v", parent, len(rows), err)
+		}
+		return rows
+	}
+	create(ThreadMeta{ID: "root"})
+	create(ThreadMeta{ID: "other"})
+	list("root", 0)
+	repo.backend = noScanCanonicalBackend{backend}
+	list("other", 0)
+	repo.backend = backend
+	create(ThreadMeta{ID: "child", ParentThreadID: "root", TaskName: "worker", HostProfileRef: "test"})
+	list("root", 1)
+	repo.backend = noScanCanonicalBackend{backend}
+	if rows := list("root", 1); rows[0].ID != "child" {
+		t.Fatal(rows)
+	}
+	list("other", 0)
+}

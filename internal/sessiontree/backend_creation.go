@@ -134,6 +134,9 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 		return ThreadMeta{}, Entry{}, err
 	}
 	repo.installJournalMutation(mutation)
+	if mutation.meta.ParentThreadID != "" {
+		repo.childrenByParent = nil
+	}
 	return mutation.meta, saved, nil
 }
 

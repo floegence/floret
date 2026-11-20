@@ -256,7 +256,7 @@ func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem
 	}
 	if item.textOmitted {
 		item = boundedWindowItem(item, limit)
-		text, err := actor.service.readItemText(ctx, actor.threadID, item, limit)
+		text, err := actor.readWindowPreview(ctx, item, limit)
 		if err != nil {
 			return ThreadItem{}, err
 		}

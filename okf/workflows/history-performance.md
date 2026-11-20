@@ -150,6 +150,8 @@ qualify bounded cold initialization or the production Flower stack.
 
     GOWORK=off go test ./runtime -run 'TestThreadWindow(Hydrates|Escaped|Around|Preview)' -count=1
 
+Foreground metadata enumeration may retain a bounded directory of direct child IDs; warm parent-scoped listings still read current canonical metadata. No startup scan or persistent index is required. A Host can reuse up to 1,024 short, leaf-bound user or assistant prefixes while preparing selected windows. Membership, non-text facts and authorization are evaluated on each reading interest; other body reads remain source-backed.
+
 The bounded window divides one aggregate source allowance before hydrating
 text or completed activity, accounting for worst-case JSON escaping and UTF-8
 read slack. Each item still exposes its exact complete extent and source

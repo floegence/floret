@@ -605,8 +605,9 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
-	textPagesMu sync.Mutex
-	textPages   []threadTextPage
+	windowPreviews windowTextPreviews
+	textPagesMu    sync.Mutex
+	textPages      []threadTextPage
 
 	preparationOnce        sync.Once
 	preparationSlots       chan struct{}
@@ -1156,15 +1157,16 @@ func (service *threadRuntimeService) setTitleCommand(ctx context.Context, in Set
 
 func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope) ([]ThreadSummary, error) {
 
-	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: false, RootOnly: scope.ParentID == nil})
+	options := sessiontree.ListThreadsOptions{RootOnly: scope.ParentID == nil || *scope.ParentID == ""}
+	if scope.ParentID != nil {
+		options.ParentThreadID = scope.ParentID.String()
+	}
+	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, options)
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
 	out := make([]ThreadSummary, 0, len(metas))
 	for _, meta := range metas {
-		if scope.ParentID != nil && meta.ParentThreadID != scope.ParentID.String() {
-			continue
-		}
 		if summary, found, err := service.activeThreadSummary(ctx, meta); err != nil {
 			return nil, err
 		} else if found {
