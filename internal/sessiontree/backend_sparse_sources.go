@@ -107,6 +107,9 @@ func appendSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry)
 	if err := appendCurrentQueueSources(tx, entry, coverage); err != nil {
 		return err
 	}
+	if err := appendPendingWorkSources(tx, entry, ordinal, coverage); err != nil {
+		return err
+	}
 	if err := putSparseSource(tx, entry, ordinal); err != nil {
 		return err
 	}
@@ -115,6 +118,11 @@ func appendSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry)
 	return writeSparseCoverage(tx, thread, coverage)
 }
 func removeSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry) error {
+	if sparseSourceCategory(entry) == "host_work" {
+		if err := deleteCanonicalOptionalRecord(tx, sparseSourcesNamespace, pendingWorkKey(thread)); err != nil {
+			return err
+		}
+	}
 	if err := deleteCanonicalOptionalRecord(tx, sparseSourcesNamespace, currentQueueKey(thread)); err != nil {
 		return err
 	}
@@ -233,6 +241,28 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 }
 
 func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category string, visit func(Entry) error) error {
+	return visitSparseSourcePages(ctx, tx, thread, category, func(rows []spi.Record, count int) error {
+		for _, row := range rows {
+			locator, err := readEntryLocator(tx, thread, string(row.Value))
+			if err != nil || locator.Ordinal >= count || !bytes.Equal(row.Key, sparseSourceKey(thread, category, locator.Ordinal)) {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			entry, err := readLocatedEntry(tx, backendDomainV32Format, thread, locator)
+			if err != nil {
+				return err
+			}
+			if sparseSourceCategory(entry) != category {
+				return ErrAuthorityCorrupt
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func visitSparseSourcePages(ctx context.Context, tx spi.ReadTx, thread, category string, visit func([]spi.Record, int) error) error {
 	count, err := readJournalCount(tx, thread)
 	if err != nil {
 		return err
@@ -263,23 +293,12 @@ func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category str
 		if err != nil {
 			return err
 		}
-		for _, row := range page.Records {
-			seen++
-			if seen > expected {
-				return ErrAuthorityCorrupt
-			}
-			locator, err := readEntryLocator(tx, thread, string(row.Value))
-			if err != nil || locator.Ordinal >= count || !bytes.Equal(row.Key, sparseSourceKey(thread, category, locator.Ordinal)) {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			entry, err := readLocatedEntry(tx, backendDomainV32Format, thread, locator)
-			if err != nil {
-				return err
-			}
-			if sparseSourceCategory(entry) != category {
-				return ErrAuthorityCorrupt
-			}
-			if err := visit(entry); err != nil {
+		seen += len(page.Records)
+		if seen > expected {
+			return ErrAuthorityCorrupt
+		}
+		if len(page.Records) != 0 {
+			if err := visit(page.Records, count); err != nil {
 				return err
 			}
 		}

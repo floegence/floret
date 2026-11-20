@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.119.2
+
+- Open prepared linear threads by reading only outstanding local host-work bindings, not the complete work inventory. Released stores rebuild missing locators from canonical sources without holding the database throughout the scan. Restart still marks unobserved prior-executor work unknown without replay.
+
 ## v7.119.1
 
 - Finalize Goal-enabled turns against validated branch sources instead of rebuilding the thread journal. Reconfirm a timed-out completed-turn commit once with the exact original terminal request, without repeating provider or tool execution.

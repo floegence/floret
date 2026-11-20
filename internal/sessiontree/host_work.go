@@ -60,6 +60,7 @@ type HostWorkRepo interface {
 	BindHostWork(context.Context, HostWork) (HostWork, error)
 	SettleHostWork(context.Context, HostWorkSettlement) (HostWork, error)
 	HostWorks(context.Context, string) ([]HostWork, error)
+	PendingHostWorks(context.Context, string) ([]HostWork, error)
 	AdmitHostWork(context.Context, string, string, string) (Entry, error)
 	HostWorkContinuationKey(context.Context, string) (string, bool, error)
 }

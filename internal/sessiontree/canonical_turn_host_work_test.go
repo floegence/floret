@@ -123,6 +123,20 @@ func TestCanonicalTurnReadsAcrossEarlierHostWorkSettlement(t *testing.T) {
 				reopen()
 				verify(fmt.Sprintf("restart %d", i))
 			}
+			if backend, ok := repo.(*BackendRepo); ok {
+				for _, sample := range []struct {
+					leaf    string
+					pending int
+				}{{"first-done", 1}, {"second-done", 0}} {
+					if err := backend.MoveLeaf(t.Context(), "thread", sample.leaf); err != nil {
+						t.Fatal(err)
+					}
+					works, err := backend.PendingHostWorks(t.Context(), "thread")
+					if err != nil || len(works) != sample.pending {
+						t.Fatalf("leaf=%s pending=%v err=%v", sample.leaf, works, err)
+					}
+				}
+			}
 		})
 	}
 }

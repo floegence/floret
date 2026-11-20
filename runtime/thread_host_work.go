@@ -238,7 +238,7 @@ func (s *threadRuntimeService) reconcileHostWorkOnce(ctx context.Context, id ide
 	if !ok {
 		return nil
 	}
-	works, err := repo.HostWorks(ctx, id.String())
+	works, err := repo.PendingHostWorks(ctx, id.String())
 	if err != nil {
 		return runtimeHostError(err)
 	}

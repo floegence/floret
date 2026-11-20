@@ -64,6 +64,13 @@ journal. The existing sparse index stores source locators only. Active executor
 and per-thread recovery coordination stay in memory. Hosts never inspect or
 rewrite Floret-owned records.
 
+Cold reads use bounded, transactional pending-binding locators on a fully
+covered linear journal. The locator records identities, not outcomes or UI
+Activity state. Missing or stale coverage is rebuilt on demand in short reads
+against a verified snapshot. Branches and large outstanding sets retain the
+canonical recovery path. Explicit inventory reads still return settled work;
+an observed tool result suppresses duplicate notices, not crash recovery.
+
 Schema 38 to 39 adds optional streaming capture, with bounded append/read/search
 APIs and pinned Fork watermarks. It does not replace the original 8 MiB snapshot
 API or create another execution lifecycle. See [tool output retention](tool-output-retention.md).
