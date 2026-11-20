@@ -544,3 +544,70 @@ func TestFieldPublicationFreezesLivePrefixBeforeSourceClose(t *testing.T) {
 		t.Fatalf("live prefix changed or split a rune: %+v", item.Body)
 	}
 }
+
+func TestCompleteLiveWindowTextContinuesInline(t *testing.T) {
+	service, actor, _, full := nativeUpdatesFixture(t)
+	full.Close()
+	scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{"thread-live"}}
+	sub, err := service.SubscribeWindowUpdates(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", ActivityFields: true, PreviewBytes: 128}); err != nil {
+		t.Fatal(err)
+	}
+	nextUpdate(t, sub)
+	owner := outputbody.NewOwner()
+	defer owner.Close()
+	body := owner.NewBody()
+	appendText := func(text string) ThreadItemChange {
+		t.Helper()
+		if err := body.Append(text); err != nil {
+			t.Fatal(err)
+		}
+		if err := actor.apply(t.Context(), func() error {
+			actor.state.turnID, actor.state.runID = "turn", "run"
+			actor.appendLiveTextSegment(ThreadItemAssistant, text, time.Time{}, "live", body)
+			actor.state.view.ViewVersion++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		update := nextUpdate(t, sub)
+		if len(update.Items) != 1 {
+			t.Fatalf("expected one item change: %+v", update.Items)
+		}
+		return update.Items[0]
+	}
+	first := "start 🌸"
+	change := appendText(first)
+	if change.Kind != ThreadItemAdded || change.Item == nil || change.Item.Text != first || change.Item.Body != nil {
+		t.Fatalf("complete live prefix requested hydration: %+v", change.Item)
+	}
+	change = appendText("tail")
+	if change.Kind != ThreadItemAppended || change.Append == nil || change.Append.OffsetBytes != len(first) || change.Append.Text != "tail" {
+		t.Fatalf("missing inline append: %+v", change)
+	}
+	actor.mu.Lock()
+	index := actor.itemIndexByID("live")
+	current := actor.state.view.Items[index]
+	actor.state.view.Items[index].textBytes += 200
+	actor.state.view.Items[index].livePreview += strings.Repeat("x", 200)
+	version := actor.state.view.ViewVersion
+	sub.mu.Lock()
+	interest := sub.windows["thread-live"]
+	projected, accepted := sub.projectWindowUpdate(actor, ThreadUpdate{ThreadID: "thread-live", BaseVersion: version, ViewVersion: version + 1,
+		Items: []ThreadItemChange{{Kind: ThreadItemAppended, ItemID: "live", Append: &ThreadTextAppend{OffsetBytes: len(first) + 4, Text: "x"}}}})
+	sub.windows["thread-live"] = interest
+	sub.mu.Unlock()
+	actor.state.view.Items[index] = current
+	actor.mu.Unlock()
+	if !accepted || len(projected.Items) != 1 || projected.Items[0].Append == nil || projected.Items[0].Append.Text != "x" {
+		t.Fatal("pending publication exposed a later append")
+	}
+	change = appendText(strings.Repeat("x", 150))
+	if change.Kind != ThreadItemReplaced || change.Item == nil || change.Item.Body == nil || change.Item.Body.PreviewBytes != 128 || change.Item.Body.Bytes != len(first)+4+150 {
+		t.Fatalf("missing bounded source after crossing preview limit: %+v", change.Item)
+	}
+}

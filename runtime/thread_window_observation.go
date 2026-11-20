@@ -314,7 +314,7 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 				// without reading, cloning or encoding the same prefix again.
 				body.Bytes = change.Append.OffsetBytes + len(change.Append.Text)
 				change.Kind, change.Body, change.Append = ThreadItemBodyUpdated, &body, nil
-			} else if index := actor.itemIndexByID(change.ItemID); index >= 0 && max(len(actor.state.view.Items[index].Text), actor.state.view.Items[index].textBytes) > windowTextLimit(interest.sourceInput) {
+			} else if index := actor.itemIndexByID(change.ItemID); index >= 0 && change.Append.OffsetBytes+len(change.Append.Text) > windowTextLimit(interest.sourceInput) {
 				current := actor.state.view.Items[index]
 				// A preceding coalesced batch can flush while the actor already
 				// contains the next append. Freeze this batch's accepted extent.

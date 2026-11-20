@@ -363,7 +363,11 @@ func (actor *threadRuntimeState) freezeWindowItem(item ThreadItem, limit int, fi
 		if item.Body != nil {
 			body := *item.Body
 			body.PreviewBytes = len(item.Text)
-			item.Body = &body
+			if body.RunID != "" && body.SourceID == item.ID && body.Bytes == body.PreviewBytes && (item.Kind == ThreadItemAssistant || item.Kind == ThreadItemThinking) {
+				item.Body = nil
+			} else {
+				item.Body = &body
+			}
 		}
 	}
 	return cloneWindowItemsLimit([]ThreadItem{item}, limit)[0]

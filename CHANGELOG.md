@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.1
+
+- Deliver short live assistant and reasoning text inline when its bounded window already includes every byte. Later in-budget growth uses ordinary byte-offset appends; a genuinely truncated prefix still has an authorized body locator. No API or storage format changes.
+
 ## v7.120.0
 
 - Persist the original completed-turn request at its save point. After repeated storage timeouts, expose `awaiting_confirmation` instead of replacing it with a failure. A recovering runtime or an authorized host using `ThreadFinishConfirmer` can confirm the same terminal without replaying the model or tools. Ordinary save points and historical failures are unchanged.
