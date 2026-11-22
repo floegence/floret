@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.6
+
+- Read the physical blocks for one bounded canonical body window together. Media inventory still checks every block, body digest and entry checksum. No change to the public API or storage format.
+
 ## v7.120.5
 
 - Fit long compaction transcripts using geometrically growing prefix probes instead of tokenizing every intermediate prefix. The final request still passes both estimated and provider-prepared capacity checks; complete ordered UTF-8 and image coverage, retry behavior and the storage format are unchanged.

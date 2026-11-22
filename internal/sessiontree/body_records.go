@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/tools"
@@ -163,17 +164,40 @@ func readCanonicalBodyBytes(ctx context.Context, tx spi.ReadTx, ref canonicalBod
 	}
 	end := offset + min(limit, ref.Bytes-offset)
 	result := make([]byte, 0, end-offset)
+	first := offset / canonicalBodyBlockBytes
+	var records [][]byte
+	if offset < end && (end-1)/canonicalBodyBlockBytes > first {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		last := (end - 1) / canonicalBodyBlockBytes
+		keys := make([][]byte, 0, last-first+1)
+		for ordinal := first; ordinal <= last; ordinal++ {
+			keys = append(keys, canonicalBodyBlockKey(ref.SHA256, ordinal))
+		}
+		var err error
+		records, err = storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: canonicalBodyNamespace, Keys: keys})
+		if err != nil || len(records) != len(keys) {
+			return nil, errors.Join(ErrAuthorityCorrupt, err)
+		}
+	}
 	for position := offset; position < end; {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		ordinal := position / canonicalBodyBlockBytes
-		raw, err := tx.Get(canonicalBodyNamespace, canonicalBodyBlockKey(ref.SHA256, ordinal))
-		if err != nil {
-			return nil, errors.Join(ErrAuthorityCorrupt, err)
+		var raw []byte
+		if len(records) != 0 {
+			raw = records[ordinal-first]
+		} else {
+			var err error
+			raw, err = tx.Get(canonicalBodyNamespace, canonicalBodyBlockKey(ref.SHA256, ordinal))
+			if err != nil {
+				return nil, errors.Join(ErrAuthorityCorrupt, err)
+			}
 		}
 		var block []byte
-		err = storagecodec.DecodeEnvelopeInto(raw, "sessiontree-v30-body-block", &block)
+		err := storagecodec.DecodeEnvelopeInto(raw, "sessiontree-v30-body-block", &block)
 		want := min(canonicalBodyBlockBytes, ref.Bytes-ordinal*canonicalBodyBlockBytes)
 		if err != nil || len(block) != want {
 			return nil, errors.Join(ErrAuthorityCorrupt, err)
