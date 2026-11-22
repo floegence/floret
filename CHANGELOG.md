@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.5
+
+- Fit long compaction transcripts using geometrically growing prefix probes instead of tokenizing every intermediate prefix. The final request still passes both estimated and provider-prepared capacity checks; complete ordered UTF-8 and image coverage, retry behavior and the storage format are unchanged.
+
 ## v7.120.4
 
 - Reduce allocation during canonical integrity checks for media retention and historical reads. Retention still verifies every entry and body digest before releasing an inventory; the API and storage format are unchanged.

@@ -20,6 +20,27 @@ import (
 
 type summaryProviderFunc func(context.Context, provider.Request) (<-chan provider.StreamEvent, error)
 
+func BenchmarkSelectLongSummaryBatch(b *testing.B) {
+	for _, count := range []int{64, 256} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			generator := ProviderSummaryGenerator{ProviderName: "openai", Model: "gpt-4o"}
+			policy := contextpolicy.Policy{ContextWindowTokens: 128000, ReservedSummaryTokens: 1200}
+			history := make([]session.Message, count)
+			for index := range history {
+				history[index] = session.Message{Role: session.Assistant, Content: fmt.Sprintf("Observed checkpoint %d: %s", index, strings.Repeat("verified state; ", 10))}
+			}
+			messages := sessioncompaction.SummaryTranscriptMessages(history)
+			b.ReportAllocs()
+			for iteration := 0; b.Loop(); iteration++ {
+				batch, err := generator.selectSummaryBatch(b.Context(), sessioncompaction.Preparation{}, messages, transcriptCursor{}, fmt.Sprint(iteration), policy, policy.ReservedSummaryTokens, 0)
+				if err != nil || batch.next.message != count {
+					b.Fatalf("cursor=%+v error=%v", batch.next, err)
+				}
+			}
+		})
+	}
+}
+
 func (f summaryProviderFunc) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	return f(ctx, req)
 }
@@ -105,6 +126,28 @@ func TestProviderSummaryBatchesWithoutDroppingOrDuplicatingContent(t *testing.T)
 		t.Fatalf("summary=%q details=%+v", summary, details)
 	}
 	assertCompleteSummaryTranscript(t, requests, messages)
+}
+
+func TestProviderSummaryFitsGrowingPrefixesAndContinuesAtExactCursor(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 4000, ReservedSummaryTokens: 150}
+	history := make([]session.Message, 200)
+	for index := range history {
+		history[index] = session.Message{Role: session.User, Content: fmt.Sprintf("Observation %d\n%s", index, strings.Repeat("确定😀 ", 8))}
+	}
+	var requests []provider.Request
+	generator := ProviderSummaryGenerator{Policy: policy, ProviderName: "openai", Model: "gpt-4o"}
+	generator.Provider = summaryProviderFunc(func(_ context.Context, request provider.Request) (<-chan provider.StreamEvent, error) {
+		if !summaryRequestFits(summaryTestRequestEstimate(t, request), policy, request.MaxOutputTokens) {
+			t.Fatal("selected prefix exceeds the input budget")
+		}
+		requests = append(requests, request)
+		return summaryEvents("checkpoint"), nil
+	})
+	_, details, err := generator.GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: history})
+	if err != nil || details.Batches < 2 || details.Batches != len(requests) {
+		t.Fatalf("batches=%d dispatched=%d error=%v", details.Batches, len(requests), err)
+	}
+	assertCompleteSummaryTranscript(t, requests, history)
 }
 
 func TestProviderSummaryOverflowShrinksSameUnconsumedBatch(t *testing.T) {

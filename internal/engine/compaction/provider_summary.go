@@ -232,13 +232,20 @@ func (g ProviderSummaryGenerator) summaryRequest(prep sessioncompaction.Preparat
 		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPromptWithOptions(g.PromptOptions)},
 		{Role: session.User, Content: sessioncompaction.SummaryPromptWithTranscript(previous, "", policy, cap, g.PromptOptions)},
 	}
-	for _, fragment := range fragments {
+	for len(fragments) > 0 {
 		last := &messages[len(messages)-1]
-		if len(last.Attachments) == 0 && len(fragment.Attachments) == 0 {
-			last.Content += fragment.Content
-		} else {
-			messages = append(messages, session.CloneMessage(fragment))
+		if len(last.Attachments) != 0 || len(fragments[0].Attachments) != 0 {
+			messages = append(messages, session.CloneMessage(fragments[0]))
+			fragments = fragments[1:]
+			continue
 		}
+		var text strings.Builder
+		text.WriteString(last.Content)
+		for len(fragments) > 0 && len(fragments[0].Attachments) == 0 {
+			text.WriteString(fragments[0].Content)
+			fragments = fragments[1:]
+		}
+		last.Content = text.String()
 	}
 	return provider.Request{
 		RunID: prep.Request.CompactionID, ThreadID: prep.Request.Details["thread_id"], TurnID: prep.Request.Details["turn_id"],
@@ -262,17 +269,72 @@ func (g ProviderSummaryGenerator) selectSummaryBatch(ctx context.Context, prep s
 	if byteLimit == 0 {
 		byteLimit = int(min(policy.ContextWindowTokens, int64(^uint(0)>>1)/3) * 3)
 	}
-	var fragments []session.Message
-	next, used := cursor, 0
-	fits := func(fragment session.Message) (bool, error) {
+	fits := func(batch summaryBatch) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		candidate := append(append([]session.Message(nil), fragments...), fragment)
-		estimate, err := provider.GenericRequestEstimate(g.summaryRequest(prep, previous, candidate, policy, cap))
+		estimate, err := provider.GenericRequestEstimate(g.summaryRequest(prep, previous, batch.messages, policy, cap))
 		return summaryRequestFits(estimate.EstimatedInputTokens, policy, cap), err
 	}
-	for next.message < len(messages) && used < byteLimit {
+	var accepted summaryBatch
+	for partLimit := 1; ; partLimit += partLimit {
+		batch, err := summaryPrefix(ctx, messages, cursor, byteLimit, partLimit)
+		if err != nil {
+			return summaryBatch{}, err
+		}
+		if batch.bytes == 0 {
+			break
+		}
+		ok, err := fits(batch)
+		if err != nil {
+			return summaryBatch{}, err
+		}
+		if ok {
+			accepted = batch
+			if batch.next.message == len(messages) || batch.bytes >= byteLimit || len(batch.messages) < partLimit {
+				break
+			}
+			continue
+		}
+		// Probe growing prefixes geometrically. Only a failed probe needs finer
+		// UTF-8 byte boundaries; every returned nonempty prefix was measured whole.
+		low, high := accepted.bytes, batch.bytes-1
+		for low < high {
+			limit := low + (high-low+1)/2
+			candidate, err := summaryPrefix(ctx, messages, cursor, limit, partLimit)
+			if err != nil {
+				return summaryBatch{}, err
+			}
+			if candidate.bytes <= accepted.bytes {
+				low = limit
+				continue
+			}
+			ok, err := fits(candidate)
+			if err != nil {
+				return summaryBatch{}, err
+			}
+			if ok {
+				accepted = candidate
+				low = limit
+			} else {
+				high = limit - 1
+			}
+		}
+		break
+	}
+	if accepted.bytes == 0 {
+		return summaryBatch{}, errors.New("compaction summary indivisible image or fixed prefix leaves no transcript capacity")
+	}
+	return accepted, nil
+}
+
+func summaryPrefix(ctx context.Context, messages []sessioncompaction.SummaryTranscriptMessage, cursor transcriptCursor, byteLimit, partLimit int) (summaryBatch, error) {
+	var fragments []session.Message
+	next, used := cursor, 0
+	for next.message < len(messages) && used < byteLimit && len(fragments) < partLimit {
+		if err := ctx.Err(); err != nil {
+			return summaryBatch{}, err
+		}
 		message := messages[next.message]
 		part := message.Parts[next.part]
 		header := message.Header + fmt.Sprintf(" [body byte offset %d]\n", next.offset)
@@ -291,37 +353,9 @@ func (g ProviderSummaryGenerator) selectSummaryBatch(ctx context.Context, prep s
 			}
 			fragment.Content = header + part.Text + "\n\n"
 			fragment.Attachments = []session.MessageAttachment{session.CloneMessageAttachment(*part.Image)}
-			ok, err := fits(fragment)
-			if err != nil {
-				return summaryBatch{}, err
-			}
-			if !ok {
-				break
-			}
 		} else {
 			remaining := part.Text[next.offset:]
 			size = utf8Prefix(remaining, min(len(remaining), byteLimit-used))
-			ok, err := fits(session.Message{Role: session.User, Content: header + remaining[:size] + "\n\n"})
-			if err != nil {
-				return summaryBatch{}, err
-			}
-			if !ok {
-				low, high := 0, size
-				for low < high {
-					mid := low + (high-low+1)/2
-					cut := utf8Prefix(remaining, mid)
-					ok, err = fits(session.Message{Role: session.User, Content: header + remaining[:cut] + "\n\n"})
-					if err != nil {
-						return summaryBatch{}, err
-					}
-					if ok {
-						low = mid
-					} else {
-						high = mid - 1
-					}
-				}
-				size = utf8Prefix(remaining, low)
-			}
 			if size == 0 {
 				break
 			}
@@ -340,9 +374,6 @@ func (g ProviderSummaryGenerator) selectSummaryBatch(ctx context.Context, prep s
 		} else {
 			break
 		}
-	}
-	if used == 0 {
-		return summaryBatch{}, errors.New("compaction summary indivisible image or fixed prefix leaves no transcript capacity")
 	}
 	return summaryBatch{messages: fragments, next: next, bytes: used}, nil
 }
