@@ -52,7 +52,7 @@ func TestCanonicalStreamingJSONStringMatchesPublishedEncoding(t *testing.T) {
 	}
 }
 
-func integrityStoredFixture(t *testing.T, entry Entry) (*migrationTestBackend, Entry) {
+func integrityStoredFixture(t testing.TB, entry Entry) (*migrationTestBackend, Entry) {
 	t.Helper()
 	backend := newMigrationTestBackend()
 	entry.ID, entry.ThreadID = "entry", "thread"
@@ -74,6 +74,52 @@ func integrityStoredFixture(t *testing.T, entry Entry) (*migrationTestBackend, E
 	}
 	stored.Entry.bodyFields = stored.Fields
 	return backend, stored.Entry
+}
+
+func BenchmarkRetentionEntryIntegrity(b *testing.B) {
+	for _, fixture := range []struct {
+		name  string
+		entry Entry
+	}{
+		{"marker", Entry{Type: EntryTurnMarker, TurnStatus: TurnStarted}},
+		{"prose", Entry{Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: strings.Repeat("bounded text. ", 8000)}}},
+	} {
+		b.Run(fixture.name, func(b *testing.B) {
+			backend, stored := integrityStoredFixture(b, fixture.entry)
+			b.ReportAllocs()
+			err := backend.View(b.Context(), func(tx spi.ReadTx) error {
+				for b.Loop() {
+					if _, _, err := validateCanonicalStoredIntegrity(b.Context(), tx, stored); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCanonicalIntegrityChecksUnsegmentedMarker(t *testing.T) {
+	backend, stored := integrityStoredFixture(t, Entry{Type: EntryTurnMarker, TurnStatus: TurnStarted})
+	if len(stored.bodyFields) != 0 {
+		t.Fatal("expected a marker without segmented bodies")
+	}
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		if _, _, err := validateCanonicalStoredIntegrity(t.Context(), tx, stored); err != nil {
+			return err
+		}
+		stored.TurnStatus = TurnCompleted
+		_, _, err := validateCanonicalStoredIntegrity(t.Context(), tx, stored)
+		if !errors.Is(err, ErrAuthorityCorrupt) {
+			t.Fatalf("changed marker: got %v, want authority corruption", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCanonicalStreamingIntegrityMatchesCompleteValidation(t *testing.T) {

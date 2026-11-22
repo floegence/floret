@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,6 @@ import (
 	"io"
 	"reflect"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/citation"
@@ -52,7 +52,7 @@ func validateCanonicalStoredIntegrity(ctx context.Context, tx spi.ReadTx, entry 
 		if value.Kind() == reflect.Pointer && !value.IsNil() && value.Type().Elem() == reflect.TypeFor[session.ControlSignalView]() {
 			value = value.Elem()
 		}
-		if value.Type() != reflect.TypeFor[canonicalEntryRaw]() && value.Type() != reflect.TypeFor[session.Message]() && value.Type() != reflect.TypeFor[session.ControlSignalView]() {
+		if len(entry.bodyFields) == 0 || value.Type() != reflect.TypeFor[canonicalEntryRaw]() && value.Type() != reflect.TypeFor[session.Message]() && value.Type() != reflect.TypeFor[session.ControlSignalView]() {
 			raw, err := json.Marshal(value.Interface())
 			if err != nil {
 				return err
@@ -174,12 +174,8 @@ func writeCanonicalJSONString(ctx context.Context, tx spi.ReadTx, writer io.Writ
 	}
 	var carry []byte
 	write := func(part []byte) error {
-		for remaining := part; len(remaining) > 0; {
-			r, size := utf8.DecodeRune(remaining)
-			facts.runes++
-			facts.nonSpace = facts.nonSpace || !unicode.IsSpace(r)
-			remaining = remaining[size:]
-		}
+		facts.runes += utf8.RuneCount(part)
+		facts.nonSpace = facts.nonSpace || len(bytes.TrimSpace(part)) != 0
 		raw, err := json.Marshal(string(part))
 		if err != nil {
 			return err
@@ -188,7 +184,10 @@ func writeCanonicalJSONString(ctx context.Context, tx spi.ReadTx, writer io.Writ
 		return err
 	}
 	err := visitCanonicalBody(ctx, tx, ref, func(chunk []byte) error {
-		part := append(carry, chunk...)
+		part := chunk
+		if len(carry) != 0 {
+			part = append(carry, chunk...)
+		}
 		end := len(part)
 		for i := max(0, end-utf8.UTFMax+1); i < end; i++ {
 			if utf8.RuneStart(part[i]) && !utf8.FullRune(part[i:]) {

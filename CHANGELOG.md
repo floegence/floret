@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.4
+
+- Reduce allocation during canonical integrity checks for media retention and historical reads. Retention still verifies every entry and body digest before releasing an inventory; the API and storage format are unchanged.
+
 ## v7.120.3
 
 - Reuse a bounded prefix of committed prompt segments during one execution. Tool steps still read every new or pending segment and preserve attachment ownership, request lineage, and the existing storage format.
