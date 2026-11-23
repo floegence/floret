@@ -24,6 +24,7 @@ import (
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 	"github.com/floegence/floret/v7/internal/toolrender"
+	wirejson "github.com/segmentio/encoding/json"
 )
 
 // DeepSeekOptions configures DeepSeek's stateless Responses transport. BaseURL
@@ -1202,7 +1203,8 @@ func deepSeekAttribution(body []byte, req Request) []RenderedContentAttribution 
 		}
 		Tools []json.RawMessage
 	}
-	if json.Unmarshal(body, &envelope) != nil {
+	rest, err := wirejson.Parse(body, &envelope, wirejson.ZeroCopy)
+	if err != nil || len(rest) != 0 {
 		return nil
 	}
 
@@ -1316,11 +1318,15 @@ func (p *deepSeekPrepared) WithMaxOutputTokens(ctx context.Context, limit int64)
 		return nil, errors.New("DeepSeek prepared request is closed or already streamed")
 	}
 	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(p.body, &envelope); err != nil {
+	rest, err := wirejson.Parse(p.body, &envelope, wirejson.DontCopyRawMessage)
+	if err != nil {
 		return nil, err
 	}
+	if len(rest) != 0 || envelope == nil {
+		return nil, errors.New("invalid frozen DeepSeek request")
+	}
 	envelope["max_output_tokens"], _ = json.Marshal(limit)
-	body, err := json.Marshal(envelope)
+	body, err := wirejson.Append(nil, envelope, wirejson.SortMapKeys|wirejson.EscapeHTML|wirejson.TrustRawMessage)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/dlclark/regexp2 v1.12.0
 	github.com/pkoukk/tiktoken-go v0.1.8
+	github.com/segmentio/encoding v0.5.4
 	golang.org/x/image v0.47.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
@@ -19,6 +20,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/segmentio/asm v1.1.3 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

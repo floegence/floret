@@ -2,11 +2,12 @@
 package requestestimate
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"strings"
+
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	wirejson "github.com/segmentio/encoding/json"
 )
 
 type Estimate struct {
@@ -32,9 +33,11 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 		return Estimate{}, errors.New("request estimate requires a model and input")
 	}
 	var body map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	if err := decoder.Decode(&body); err != nil || body == nil || len(bytes.Trim(payload[decoder.InputOffset():], " \t\r\n")) != 0 {
+	if !json.Valid(payload) {
+		return Estimate{}, errors.New("request estimate requires a JSON object")
+	}
+	rest, err := wirejson.Parse(payload, &body, wirejson.UseNumber)
+	if err != nil || body == nil || len(rest) != 0 {
 		return Estimate{}, errors.New("request estimate requires a JSON object")
 	}
 	media := int64(0)

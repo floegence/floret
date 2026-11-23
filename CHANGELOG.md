@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.121.3
+
+- Reduce decoding cost for model-input estimates and reuse already encoded input fields when refitting DeepSeek generation limits. Keep the standard JSON validity boundary, numeric text, and frozen HTTP input intact.
+
 ## v7.121.2
 
 - Skip transparent margins outside the resampling kernel when preparing straight-alpha model images. The encoded pixels and wire bytes are unchanged.

@@ -1,10 +1,27 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestDeepSeekFrozenOutputRefitPreservesEncodedFields(t *testing.T) {
+	body, err := json.Marshal(map[string]any{"model": "vision", "input": []any{map[string]any{"role": "user", "content": []any{map[string]string{"type": "input_image", "image_url": "data:image/png;base64," + strings.Repeat("AQID", 1<<16)}, map[string]string{"text": "<&>\u2028"}}}}, "temperature": json.Number("1.0200"), "max_output_tokens": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := &deepSeekPrepared{gateway: &deepSeekGateway{maxRequestBytes: 1 << 20}, body: body}
+	limited, err := original.WithMaxOutputTokens(t.Context(), 456)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Replace(body, []byte(`"max_output_tokens":2`), []byte(`"max_output_tokens":456`), 1)
+	if bytes.Equal(want, body) || !bytes.Equal(limited.(*deepSeekPrepared).body, want) {
+		t.Fatal("output refit changed frozen input")
+	}
+}
 
 func TestDeepSeekTokenizerRemovesByteInflation(t *testing.T) {
 	for _, text := range []string{
