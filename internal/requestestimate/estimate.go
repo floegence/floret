@@ -34,7 +34,7 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 	var body map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
-	if err := decoder.Decode(&body); err != nil || body == nil || !json.Valid(payload) {
+	if err := decoder.Decode(&body); err != nil || body == nil || len(bytes.Trim(payload[decoder.InputOffset():], " \t\r\n")) != 0 {
 		return Estimate{}, errors.New("request estimate requires a JSON object")
 	}
 	media := int64(0)

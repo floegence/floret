@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.121.1
+
+- Downscale 8-bit straight-alpha model images with a rolling row buffer instead of a full intermediate image. The Catmull-Rom pixels, output encoding and source identity are unchanged.
+- Check the trailing JSON boundary after decoding provider input for token estimation without rescanning the decoded object.
+
 ## v7.121.0
 
 - Explicitly resume an exact stopped conversation without replaying its input or adding a user message. Schema 41 and logical format 17 preserve historical records and fence older writers; format 16 remains reserved.

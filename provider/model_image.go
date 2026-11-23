@@ -100,7 +100,13 @@ func PrepareModelImage(ctx context.Context, source []byte, options ModelImageOpt
 		width = max(1, int(int64(width)*int64(options.MaxDimension)/int64(longest)))
 		height = max(1, int(int64(height)*int64(options.MaxDimension)/int64(longest)))
 		scaled := image.NewNRGBA(image.Rect(0, 0, width, height))
-		draw.CatmullRom.Scale(scaled, scaled.Bounds(), decoded, decoded.Bounds(), draw.Src, nil)
+		if pixels, ok := decoded.(*image.NRGBA); ok {
+			if err := scaleModelNRGBA(ctx, pixels, scaled); err != nil {
+				return ModelImage{}, err
+			}
+		} else {
+			draw.CatmullRom.Scale(scaled, scaled.Bounds(), decoded, decoded.Bounds(), draw.Src, nil)
+		}
 		decoded = scaled
 	}
 	if err := ctx.Err(); err != nil {
