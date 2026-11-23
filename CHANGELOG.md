@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.120.7
+
+- Verify retained Responses history prefixes in one forward pass per representation. Long conversations keep the same native input, split-assistant bindings, continuation boundaries and persisted fingerprints, without repeatedly serializing earlier items.
+
 ## v7.120.6
 
 - Read the physical blocks for one bounded canonical body window together. Media inventory still checks every block, body digest and entry checksum. No change to the public API or storage format.

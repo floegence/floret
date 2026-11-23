@@ -3,8 +3,10 @@ package provider
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"strings"
 )
@@ -92,7 +94,7 @@ func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.R
 	}
 	cursor, previousEnd := 0, 0
 	pruned := false
-	originalPrefix := []json.RawMessage{}
+	var originalPrefix, currentPrefix responsesPrefix
 	originalCursor := 0
 	for recordIndex, record := range records {
 		if record.Start < previousEnd || record.Start < 0 || len(record.Prefix) != 64 || len(record.Output) == 0 {
@@ -118,8 +120,12 @@ func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.R
 			pruned = true
 			continue
 		}
-		originalPrefix = append(originalPrefix, normalized[cursor:start]...)
-		if responsesFingerprint(originalPrefix) != record.Prefix {
+		originalPrefix.append(normalized[cursor:start])
+		originalDigest, err := originalPrefix.fingerprint()
+		if err != nil {
+			return nil, err
+		}
+		if originalDigest != record.Prefix {
 			pruned = true
 			continue
 		}
@@ -130,9 +136,15 @@ func PrepareResponsesHistory(options ResponsesHistoryOptions, canonical []json.R
 			return nil, &ResponsesHistoryError{Code: "visible_mismatch", RecordIndex: &recordIndex, CanonicalIndex: &start, ExpectedItems: &expected, AvailableItems: &available, Fields: responsesVisibleConflictFields(visible, normalized[start:])}
 		}
 		end := start + len(matched)
-		originalPrefix = append(originalPrefix, visible...)
+		originalPrefix.append(visible)
 		originalCursor = record.Start + len(visible)
-		record.Start, record.Prefix, record.Visible = start, responsesFingerprint(normalized[:start]), matched
+		currentPrefix.append(normalized[cursor:start])
+		currentDigest, err := currentPrefix.fingerprint()
+		if err != nil {
+			return nil, err
+		}
+		record.Start, record.Prefix, record.Visible = start, currentDigest, matched
+		currentPrefix.append(normalized[start:end])
 		h.input = append(h.input, normalized[cursor:start]...)
 		h.input = append(h.input, record.Output...)
 		h.records = append(h.records, record)
@@ -204,6 +216,38 @@ func validResponsesResponseID(id string) bool {
 func responsesFingerprint(items []json.RawMessage) string {
 	raw, _ := json.Marshal(items)
 	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+type responsesPrefix struct {
+	digest hash.Hash
+}
+
+func (prefix *responsesPrefix) append(normalized []json.RawMessage) {
+	for _, item := range normalized {
+		if prefix.digest == nil {
+			prefix.digest = sha256.New()
+			prefix.digest.Write([]byte{'['})
+		} else {
+			prefix.digest.Write([]byte{','})
+		}
+		prefix.digest.Write(item)
+	}
+}
+
+func (prefix *responsesPrefix) fingerprint() (string, error) {
+	if prefix.digest == nil {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte("[]"))), nil
+	}
+	state, err := prefix.digest.(encoding.BinaryMarshaler).MarshalBinary()
+	if err != nil {
+		return "", err
+	}
+	closed := sha256.New()
+	if err := closed.(encoding.BinaryUnmarshaler).UnmarshalBinary(state); err != nil {
+		return "", err
+	}
+	closed.Write([]byte{']'})
+	return fmt.Sprintf("%x", closed.Sum(nil)), nil
 }
 func cloneResponsesItems(items []json.RawMessage) []json.RawMessage {
 	out := make([]json.RawMessage, len(items))

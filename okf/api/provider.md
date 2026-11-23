@@ -503,6 +503,8 @@ Evidence: [file transport tests](../../provider/deepseek_files_test.go),
 
 ## Native Responses history ownership
 
+Prefix verification consumes normalized items in order. Published split-assistant bindings and current canonical bindings each retain their exact JSON-array fingerprint. The transient hash state belongs to one preparation; it is neither persisted nor reused across requests.
+
 The additive ResponsesOutput and ResponsesOutputError API moves completed-item
 reconciliation from Redeven into Floret. Add validates repeated done events
 strictly; Complete retains completed reasoning ciphertext, filling absent, null
