@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/toolrender"
 )
 
 // DeepSeekOptions configures DeepSeek's stateless Responses transport. BaseURL
@@ -511,14 +512,22 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 		}
 		body["reasoning"] = map[string]string{"effort": effort}
 	}
-	var definitions []any
+	var definitions []json.RawMessage
 	names := map[string]bool{}
 	for _, tool := range req.Tools {
 		if !validDeepSeekToolName(tool.Name) || names[tool.Name] {
 			return nil, history, errors.New("invalid or duplicate DeepSeek tool name")
 		}
 		names[tool.Name] = true
-		definitions = append(definitions, map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema, "strict": tool.Strict})
+		definition, err := json.Marshal(map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema, "strict": tool.Strict})
+		if err != nil {
+			return nil, history, err
+		}
+		ordered, err := toolrender.OrderTool(string(RequestFormatOpenAIResponses), definition)
+		if err != nil {
+			return nil, history, fmt.Errorf("tools[%d]: %w", len(definitions), err)
+		}
+		definitions = append(definitions, ordered)
 	}
 	hosted := false
 	for _, tool := range req.HostedTools {
@@ -531,7 +540,7 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 			}
 		}
 		hosted = true
-		definitions = append(definitions, map[string]string{"type": "web_search"})
+		definitions = append(definitions, json.RawMessage(`{"type":"web_search"}`))
 	}
 	if len(definitions) > 0 {
 		body["tools"] = definitions
@@ -541,11 +550,7 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 	if err != nil {
 		return nil, history, err
 	}
-	raw, err = OrderToolSchemas(RequestFormatOpenAIResponses, raw)
-	if err == nil {
-		err = CheckRequestBytes(raw, g.maxRequestBytes)
-	}
-	return raw, history, err
+	return raw, history, CheckRequestBytes(raw, g.maxRequestBytes)
 }
 
 func (g *deepSeekGateway) Stream(ctx context.Context, req Request) (<-chan Event, error) {

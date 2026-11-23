@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.121.2
+
+- Skip transparent margins outside the resampling kernel when preparing straight-alpha model images. The encoded pixels and wire bytes are unchanged.
+- Order DeepSeek tool declarations before assembling the complete request so schema ordering does not reprocess unrelated image payloads.
+
 ## v7.121.1
 
 - Downscale 8-bit straight-alpha model images with a rolling row buffer instead of a full intermediate image. The Catmull-Rom pixels, output encoding and source identity are unchanged.

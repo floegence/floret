@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestDeepSeekVisionPreparesImagesWithoutPersistingPayload(t *testing.T) {
@@ -48,6 +49,7 @@ func TestDeepSeekVisionPreparesImagesWithoutPersistingPayload(t *testing.T) {
 				t.Fatal("image expansion is not advertised")
 			}
 			req := provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "What is this?", Attachments: []provider.Attachment{{ResourceRef: "opaque-photo", Name: "photo.png", MIMEType: "image/png", SizeBytes: 3}}}}}
+			req.Tools = []tools.ToolDefinition{{Name: "inspect", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"source": map[string]any{"type": "string"}, "details": map[string]any{"type": "boolean"}}, "required": []string{"source"}}}}
 			prepared, err := gateway.(provider.RequestPreparer).Prepare(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
@@ -81,6 +83,10 @@ func TestDeepSeekVisionPreparesImagesWithoutPersistingPayload(t *testing.T) {
 			}
 			if calls != 1 || len(bodies) != 1 || !strings.Contains(bodies[0], dataURL) || strings.Contains(bodies[0], "image_reference") {
 				t.Fatalf("unexpected image request: calls=%d bodies=%v", calls, bodies)
+			}
+			ordered, err := provider.OrderToolSchemas(provider.RequestFormatOpenAIResponses, []byte(bodies[0]))
+			if err != nil || string(ordered) != bodies[0] || !strings.Contains(bodies[0], `"properties":{"source":`) {
+				t.Fatalf("image wire changed tool ordering: %s, %v", bodies[0], err)
 			}
 			if prepared.TokenEstimate().EstimatedInputTokens < 1024 {
 				t.Fatal("estimate excludes visual input tokens")

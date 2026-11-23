@@ -39,6 +39,34 @@ func TestModelRowScaleMatchesCatmullRom(t *testing.T) {
 	}
 }
 
+func TestModelRowScaleTransparentMargins(t *testing.T) {
+	parent := image.NewNRGBA(image.Rect(-4, -2, 79, 71))
+	source := parent.SubImage(image.Rect(0, 1, 73, 67)).(*image.NRGBA)
+	for row := 0; row < source.Rect.Dy(); row++ {
+		if row%11 < 5 {
+			continue
+		}
+		first := []int{0, 19, 72}[row%3]
+		for col := first; col < min(first+7, source.Rect.Dx()); col++ {
+			index := row*source.Stride + col*4
+			source.Pix[index+row%4] = 255
+			source.Pix[index+3] = byte(130 + row)
+		}
+	}
+	for _, size := range []image.Point{{39, 37}, {1, 3}, {73, 20}} {
+		bounds := image.Rect(4, -1, 4+size.X, -1+size.Y)
+		actual := image.NewNRGBA(bounds)
+		reference := image.NewNRGBA(bounds)
+		for index := range actual.Pix {
+			actual.Pix[index] = 255
+		}
+		draw.CatmullRom.Scale(reference, bounds, source, source.Bounds(), draw.Src, nil)
+		if err := scaleModelNRGBA(t.Context(), source, actual); err != nil || !bytes.Equal(actual.Pix, reference.Pix) {
+			t.Fatalf("transparent margins differ at %v: %v", size, err)
+		}
+	}
+}
+
 func BenchmarkModelDenseRowScale(b *testing.B) {
 	source := image.NewNRGBA(image.Rect(0, 0, 3614, 1920))
 	random := rand.New(rand.NewPCG(3, 11))

@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sort"
 
 	"golang.org/x/image/draw"
 )
@@ -46,6 +47,25 @@ func modelFilters(source, destination int) ([]modelFilter, int) {
 
 type modelChannels [4]float64
 
+type modelColumnRange struct{ first, end int }
+
+func modelRowRange(pixels []byte, filters []modelFilter) modelColumnRange {
+	nonzero := bytes.TrimLeft(pixels, "\x00")
+	if len(nonzero) == 0 {
+		return modelColumnRange{}
+	}
+	first := (len(pixels) - len(nonzero)) / 4
+	end := (len(bytes.TrimRight(pixels, "\x00")) + 3) / 4
+	columns := modelColumnRange{0, len(filters)}
+	if first > 0 {
+		columns.first = sort.Search(len(filters), func(index int) bool { return filters[index].first+len(filters[index].weights) > first })
+	}
+	if end < len(pixels)/4 {
+		columns.end = sort.Search(len(filters), func(index int) bool { return filters[index].first >= end })
+	}
+	return columns
+}
+
 func filterModelRow(target []modelChannels, source []byte, filters []modelFilter) {
 	// Match x/image's premultiplication and separate multiply/add rounding.
 	for col, filter := range filters {
@@ -79,6 +99,7 @@ func scaleModelNRGBA(ctx context.Context, source, dest *image.NRGBA) error {
 	horizontal, _ := modelFilters(source.Rect.Dx(), width)
 	vertical, capacity := modelFilters(source.Rect.Dy(), height)
 	rows := make([]modelChannels, capacity*width)
+	ranges := make([]modelColumnRange, capacity)
 	// Consecutive output rows share input rows within the vertical kernel's support.
 	sums := make([]modelChannels, width)
 	nextRow := 0
@@ -88,32 +109,54 @@ func scaleModelNRGBA(ctx context.Context, source, dest *image.NRGBA) error {
 			return err
 		}
 		for nextRow < filter.first+len(filter.weights) {
-			start := (nextRow % capacity) * width
+			slot := nextRow % capacity
+			start := slot * width
 			target := rows[start : start+width]
 			pixels := source.Pix[nextRow*source.Stride:][:4*source.Rect.Dx()]
 			if previous != nil && bytes.Equal(previous, pixels) {
-				prior := ((nextRow - 1) % capacity) * width
-				copy(target, rows[prior:prior+width])
+				priorSlot := (nextRow - 1) % capacity
+				columns := ranges[priorSlot]
+				ranges[slot] = columns
+				prior := priorSlot * width
+				copy(target[columns.first:columns.end], rows[prior+columns.first:prior+columns.end])
 			} else {
-				filterModelRow(target, pixels, horizontal)
+				columns := modelRowRange(pixels, horizontal)
+				ranges[slot] = columns
+				filterModelRow(target[columns.first:columns.end], pixels, horizontal[columns.first:columns.end])
 			}
 			previous = pixels
 			nextRow++
 		}
 		clear(sums)
+		first, end := width, 0
 		for offset, weight := range filter.weights {
 			if weight == 0 {
 				continue
 			}
-			start := ((filter.first + offset) % capacity) * width
-			for col, pixel := range rows[start : start+width] {
+			slot := (filter.first + offset) % capacity
+			columns := ranges[slot]
+			if columns.first == columns.end {
+				continue
+			}
+			first, end = min(first, columns.first), max(end, columns.end)
+			start := slot * width
+			for local, pixel := range rows[start+columns.first : start+columns.end] {
+				col := local + columns.first
 				sums[col][0] += float64(pixel[0] * weight)
 				sums[col][1] += float64(pixel[1] * weight)
 				sums[col][2] += float64(pixel[2] * weight)
 				sums[col][3] += float64(pixel[3] * weight)
 			}
 		}
-		for col, pixel := range sums {
+		output := dest.Pix[row*dest.Stride:][:4*width]
+		if end == 0 {
+			clear(output)
+			continue
+		}
+		clear(output[:4*first])
+		clear(output[4*end:])
+		for local, pixel := range sums[first:end] {
+			col := first + local
 			alpha := pixel[3]
 			dest.SetRGBA64(dest.Rect.Min.X+col, dest.Rect.Min.Y+row, color.RGBA64{
 				R: modelChannel(min(pixel[0], alpha), filter.norm),
