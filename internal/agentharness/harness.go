@@ -936,7 +936,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			runInput.History = compact.Messages
 		}
 	}
-	if opts.TurnKind == "" || opts.TurnKind == sessiontree.TurnKindHostWorkContinuation || opts.TurnKind == sessiontree.TurnKindGoalContinuation && result.Err == nil {
+	if opts.TurnKind == "" || opts.TurnKind == sessiontree.TurnKindResume || opts.TurnKind == sessiontree.TurnKindHostWorkContinuation || opts.TurnKind == sessiontree.TurnKindGoalContinuation && result.Err == nil {
 		result = eng.RunTurn(ctx, runInput)
 	}
 	result = normalizeCancelledEngineResult(ctx, result)

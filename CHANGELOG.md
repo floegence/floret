@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.121.0
+
+- Explicitly resume an exact stopped conversation without replaying its input or adding a user message. Schema 41 and logical format 17 preserve historical records and fence older writers; format 16 remains reserved.
+
 ## v7.120.7
 
 - Verify retained Responses history prefixes in one forward pass per representation. Long conversations keep the same native input, split-assistant bindings, continuation boundaries and persisted fingerprints, without repeatedly serializing earlier items.

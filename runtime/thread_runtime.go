@@ -43,6 +43,8 @@ const TurnKindGoalContinuation TurnKind = "goal_continuation"
 // TurnKindHostWorkContinuation responds to confirmed asynchronous tool results.
 const TurnKindHostWorkContinuation TurnKind = "host_work_continuation"
 
+const TurnKindResume TurnKind = "resume"
+
 // CompactContextInput admits idle-only compaction with optional Goal continuation.
 type CompactContextInput struct {
 	ThreadID   identity.ThreadID `json:"thread_id"`
@@ -2591,6 +2593,13 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 			}
 		}
 		var acceptErr error
+		if kind == TurnKindResume {
+			current := actor.runtimeFactsUpdate(0)
+			target := ResumeThreadInput{ThreadID: threadID, ExpectedTurnID: current.TurnID, ExpectedRunID: current.RunID}
+			if string(target.RequestKey()) != requestKey || !current.Facts.CanResume(threadID, current.TurnID, current.RunID) {
+				return ErrRequestConflict
+			}
+		}
 		accepted, acceptErr = service.acceptCanonicalTurn(ctx, threadID, request)
 		if acceptErr != nil {
 			return acceptErr
@@ -4329,7 +4338,7 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 	if sourceEntryID == "" {
 		return "", UserInput{}, ErrAuthorityCorrupt
 	}
-	if read.Turn.Entries[0].Entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindGoalContinuation || read.Turn.Entries[0].Entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindHostWorkContinuation {
+	if isConversationContinuation(read.Turn.Entries[0].Entry) {
 		return sourceEntryID, UserInput{}, nil
 	}
 	path, err := service.host.store.repo.Path(ctx, threadID.String(), sourceEntryID)
@@ -4345,9 +4354,17 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 	return "", UserInput{}, errors.New("retry source turn has no canonical user input")
 }
 
+func isConversationContinuation(start sessiontree.Entry) bool {
+	switch TurnKind(start.Metadata[sessiontree.TurnKindMetadataKey]) {
+	case TurnKindResume, TurnKindGoalContinuation, TurnKindHostWorkContinuation:
+		return true
+	}
+	return false
+}
+
 func retryContinuationEntryID(turn sessiontree.CanonicalTurn) string {
 	sourceEntryID := ""
-	if len(turn.Entries) > 0 && (turn.Entries[0].Entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindGoalContinuation || turn.Entries[0].Entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindHostWorkContinuation) {
+	if len(turn.Entries) > 0 && isConversationContinuation(turn.Entries[0].Entry) {
 		sourceEntryID = turn.StartedEntryID
 	}
 	if turn.RetrySource != nil {

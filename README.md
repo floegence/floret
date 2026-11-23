@@ -607,6 +607,13 @@ history; inserted interruption messages reset incompatible state. Canonical byte
 and released checkpoint boundaries remain unchanged. This requires no domain schema migration and adds
 no UI message or second transcript.
 
+`ThreadResumer.Resume` starts an explicit conversation continuation from current
+history for an exact stopped Thread/Turn/Run. Use `ThreadRuntimeFacts.CanResume`
+for presentation, and `ResumeThreadInput.RequestKey()` for host admission identity.
+It neither admits user input nor replays tools. Repeated clicks on the same target
+identify one admission, including after restart. Completion, waiting, snapshot
+restore and unknown-effect failure are not resume targets.
+
 Retrying a failed turn uses its latest committed save point and retains completed
 tool results. Repeated failures and restart preserve that context without adding
 another user message. A completed-turn retry retains its regeneration behavior.

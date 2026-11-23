@@ -12,6 +12,8 @@ const backendDomainV39Version = 39
 
 const backendDomainV40Version = 40
 
+const backendDomainV41Version = 41
+
 // Schema 39 admits segmented output references and streaming host-work capture.
 // Historical inline artifacts remain authoritative and are not rescanned or
 // rewritten. The manifest and logical fence exclude older writers atomically.

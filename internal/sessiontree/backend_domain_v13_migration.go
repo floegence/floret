@@ -18,20 +18,20 @@ func migrateBackendDomainV12ToV13(ctx context.Context, memory *MemoryRepo) error
 }
 
 func validateTurnKindRecords(memory *MemoryRepo) error {
-	return validateTurnKindRecordsForSchema(memory, false, false)
+	return validateTurnKindRecordsForSchema(memory, false, false, false)
 }
 
 func validateCurrentTurnKindRecords(memory *MemoryRepo) error {
-	return validateTurnKindRecordsForSchema(memory, true, true)
+	return validateTurnKindRecordsForSchema(memory, true, true, true)
 }
 
 func validateHistoricalContinuationRecords(memory *MemoryRepo) error {
-	return validateTurnKindRecordsForSchema(memory, true, false)
+	return validateTurnKindRecordsForSchema(memory, true, false, false)
 }
 
-func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation, hostWork bool) error {
+func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation, hostWork, resume bool) error {
 	for threadID, entries := range memory.entries {
-		if err := validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, hostWork); err != nil {
+		if err := validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, hostWork, resume); err != nil {
 			return err
 		}
 	}
@@ -39,9 +39,9 @@ func validateTurnKindRecordsForSchema(memory *MemoryRepo, goalContinuation, host
 }
 
 func validateTurnKindEntries(threadID string, entries []Entry, goalContinuation bool) error {
-	return validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, goalContinuation)
+	return validateTurnKindEntriesForSchema(threadID, entries, goalContinuation, goalContinuation, goalContinuation)
 }
-func validateTurnKindEntriesForSchema(threadID string, entries []Entry, goalContinuation, hostWork bool) error {
+func validateTurnKindEntriesForSchema(threadID string, entries []Entry, goalContinuation, hostWork, resume bool) error {
 	kinds := map[string]string{}
 	for _, entry := range entries {
 		if !hostWork && (entry.Type == EntryHostWork || entry.Type == EntryHostWorkAdmitted) {
@@ -55,7 +55,7 @@ func validateTurnKindEntriesForSchema(threadID string, entries []Entry, goalCont
 		if kind == "" {
 			continue
 		}
-		if (kind != TurnKindContextCompaction && !(goalContinuation && kind == TurnKindGoalContinuation) && !(hostWork && kind == TurnKindHostWorkContinuation)) || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" {
+		if (kind != TurnKindContextCompaction && !(goalContinuation && kind == TurnKindGoalContinuation) && !(hostWork && kind == TurnKindHostWorkContinuation) && !(resume && kind == TurnKindResume && intent == "")) || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" {
 			return fmt.Errorf("invalid typed turn %q", entry.ID)
 		}
 		if kind == TurnKindGoalContinuation && intent != "1" && entry.Metadata[RetrySourceEntryIDMetadataKey] == "" {
@@ -67,7 +67,7 @@ func validateTurnKindEntriesForSchema(threadID string, entries []Entry, goalCont
 		kinds[entry.TurnID] = kind
 	}
 	for _, entry := range entries {
-		if kinds[entry.TurnID] == TurnKindGoalContinuation || kinds[entry.TurnID] == TurnKindHostWorkContinuation {
+		if conversationContinuation(kinds[entry.TurnID]) {
 			if entry.Type == EntryUserMessage {
 				return ErrAuthorityCorrupt
 			}

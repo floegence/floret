@@ -1340,6 +1340,11 @@ field RestorePreparation.StoppedQueueInputs int tag="json:\"stopped_queue_inputs
 type RestoredInput struct
 field RestoredInput.ID string tag="json:\"id\""
 field RestoredInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
+type ResumeThreadInput struct
+field ResumeThreadInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ResumeThreadInput.ExpectedTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"expected_turn_id\""
+field ResumeThreadInput.ExpectedRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"expected_run_id\""
+method ResumeThreadInput.RequestKey func() github.com/floegence/floret/v7/runtime.RequestKey
 type RetryInput struct
 field RetryInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field RetryInput.SourceTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"source_turn_id\""
@@ -1901,6 +1906,7 @@ field ThreadReadiness.Ready bool tag="json:\"ready\""
 field ThreadReadiness.DisplayReady bool tag="json:\"display_ready\""
 field ThreadReadiness.DisplayError string tag="json:\"display_error,omitempty\""
 field ThreadReadiness.Storage github.com/floegence/floret/v7/runtime.StorageMigrationStatus tag="json:\"storage\""
+type ThreadResumer interface interface{Resume(context.Context, github.com/floegence/floret/v7/runtime.ResumeThreadInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error)}
 type ThreadRunPhase string
 const ThreadRunPhaseAwaitingConfirmation github.com/floegence/floret/v7/runtime.ThreadRunPhase = "awaiting_confirmation"
 const ThreadRunPhaseFinalizing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "finalizing"
@@ -1923,6 +1929,7 @@ field ThreadRuntimeFacts.Failure *github.com/floegence/floret/v7/runtime.ThreadT
 field ThreadRuntimeFacts.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadRuntimeFacts.RunProgress *github.com/floegence/floret/v7/runtime.ThreadRunProgress tag="json:\"run_progress,omitempty\""
 field ThreadRuntimeFacts.QueueCount int tag="json:\"queue_count\""
+method ThreadRuntimeFacts.CanResume func(threadID github.com/floegence/floret/v7/identity.ThreadID, turnID github.com/floegence/floret/v7/identity.TurnID, runID github.com/floegence/floret/v7/identity.RunID) bool
 type ThreadSchedulingReader interface interface{SchedulingState(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadSchedulingState, error)}
 type ThreadSchedulingState struct
 field ThreadSchedulingState.TurnID github.com/floegence/floret/v7/identity.TurnID
@@ -2231,6 +2238,7 @@ type TurnKind string
 const TurnKindContextCompaction github.com/floegence/floret/v7/runtime.TurnKind = "context_compaction"
 const TurnKindGoalContinuation github.com/floegence/floret/v7/runtime.TurnKind = "goal_continuation"
 const TurnKindHostWorkContinuation github.com/floegence/floret/v7/runtime.TurnKind = "host_work_continuation"
+const TurnKindResume github.com/floegence/floret/v7/runtime.TurnKind = "resume"
 type TurnLimits struct
 field TurnLimits.MaxInputTokens int64
 field TurnLimits.MaxTotalTokens int64

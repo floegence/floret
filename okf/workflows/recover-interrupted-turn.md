@@ -14,6 +14,11 @@ identity, following the wrong user, or replaying an irreversible effect.
 
 # Steps
 
+For a settled conversation, present explicit `ThreadResumer.Resume` only when
+`ThreadRuntimeFacts.CanResume` permits the displayed execution. Bind the click to
+its exact Thread/Turn/Run. This appends a new typed turn from current history,
+not a user message or a replay from a retry checkpoint.
+
 1. Open the Host with the same durable storage source.
 2. Hydrate the exact thread through `ThreadService.View`; Floret validates the
    canonical turn markers and current leaf.

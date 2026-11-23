@@ -392,7 +392,7 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		}
 		return retryID, nil
 	}
-	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && !conversationContinuation(kind) {
 		return "", ErrAuthorityCorrupt
 	}
 	return base, nil

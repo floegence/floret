@@ -74,7 +74,7 @@ func canonicalAdmissionBase(ctx context.Context, tx spi.ReadTx, started Entry) (
 		}
 		return retryID, nil
 	}
-	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && !conversationContinuation(kind) {
 		return "", ErrAuthorityCorrupt
 	}
 	return base, nil

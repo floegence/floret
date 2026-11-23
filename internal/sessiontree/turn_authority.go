@@ -20,6 +20,7 @@ const (
 	TurnKindContextCompaction     = "context_compaction"
 	TurnKindGoalContinuation      = "goal_continuation"
 	TurnKindHostWorkContinuation  = "host_work_continuation"
+	TurnKindResume                = "resume"
 	ContinueGoalMetadataKey       = "continue_goal"
 	LogicalRequestIDMetadataKey   = "logical_request_id"
 	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
@@ -38,6 +39,10 @@ type ProviderStateRecord struct {
 	CreatedByRunID   string
 	CreatedByTurnID  string
 	UpdatedAt        time.Time
+}
+
+func conversationContinuation(kind string) bool {
+	return kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation || kind == TurnKindResume
 }
 
 type ProviderStateReader interface {
@@ -181,7 +186,7 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 	if req.EditSourceEntryID != "" && (req.TurnKind != "" || req.RetrySourceEntryID != "" || req.PromotedQueueID != "") {
 		return ErrRequestConflict
 	}
-	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation && req.TurnKind != TurnKindHostWorkContinuation {
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && !conversationContinuation(req.TurnKind) {
 		return errors.New("unknown turn kind")
 	}
 	if req.ContinueGoal && req.TurnKind != TurnKindGoalContinuation {

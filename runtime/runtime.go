@@ -1660,7 +1660,7 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 		return validatedRunTurnRequest{}, errors.New("turn id is required")
 	}
 	input := req.Input
-	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation && req.TurnKind != TurnKindHostWorkContinuation {
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation && req.TurnKind != TurnKindHostWorkContinuation && req.TurnKind != TurnKindResume {
 		return validatedRunTurnRequest{}, errors.New("unknown turn kind")
 	}
 	var err error

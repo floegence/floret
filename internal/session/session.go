@@ -29,6 +29,7 @@ const (
 	MessageKindControlSignal       MessageKind = "control_signal"
 	// MessageKindTurnInterruption is derived from a canonical terminal, never stored as a message.
 	MessageKindTurnInterruption MessageKind = "turn_interruption"
+	MessageKindTurnResume       MessageKind = "turn_resume"
 )
 
 type ToolResultView struct {

@@ -201,7 +201,7 @@ func (r canonicalTurnReader) listCanonicalTurnsBackwardLocked(threadID, startEnt
 			if err != nil {
 				return CanonicalTurnsPage{}, err
 			}
-			if _, visible := userTurns[turnID]; visible || retrySource != nil || (entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || entry.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation) {
+			if _, visible := userTurns[turnID]; visible || retrySource != nil || (conversationContinuation(entry.Metadata[TurnKindMetadataKey])) {
 				candidatesNewestFirst = append(candidatesNewestFirst, canonicalTurnCandidate{
 					turnID: turnID, runID: runID, startedEntryID: entry.ID, ordinal: depth, retrySource: retrySource,
 				})
@@ -496,7 +496,7 @@ func (r canonicalTurnReader) withCanonicalPageRetryEligibilityLocked(threadID st
 	if latest.TurnID != page.LatestTurnID {
 		return CanonicalTurnsPage{}, ErrAuthorityCorrupt
 	}
-	if latest.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || latest.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation {
+	if conversationContinuation(latest.Entries[0].Entry.Metadata[TurnKindMetadataKey]) {
 		page.HasRetryTarget = true
 		return page, nil
 	}
@@ -651,7 +651,7 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		return false, nil, "", "", ErrAuthorityCorrupt
 	}
 	sourceEntry := entries[sourceIndex]
-	if sourceEntry.ID == started.ID && (started.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || started.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation) {
+	if sourceEntry.ID == started.ID && (conversationContinuation(started.Metadata[TurnKindMetadataKey])) {
 		return true, nil, started.ID, runID, nil
 	}
 	if isCanonicalUserEntry(sourceEntry) {
@@ -675,7 +675,7 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		}
 		return session.HasRetryEligibleDurableInput(entries[userIndex].Message), nil, started.ID, runID, nil
 	}
-	if started.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation || started.Metadata[TurnKindMetadataKey] == TurnKindHostWorkContinuation {
+	if conversationContinuation(started.Metadata[TurnKindMetadataKey]) {
 		return true, nil, started.ID, runID, nil
 	}
 	if retrySource == nil {

@@ -109,7 +109,7 @@ func validateCanonicalAppendedEntry(ctx context.Context, tx spi.ReadTx, meta Thr
 	}
 	if entry.TurnID != "" {
 		kind := entry.Metadata[TurnKindMetadataKey]
-		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation {
+		if kind == TurnKindContextCompaction || conversationContinuation(kind) {
 			if err := visitCanonicalTurnEntries(ctx, tx, meta.ID, entry.TurnID, func(candidate Entry) error {
 				if candidate.ID == entry.ID {
 					return nil

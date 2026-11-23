@@ -1496,10 +1496,10 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 		return ErrRequestConflict
 	}
 	kind := entries[0].Metadata[TurnKindMetadataKey]
-	if kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation && kind != TurnKindHostWorkContinuation {
+	if kind != "" && kind != TurnKindContextCompaction && !conversationContinuation(kind) {
 		return ErrAuthorityCorrupt
 	}
-	if (kind == TurnKindGoalContinuation || kind == TurnKindHostWorkContinuation) && userEntries != 0 {
+	if (conversationContinuation(kind)) && userEntries != 0 {
 		return ErrAuthorityCorrupt
 	}
 	if kind == TurnKindContextCompaction && (userEntries != 0 || retrySource != nil) {
@@ -2533,6 +2533,9 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
 	case EntryTurnMarker:
+		if entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] == TurnKindResume {
+			messages = append(messages, session.Message{Role: session.User, Kind: session.MessageKindTurnResume, Content: `{"type":"turn_resume","message":"The user explicitly resumed the stopped task. Continue from the recorded history and confirmed tool results. Do not assume partial output is complete or replay uncertain effects."}`, EntryID: entry.ID, ParentEntryID: entry.ParentID})
+		}
 		if entry.TurnStatus == TurnAborted {
 			outcome := "cancelled"
 			if entry.Metadata["recoverable"] == "true" || entry.Metadata[TurnFailureCodeMetadataKey] == TurnFailureInterrupted {

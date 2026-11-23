@@ -59,7 +59,7 @@ func TestOutputSchemaMigrationPreservesHistoryAndBoundedRestart(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if manifest.Version != backendDomainV40Version {
+		if manifest.Version != backendDomainV41Version {
 			t.Fatal("not upgraded")
 		}
 		_, current, err := NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)

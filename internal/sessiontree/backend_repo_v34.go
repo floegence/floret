@@ -107,9 +107,19 @@ func migrateCurrentManifest(ctx context.Context, tx spi.WriteTx, source backendD
 		}
 	}
 	if source.Version == backendDomainV39Version {
-		return advanceUnchangedDomainRecords(ctx, tx, source, backendDomainV39Version, backendDomainV40Version)
+		if err := advanceUnchangedDomainRecords(ctx, tx, source, backendDomainV39Version, backendDomainV40Version); err != nil {
+			return err
+		}
+		var err error
+		source, err = readV32Manifest(tx)
+		if err != nil {
+			return err
+		}
 	}
-	if source.Version != backendDomainV40Version {
+	if source.Version == backendDomainV40Version {
+		return advanceUnchangedDomainRecords(ctx, tx, source, backendDomainV40Version, backendDomainV41Version)
+	}
+	if source.Version != backendDomainV41Version {
 		return ErrAuthorityCorrupt
 	}
 	return ctx.Err()

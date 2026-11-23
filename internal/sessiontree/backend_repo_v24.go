@@ -57,7 +57,7 @@ func validateBackendDomainConversationMemory(memory *MemoryRepo, label string, c
 		validateKinds = validateHistoricalContinuationRecords
 	}
 	if label == "v35" {
-		validateKinds = validateCurrentTurnKindRecords
+		validateKinds = func(source *MemoryRepo) error { return validateTurnKindRecordsForSchema(source, true, true, false) }
 	}
 	if err := validateKinds(memory); err != nil {
 		return err
