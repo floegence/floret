@@ -14,24 +14,17 @@ func (service *threadRuntimeService) publish(current ThreadView) {
 	for subscriber := range service.subscribers {
 		subscriber.mu.Lock()
 		if !subscriber.closed {
-			if subscriber.wakeOnly {
+			view := cloneThreadRuntimeView(current)
+			select {
+			case subscriber.views <- view:
+			default:
 				select {
-				case subscriber.changed <- struct{}{}:
+				case <-subscriber.views:
 				default:
 				}
-			} else {
-				view := cloneThreadRuntimeView(current)
 				select {
 				case subscriber.views <- view:
 				default:
-					select {
-					case <-subscriber.views:
-					default:
-					}
-					select {
-					case subscriber.views <- view:
-					default:
-					}
 				}
 			}
 		}

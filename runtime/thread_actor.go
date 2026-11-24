@@ -196,11 +196,15 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 		return ErrThreadDeleted
 	}
 	base := runtime.state.view.ViewVersion
+	waitBefore := waitCondition(&runtime.state.view)
 	runtime.mutations = threadMutations{}
 	err := mutate()
 	runtime.refreshSummaryPositions()
 	runtime.refreshAttention()
 	if runtime.service != nil {
+		if waitBefore != waitCondition(&runtime.state.view) {
+			runtime.service.notifyWaiters(identity.ThreadID(runtime.threadID), true, false)
+		}
 		switch {
 		case runtime.state.contextErr != nil:
 			runtime.stopUpdateTimer()

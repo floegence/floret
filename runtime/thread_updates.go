@@ -767,13 +767,6 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			continue
 		default:
 		}
-		if subscription.wakeOnly {
-			select {
-			case subscription.changed <- struct{}{}:
-			default:
-			}
-			continue
-		}
 		if actor.sourceWindow != nil {
 			// Legacy subscribers require complete snapshots. The shared
 			// preparation owner publishes after promotion, never a sparse view.

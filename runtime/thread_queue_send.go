@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/floegence/floret/v7/identity"
 )
 
 // SendQueuedNow gracefully stops the current response, then admits the selected
@@ -61,7 +63,7 @@ func (service *threadRuntimeService) sendQueuedNowCommand(ctx context.Context, i
 	if replayed {
 		return service.currentResult(actor, mode), nil
 	}
-	subscription, err := service.subscribe(context.WithoutCancel(ctx), true)
+	subscription, err := service.registerWait(map[identity.ThreadID]bool{in.ThreadID: true}, "")
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -109,17 +111,9 @@ func (service *threadRuntimeService) sendQueuedNowCommand(ctx context.Context, i
 				}
 				break
 			}
-			select {
-			case <-transition.Done():
-				finished <- result{err: transition.Err()}
-				return
-			case <-subscription.done:
-				subscription.mu.Lock()
-				readErr = subscription.closeErr
-				subscription.mu.Unlock()
+			if readErr = subscription.next(transition); readErr != nil {
 				finished <- result{err: readErr}
 				return
-			case <-subscription.changed:
 			}
 		}
 		promoted, promoteErr := service.promoteQueuedCommand(transition, in, mode)

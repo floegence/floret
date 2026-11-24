@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.121.4
+
+- Scope child waits to their frozen targets and committed parent events. Streaming text in concurrent conversations no longer triggers inventory or receipt reads by waiting parents.
+
 ## v7.121.3
 
 - Reduce decoding cost for model-input estimates and reuse already encoded input fields when refitting DeepSeek generation limits. Keep the standard JSON validity boundary, numeric text, and frozen HTTP input intact.

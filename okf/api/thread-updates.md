@@ -129,8 +129,10 @@ creates no publication timer or copied display batch.
 
 `View`, legacy `Subscribe` and native updates share the same publication kernel
 and version. The v7 legacy interface remains supported; only actual legacy
-subscribers request full views. Internal waits use lightweight wakeups and
-fresh small facts. There is no alternate diff algorithm or automatic fallback.
+subscribers request full views. Internal waits register before the first scoped
+read and freeze the selected IDs. Target lifecycle changes, deletion and committed
+events for the selected parent wake a canonical reread. Text growth needs no
+waiter publication. Queue promotion and message editing use the same scoped wakeup.
 
 Activity live reduction and batch construction use one `ActivityReducer`. Only
 affected tool facts are projected during execution; canonical and terminal

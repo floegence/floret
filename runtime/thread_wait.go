@@ -42,6 +42,77 @@ type ThreadWaitResult struct {
 
 var _ ThreadWaiter = (*threadRuntimeService)(nil)
 
+type threadWaitCondition struct {
+	turn      identity.TurnID
+	run       identity.RunID
+	activity  ThreadActivity
+	attention AttentionSummary
+	queued    int
+}
+
+func waitCondition(view *ThreadView) threadWaitCondition {
+	return threadWaitCondition{view.TurnID, view.RunID, view.Activity, view.Attention, len(view.Queue)}
+}
+
+type threadWaitInterest struct {
+	service      *threadRuntimeService
+	targets      map[identity.ThreadID]bool
+	parentEvents identity.ThreadID
+	changed      chan struct{}
+}
+
+func (service *threadRuntimeService) registerWait(targets map[identity.ThreadID]bool, parent identity.ThreadID) (*threadWaitInterest, error) {
+	if err := service.host.available(); err != nil {
+		return nil, err
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.subscriptionsClosed {
+		return nil, ErrHostClosed
+	}
+	if service.waiters == nil {
+		service.waiters = make(map[*threadWaitInterest]struct{})
+	}
+	interest := &threadWaitInterest{service: service, targets: targets, parentEvents: parent, changed: make(chan struct{}, 1)}
+	service.waiters[interest] = struct{}{}
+	return interest, nil
+}
+
+func (interest *threadWaitInterest) Close() {
+	interest.service.mu.Lock()
+	defer interest.service.mu.Unlock()
+	delete(interest.service.waiters, interest)
+}
+
+func (interest *threadWaitInterest) next(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case _, open := <-interest.changed:
+		if !open {
+			return ErrHostClosed
+		}
+		return nil
+	}
+}
+
+func (service *threadRuntimeService) notifyWaiters(id identity.ThreadID, targetChanged, parentChanged bool) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.notifyWaitersLocked(id, targetChanged, parentChanged)
+}
+
+func (service *threadRuntimeService) notifyWaitersLocked(id identity.ThreadID, targetChanged, parentChanged bool) {
+	for waiter := range service.waiters {
+		if targetChanged && (waiter.targets == nil || waiter.targets[id]) || parentChanged && waiter.parentEvents == id {
+			select {
+			case waiter.changed <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
 func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThreadsInput) (ThreadWaitResult, error) {
 	if in.PendingParentEvents && in.Scope.ParentID == nil {
 		return ThreadWaitResult{}, errors.New("parent event wait requires a parent scope")
@@ -59,11 +130,19 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, in.Timeout)
 	defer cancel()
-	sub, err := service.subscribe(waitCtx, true)
+	var parent identity.ThreadID
+	if in.PendingParentEvents {
+		parent = *in.Scope.ParentID
+	}
+	initial := seen
+	if len(targets) == 0 {
+		initial = nil
+	}
+	interest, err := service.registerWait(initial, parent)
 	if err != nil {
 		return ThreadWaitResult{}, err
 	}
-	defer sub.Close()
+	defer interest.Close()
 	var latest ThreadWaitResult
 	first := true
 	for {
@@ -81,7 +160,11 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 		if first && len(targets) == 0 {
 			for _, item := range items {
 				targets = append(targets, item.ID)
+				seen[item.ID] = true
 			}
+			service.mu.Lock()
+			interest.targets = seen
+			service.mu.Unlock()
 		}
 		first = false
 		latest = selectWaitThreads(items, targets)
@@ -133,20 +216,13 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 			}
 			latest.Reason = ThreadWaitTimedOut
 			return latest, nil
-		case <-sub.done:
+		case _, open := <-interest.changed:
 			if err := ctx.Err(); err != nil {
 				return ThreadWaitResult{}, err
 			}
-			sub.mu.Lock()
-			err := sub.closeErr
-			sub.mu.Unlock()
-			if errors.Is(err, context.DeadlineExceeded) && waitCtx.Err() != nil {
-				latest.Reason = ThreadWaitTimedOut
-				return latest, nil
+			if !open {
+				return ThreadWaitResult{}, ErrHostClosed
 			}
-			return ThreadWaitResult{}, err
-		case <-sub.views:
-		case <-sub.changed:
 		}
 	}
 }

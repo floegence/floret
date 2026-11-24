@@ -235,6 +235,7 @@ func (host *Host) observeParentEvents(threadIDs []string) {
 	}
 	for _, id := range threadIDs {
 		threadID := identity.ThreadID(id)
+		service.notifyWaiters(threadID, false, true)
 		actor := service.runtime(threadID)
 		_ = actor.apply(context.Background(), func() error {
 			if actor.state.view.ViewVersion == 0 {

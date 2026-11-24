@@ -1120,7 +1120,8 @@ caller cancellation, read failure and Host shutdown remain errors. Opt-in pendin
 parent-event observation also returns canonical receipts with an `events` reason
 without resuming idle parents. Terminal receipts wait for the matching active
 execution to install its complete terminal view before an event result returns.
-This uses the existing subscription and deadline without consuming receipts.
+Waits register before reading and recheck on target lifecycle changes or committed
+events for the specified parent. Text growth does not wake a wait or consume receipts.
 Subscriptions wake a fresh authoritative read, including after deletion; they are not replay.
 A tool may return `tools.BoundedWait` only for a full normal timeout with
 unfinished, nonempty targets. The dispatcher measures that handler, excluding

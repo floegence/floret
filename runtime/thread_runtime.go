@@ -618,6 +618,7 @@ type threadRuntimeService struct {
 	factory                AgentFactory
 	mu                     sync.Mutex
 	subscribers            map[*WorkspaceSubscription]struct{}
+	waiters                map[*threadWaitInterest]struct{}
 	updateSubscribers      map[*ThreadUpdateSubscription]struct{}
 	subscriptionsClosed    bool
 	published              map[string]uint64
@@ -645,8 +646,6 @@ type WorkspaceSubscription struct {
 	done     chan struct{}
 	closed   bool
 	closeErr error
-	changed  chan struct{}
-	wakeOnly bool
 	service  *threadRuntimeService
 }
 
@@ -1007,12 +1006,7 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 	service.mu.Lock()
 	for threadID := range deleted {
 		delete(service.published, threadID)
-	}
-	for subscription := range service.subscribers {
-		select {
-		case subscription.changed <- struct{}{}:
-		default:
-		}
+		service.notifyWaitersLocked(identity.ThreadID(threadID), true, true)
 	}
 	service.mu.Unlock()
 	service.invalidateUpdates()
@@ -1857,6 +1851,10 @@ func (service *threadRuntimeService) close() error {
 	}
 	service.mu.Lock()
 	service.subscriptionsClosed = true
+	for waiter := range service.waiters {
+		close(waiter.changed)
+	}
+	service.waiters = nil
 	subscriptions := make([]*WorkspaceSubscription, 0, len(service.subscribers))
 	for subscription := range service.subscribers {
 		subscriptions = append(subscriptions, subscription)
@@ -2048,11 +2046,8 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 		// window. A failed promotion remains retryable without invalidating it.
 		if actor.sourceWindow != nil {
 			service.mu.Lock()
-			for subscription := range service.subscribers {
-				if !subscription.wakeOnly {
-					version++
-					break
-				}
+			if len(service.subscribers) != 0 {
+				version++
 			}
 			service.mu.Unlock()
 		}
@@ -4423,17 +4418,13 @@ func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRunti
 }
 
 func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceSubscription, error) {
-	return service.subscribe(ctx, false)
-}
-
-func (service *threadRuntimeService) subscribe(ctx context.Context, wakeOnly bool) (*WorkspaceSubscription, error) {
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), changed: make(chan struct{}, 1), service: service, wakeOnly: wakeOnly}
+	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), service: service}
 	service.mu.Lock()
 	if service.subscriptionsClosed {
 		service.mu.Unlock()

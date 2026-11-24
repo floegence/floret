@@ -289,7 +289,7 @@ func (s *threadRuntimeService) EditLastUserMessage(ctx context.Context, in EditL
 			})
 		}()
 		if active {
-			subscription, err := s.subscribe(transition, true)
+			subscription, err := s.registerWait(map[identity.ThreadID]bool{in.ThreadID: true}, "")
 			if err != nil {
 				done <- result{err: err}
 				return
@@ -309,14 +309,9 @@ func (s *threadRuntimeService) EditLastUserMessage(ctx context.Context, in EditL
 				if !running {
 					break
 				}
-				select {
-				case <-transition.Done():
-					done <- result{err: transition.Err()}
+				if err := subscription.next(transition); err != nil {
+					done <- result{err: err}
 					return
-				case <-subscription.done:
-					done <- result{err: ErrHostClosed}
-					return
-				case <-subscription.changed:
 				}
 			}
 		}

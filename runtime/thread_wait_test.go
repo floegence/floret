@@ -180,7 +180,7 @@ func TestWaitThreadsUnsettledReceiptRespectsDeadlineAndCancellation(t *testing.T
 }
 
 func TestWaitThreadsTimeoutCancellationAndHostClose(t *testing.T) {
-	for _, mode := range []string{"timeout", "cancel", "host_close", "delete", "complete", "pressure"} {
+	for _, mode := range []string{"timeout", "cancel", "host_close", "delete", "complete", "input", "approval", "pressure"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				host, typed := testThreadService(t, newBlockingThreadGateway())
@@ -222,26 +222,28 @@ func TestWaitThreadsTimeoutCancellationAndHostClose(t *testing.T) {
 						t.Fatal(err)
 					}
 				case "complete", "input", "approval", "pressure":
-					actor.mu.Lock()
-					if mode == "complete" {
-						outcome := TurnOutcomeCompleted
-						actor.state.view.Activity = ThreadActivityIdle
-						actor.state.view.LastOutcome = &outcome
+					if err := actor.apply(ctx, func() error {
+						if mode == "complete" {
+							outcome := TurnOutcomeCompleted
+							actor.state.view.Activity = ThreadActivityIdle
+							actor.state.view.LastOutcome = &outcome
+						}
+						if mode == "input" {
+							actor.state.view.Attention.InputCount = 1
+						}
+						if mode == "approval" {
+							actor.state.view.Attention.ApprovalCount = 1
+						}
+						actor.state.view.ViewVersion++
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
-					if mode == "input" {
-						actor.state.view.Attention.InputCount = 1
-					}
-					if mode == "approval" {
-						actor.state.view.Attention.ApprovalCount = 1
-					}
-					actor.state.view.ViewVersion++
-					view := cloneThreadRuntimeView(actor.state.view)
-					actor.mu.Unlock()
-					service.publish(view)
 					if mode == "pressure" {
 						for i := 0; i < 200; i++ {
-							view.ViewVersion++
-							service.publish(view)
+							if err := actor.apply(ctx, func() error { actor.state.view.ViewVersion++; return nil }); err != nil {
+								t.Fatal(err)
+							}
 						}
 					}
 				}
