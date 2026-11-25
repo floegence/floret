@@ -173,6 +173,7 @@ type PressureSource string
 
 const (
 	PressureSourceProviderUsage       PressureSource = "provider_usage"
+	PressureSourceExecutionReference  PressureSource = "provider_execution_reference"
 	PressureSourceUsageAnchoredDelta  PressureSource = "usage_anchored_delta"
 	PressureSourceFullRequestEstimate PressureSource = "full_request_estimate"
 	PressureSourceMissingNativeUsage  PressureSource = "missing_native_usage_request_estimate"

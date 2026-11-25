@@ -1090,13 +1090,10 @@ steps:
 			}
 		}
 		usage := stepOutput.Usage
-		if evidence := usage.Measurement; evidence != nil && evidence.Input.Boundary == requestmeasure.ExecutionInputBoundary && evidence.ResponseID != stepOutput.ResponseID {
-			usage.Measurement = nil
-		}
 		metrics.AddUsage(usage)
 		normalizedUsage := usage.Normalized()
 		providerHistory, _, _ := session.ProjectProviderHistory(activeHistory, "")
-		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, providerHistory, usage)
+		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, providerHistory, usage, stepOutput.ResponseID)
 		if err := persistResponse(); err != nil {
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
 		}

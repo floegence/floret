@@ -327,7 +327,7 @@ Unknown content keeps its separate conservative bound; typed media, visible
 reasoning, framing and safety margins retain their existing budgets.
 
 The estimate source change expires older calibration anchors without rewriting
-history. Provider-execution usage remains unqualified for window calibration.
+history. Provider-execution usage alone does not prove exact window occupancy.
 The existing Engine threshold solver and bounded provider-overflow compaction
 remain the sole pressure and recovery path. No schema or public shape changes.
 
@@ -373,7 +373,7 @@ namespaces or domain schema 29. Historical rendered facts remain immutable.
 The Engine evaluates each complete frozen next request once. Projected input is
 qualified native input (or native input plus normalized output at a committed
 response boundary) plus an estimate of only the subsequent frozen protocol input.
-Without a matching measurement it uses the complete conservative request estimate.
+For any gateway, a single native input count can instead establish an approximate historical reference. Without a frozen prefix the Engine adds the change in comparable full request estimates; without comparable history it uses the complete estimate. Explicit zero is valid; output-only, unknown input, aggregate and failed samples are not input references.
 The automatic threshold stays min(90% of the window, request safe limit); output
 reservation semantics and the bounded overflow recovery are unchanged.
 
@@ -392,8 +392,7 @@ native totals qualifies; hosted execution and opaque input provide no such
 proof. The input count includes cached tokens once. Later output is estimated
 only when replayed in the new suffix, not added from the billing total.
 
-InputTokenScope retains its protocol meaning: provider_execution alone never
-qualifies. Incomplete visible attribution does not invalidate a proven total.
+InputTokenScope retains its protocol meaning: provider_execution alone never proves exact input coverage. Missing attribution does not discard the input count.
 `provider.ExecutionInputBoundary` explicitly identifies a single comparable
 terminal execution, not complete-input proof. Bind its frozen input, attempt and
 response ID; do not issue it for truncation, hidden continuation, aggregate or

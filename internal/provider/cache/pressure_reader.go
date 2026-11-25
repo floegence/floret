@@ -1,6 +1,14 @@
 package cache
 
-import "context"
+import (
+	"context"
+
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+)
+
+func (anchor PressureAnchorState) RequiresCommittedResponse() bool {
+	return anchor.MeasurementPrefix != (PressureAnchorState{}).MeasurementPrefix || anchor.PressureSource == contextpolicy.PressureSourceExecutionReference
+}
 
 // PressureEvidence contains the original records for the engine's measurement
 // validator; it does not introduce another durable measurement authority.
@@ -30,7 +38,7 @@ func ReadPressureEvidence(ctx context.Context, store Store, scope, provider, mod
 		return PressureEvidence{}, false, err
 	}
 	var response *ProviderResponseRecord
-	if anchor.MeasurementPrefix != (PressureAnchorState{}).MeasurementPrefix {
+	if anchor.RequiresCommittedResponse() {
 		responses, err := store.ProviderResponses(ctx, scope)
 		if err != nil {
 			return PressureEvidence{}, false, err

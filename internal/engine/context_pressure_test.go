@@ -7,6 +7,7 @@ import (
 	"github.com/floegence/floret/v7/internal/requestestimate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"math"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := NewContextPressureTracker("scope")
-	tracker.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 100, WindowInputTokens: 100, Available: true, Source: provider.UsageNative})
+	tracker.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 100, WindowInputTokens: 100, Available: true, Source: provider.UsageNative}, "")
 	tests := []struct {
 		name, reason string
 		change       func(*provider.Request, *[]session.Message, *ContextPressureTracker)
@@ -76,7 +77,7 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 				t.Fatalf("pressure=%+v want=%d", pressure, want)
 			}
 			r.ContextPressure = pressure
-			missing, _ := tr.ObserveSuccess(r, h, provider.Usage{})
+			missing, _ := tr.ObserveSuccess(r, h, provider.Usage{}, "")
 			if missing.ProjectedInputTokens != want || missing.Source != contextpolicy.PressureSourceMissingNativeUsage {
 				t.Fatalf("missing usage=%+v", missing)
 			}
@@ -93,7 +94,7 @@ func TestMeasuredPrefixDoesNotRepeatWholeHistoryMargin(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := NewContextPressureTracker("scope")
-	tr.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 5526, CacheReadTokens: 412160, Available: true, Source: provider.UsageNative})
+	tr.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 5526, CacheReadTokens: 412160, Available: true, Source: provider.UsageNative}, "")
 	req.RequestEstimate.EstimatedInputTokens = 474100
 	got := tr.Project(req, history)
 	if got.ProjectedInputTokens != 427290 || got.CompactionNeeded {
@@ -105,13 +106,35 @@ func TestMeasuredPrefixDoesNotRepeatWholeHistoryMargin(t *testing.T) {
 	}
 }
 
-func TestUnqualifiedNativeUsageNeverCalibratesPressure(t *testing.T) {
+func TestNativeHistoryInputAcrossScopes(t *testing.T) {
 	for _, scope := range []string{"", "unknown", "provider_execution", "request_input"} {
-		req := provider.Request{RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 100, Breakdown: contextpolicy.ContextBreakdown{AttributionCoverage: "partial", OpaqueBytes: 5000}}, ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 1000}}
-		tr := NewContextPressureTracker("scope")
-		got, anchor := tr.ObserveSuccess(req, nil, provider.Usage{InputTokensReported: true, InputTokenScope: scope, InputTokens: 999999, Available: true})
-		if got.ProjectedInputTokens != 100 || got.Confidence == contextpolicy.EstimateExact || anchor.WindowInputTokens != 0 {
-			t.Fatalf("unqualified pressure: %+v %+v", got, anchor)
+		for _, tokens := range []int64{0, 100, 472500} {
+			req, history, usage := measurementFixture(t)
+			req.RequestEstimate.Breakdown.OpaqueBytes = 5000
+			usage.Measurement, usage.InputTokenScope, usage.InputTokens, usage.CacheReadTokens = nil, scope, tokens, 0
+			tracker := NewContextPressureTracker("scope")
+			_, anchor := tracker.ObserveSuccess(req, history, usage, "")
+			req.RequestEstimate.EstimatedInputTokens += 25
+			got := tracker.Project(req, history)
+			if !anchor.InputMeasurementQualified || got.Confidence != contextpolicy.EstimateApproximate || got.ProjectedInputTokens != tokens+25 || got.CompactionNeeded != (tokens == 472500) {
+				t.Fatalf("scope=%q tokens=%d pressure=%+v", scope, tokens, got)
+			}
+		}
+	}
+}
+
+func TestNativeHistoryRejectsNonInputOrInvalidUsage(t *testing.T) {
+	req, history, _ := measurementFixture(t)
+	for name, usage := range map[string]provider.Usage{
+		"output": {OutputTokensReported: true, OutputTokens: 23}, "total": {TotalTokensReported: true, TotalTokens: 100},
+		"unreported_zero": {Available: true}, "aggregate": {InputTokensReported: true, Aggregated: true},
+		"estimate": {InputTokensReported: true, Source: provider.UsageEstimated}, "mixed": {InputTokensReported: true, Source: provider.UsageMixed},
+		"negative": {InputTokensReported: true, InputTokens: -1}, "overflow": {InputTokens: math.MaxInt64, CacheReadTokens: 1},
+	} {
+		tracker := NewContextPressureTracker("scope")
+		pressure, anchor := tracker.ObserveSuccess(req, history, usage, "")
+		if anchor.InputMeasurementQualified || pressure.Source != contextpolicy.PressureSourceMissingNativeUsage {
+			t.Fatalf("%s accepted: %+v", name, pressure)
 		}
 	}
 }
@@ -137,9 +160,9 @@ func TestOpaqueReasoningDoesNotTriggerPrematurePressure(t *testing.T) {
 			t.Fatalf("visible=%v pressure=%+v", visible, pressure)
 		}
 		req.ContextPressure = pressure
-		observed, anchor := tracker.ObserveSuccess(req, nil, provider.Usage{Source: provider.UsageNative, Available: true, InputTokensReported: true, InputTokenScope: "provider_execution", InputTokens: 159360, WindowInputTokens: 159360})
-		if anchor.WindowInputTokens != 0 || observed.ProjectedInputTokens != pressure.ProjectedInputTokens {
-			t.Fatalf("unqualified native usage replaced pressure: %+v %+v", observed, anchor)
+		observed, anchor := tracker.ObserveSuccess(req, nil, provider.Usage{Source: provider.UsageNative, Available: true, InputTokensReported: true, InputTokenScope: "provider_execution", InputTokens: 159360, WindowInputTokens: 159360}, "")
+		if anchor.InputMeasurementQualified || observed.WindowInputTokens != 159360 || observed.Confidence != contextpolicy.EstimateApproximate {
+			t.Fatalf("reported input without reusable history: %+v %+v", observed, anchor)
 		}
 	}
 }

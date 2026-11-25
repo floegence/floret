@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.122.1
+
+- Use the latest successful native input count from any gateway as the historical base for comparable requests. Without protocol attribution, project an approximate delta and validate the committed attempt when restoring the reference. Output-only and aggregated totals are not input measurements.
+
 ## v7.122.0
 
 - Allow adapters to identify a comparable single execution without claiming complete input attribution. Estimate only new frozen input, preserving the native execution total, output budget and restart boundary.

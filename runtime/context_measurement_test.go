@@ -15,10 +15,11 @@ import (
 
 func TestMeasuredFrozenPrefixSurvivesPublicGatewayAndRestart(t *testing.T) {
 	for _, restart := range []bool{false, true} {
-		for _, mode := range []string{"input", "response", "reference_input", "reference_response"} {
+		for _, mode := range []string{"input", "response", "reference_input", "reference_response", "native_total"} {
 			t.Run(fmt.Sprintf("restart_%t_%s", restart, mode), func(t *testing.T) {
 				recorder := &calibrationRecorder{}
 				gateway := &measurementGateway{ScriptedGateway: florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "measurement", StateCompatibilityKey: "account:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentExpanded}), responseEnd: mode == "response" || mode == "reference_response", reference: mode == "reference_input" || mode == "reference_response"}
+				gateway.nativeOnly = mode == "native_total"
 				agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: 525000, MaxOutputTokens: 1000}}, gateway, WithAgentEventSink(recorder))
 				if err != nil {
 					t.Fatal(err)
@@ -74,7 +75,7 @@ func TestMeasuredFrozenPrefixSurvivesPublicGatewayAndRestart(t *testing.T) {
 					t.Fatalf("requests=%d", len(requests))
 				}
 				pressure := requests[1].ContextStatus.ContextPressure
-				if gateway.reference && (pressure.Confidence != config.EstimateApproximate || gateway.responseEnd && pressure.ProjectedInputTokens < 1200) {
+				if (gateway.reference || gateway.nativeOnly) && (pressure.Confidence != config.EstimateApproximate || gateway.responseEnd && pressure.ProjectedInputTokens < 1200) {
 					t.Fatalf("lost execution reference: %+v", pressure)
 				}
 				if pressure.Source != config.PressureSourceUsageAnchoredDelta || pressure.ProjectedInputTokens < 1000 || pressure.ProjectedInputTokens >= 10000 {
@@ -89,6 +90,7 @@ type measurementGateway struct {
 	*florettest.ScriptedGateway
 	responseEnd bool
 	reference   bool
+	nativeOnly  bool
 }
 
 func (g *measurementGateway) Prepare(_ context.Context, r provider.Request) (provider.PreparedRequest, error) {
@@ -137,6 +139,9 @@ func (p *measurementPrepared) Stream(context.Context) (<-chan provider.Event, er
 		evidence.ResponseEnd, _ = provider.RenderedMeasurementPrefix(rendered, "account:v1", "response_end")
 	}
 	out := make(chan provider.Event, 3)
+	if p.gateway.nativeOnly {
+		evidence = nil
+	}
 	out <- provider.Event{Type: provider.EventUsage, Usage: provider.Usage{Source: "native", Available: true, InputTokensReported: true, InputTokenScope: "provider_execution", InputTokens: 1000, OutputTokensReported: true, OutputTokens: 200, OutputIncludesReasoning: true, Measurement: evidence}}
 	out <- provider.Event{Type: provider.EventDelta, Text: "answer"}
 	out <- provider.Event{Type: provider.EventDone, Reason: "stop", ResponseID: "response"}

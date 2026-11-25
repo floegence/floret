@@ -1525,11 +1525,11 @@ func TestProviderUsageEventsSeparateStreamUsageAndFinalContextStatus(t *testing.
 	if finalStatus.Phase != engine.ProviderUsagePhaseFinalContextStatus ||
 		finalStatus.RequestID != "turn:req:1" ||
 		finalStatus.Usage.WindowInputTokens != 115 ||
-		finalStatus.ContextPressure.WindowInputTokens != 0 ||
-		finalStatus.ContextPressure.ProjectedInputTokens != finalStatus.RequestEstimate.EstimatedInputTokens ||
-		finalStatus.UsedRatio != float64(finalStatus.RequestEstimate.EstimatedInputTokens)/1000 ||
+		finalStatus.ContextPressure.WindowInputTokens != 115 ||
+		finalStatus.ContextPressure.Source != contextpolicy.PressureSourceExecutionReference ||
+		finalStatus.UsedRatio != 0.115 ||
 		finalStatus.ThresholdRatio != 0.9 ||
-		finalStatus.Status != engine.ContextStatusEstimated {
+		finalStatus.Status != engine.ContextStatusStable {
 		t.Fatalf("final context status = %#v", finalStatus)
 	}
 }

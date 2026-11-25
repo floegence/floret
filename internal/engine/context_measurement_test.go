@@ -58,7 +58,7 @@ func TestResponseBoundaryCountsOnlyFrozenSuffix(t *testing.T) {
 		responsePayload, _ := json.Marshal(map[string]any{"model": "model", "input": []any{map[string]any{"role": "user", "content": "question"}, map[string]any{"type": "reasoning", "encrypted_content": strings.Repeat("A", 300000)}, map[string]any{"type": "function_call", "call_id": "tool", "name": "read", "arguments": "{}"}}})
 		usage.Measurement.ResponseEnd, _ = requestmeasure.RenderedPrefix(responsePayload, "openai_responses", "account:connection", "response_end")
 		tr := NewContextPressureTracker("scope")
-		tr.ObserveSuccess(req, history, usage)
+		tr.ObserveSuccess(req, history, usage, "response")
 		committed := append(history, session.Message{EntryID: "call", Role: session.Assistant, Content: "tool_call", ToolCallID: "tool", ToolName: "read", ToolArgs: "{}"})
 		anchor := tr.ObserveCommittedResponse(req, committed, usage, "response")
 		wantBase := int64(419835)
@@ -134,7 +134,7 @@ func TestMeasurementQualificationRejectsUnprovenUsage(t *testing.T) {
 				usage.Measurement.ResponseEnd = requestmeasure.Prefix{}
 			}
 			tr := NewContextPressureTracker("scope")
-			tr.ObserveSuccess(req, history, usage)
+			tr.ObserveSuccess(req, history, usage, "response")
 			if anchor := tr.ObserveCommittedResponse(req, history, usage, "response"); anchor.InputMeasurementQualified {
 				t.Fatalf("invalid response measurement accepted: %+v", anchor)
 			}
@@ -145,7 +145,7 @@ func TestMeasurementQualificationRejectsUnprovenUsage(t *testing.T) {
 func TestInputBoundaryRejectsNewOpaqueSuffix(t *testing.T) {
 	req, history, usage := measurementFixture(t)
 	tr := NewContextPressureTracker("scope")
-	tr.ObserveSuccess(req, history, usage)
+	tr.ObserveSuccess(req, history, usage, "response")
 	req.RequestEstimate.EstimatedInputTokens = 474100
 	req.Prepared = &measuredPrepared{identity: "account:connection", payload: []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"type":"reasoning","encrypted_content":"not-tokenizable"}]}`)}
 	if got := tr.Project(req, history); got.ProjectedInputTokens != 474100 || tr.anchorReason != "unmeasured_opaque_suffix" {
@@ -165,7 +165,7 @@ func TestExecutionReferenceEstimatesOnlyNewInput(t *testing.T) {
 	usage.Measurement.Input.Boundary = "execution_input"
 	usage.Measurement.CompleteInput, usage.Measurement.OpaqueInput = false, false
 	tracker := NewContextPressureTracker("scope")
-	observed, _ := tracker.ObserveSuccess(req, history, usage)
+	observed, _ := tracker.ObserveSuccess(req, history, usage, "response")
 	if observed.WindowInputTokens != 231406 || observed.Confidence == contextpolicy.EstimateExact {
 		t.Fatalf("execution total not retained as a reference: %+v", observed)
 	}
@@ -192,7 +192,7 @@ func TestMeasuredZeroAndThresholdBoundaries(t *testing.T) {
 		req, history, usage := measurementFixture(t)
 		usage.InputTokens, usage.CacheReadTokens, usage.WindowInputTokens = tokens, 0, tokens
 		tr := NewContextPressureTracker("scope")
-		_, anchor := tr.ObserveSuccess(req, history, usage)
+		_, anchor := tr.ObserveSuccess(req, history, usage, "response")
 		if !anchor.InputMeasurementQualified {
 			t.Fatal("explicit input zero or valid count rejected")
 		}
@@ -209,7 +209,7 @@ func TestRestoredMeasurementRequiresCommittedMatchingAttempt(t *testing.T) {
 	usage.Measurement.ResponseEnd = usage.Measurement.Input
 	usage.Measurement.ResponseEnd.Boundary = "response_end"
 	tr := NewContextPressureTracker("scope")
-	tr.ObserveSuccess(req, history, usage)
+	tr.ObserveSuccess(req, history, usage, "response")
 	anchor := tr.ObserveCommittedResponse(req, history, usage, "response")
 	request := cache.ProviderRequestRecord{ID: anchor.RequestID, PromptScopeID: "scope", AttemptID: req.AttemptID, MeasurementPrefix: usage.Measurement.Input}
 	response := cache.ProviderResponseRecord{RequestID: anchor.RequestID, PromptScopeID: "scope", AttemptID: req.AttemptID, ProviderResponseID: "response", Measurement: usage.Measurement, PressureAnchor: anchor, WindowInputTokens: usage.Normalized().WindowInputTokens, InputTokens: usage.InputTokens, CacheReadTokens: usage.CacheReadTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens, OutputTokensReported: true, InputTokensReported: true, InputTokenScope: usage.InputTokenScope, OutputIncludesReasoning: true, UsageAvailable: true, UsageSource: "native", MeasurementCommitted: true}
@@ -251,7 +251,7 @@ func TestPartialVisibleReplayUsesOnlyInputReference(t *testing.T) {
 	full := []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"type":"reasoning","encrypted_content":"opaque"},{"role":"assistant","content":"answer"}]}`)
 	usage.Measurement.ResponseEnd, _ = requestmeasure.RenderedPrefix(full, "openai_responses", prepared.identity, "response_end")
 	tracker := NewContextPressureTracker("scope")
-	tracker.ObserveSuccess(req, history, usage)
+	tracker.ObserveSuccess(req, history, usage, "response")
 	committed := append(history, session.Message{EntryID: "answer", Role: session.Assistant, Content: "answer"})
 	anchor := tracker.ObserveCommittedResponse(req, committed, usage, "response")
 	if anchor.MeasurementPrefix.Boundary != "response_end" {
@@ -261,5 +261,40 @@ func TestPartialVisibleReplayUsesOnlyInputReference(t *testing.T) {
 	got := tracker.Project(req, committed)
 	if got.Source != contextpolicy.PressureSourceUsageAnchoredDelta || got.ProjectedInputTokens <= usage.Normalized().WindowInputTokens || got.ProjectedInputTokens >= anchor.WindowInputTokens || tracker.projectedBoundary != "input" {
 		t.Fatalf("double-counted removed output: %+v", got)
+	}
+}
+
+func TestNativeOnlyReferenceRequiresCommittedMatchingInput(t *testing.T) {
+	req, history, usage := measurementFixture(t)
+	req.RawPlan.MeasurementPrefix = usage.Measurement.Input
+	usage.Measurement = nil
+	tracker := NewContextPressureTracker("scope")
+	_, anchor := tracker.ObserveSuccess(req, history, usage, "")
+	record := tracker.anchorRequest
+	record.AttemptID = req.AttemptID
+	response := cache.ProviderResponseRecord{RequestID: record.ID, AttemptID: record.AttemptID, InputTokensReported: true, InputTokenScope: usage.InputTokenScope, InputTokens: usage.InputTokens, CacheReadTokens: usage.CacheReadTokens, WindowInputTokens: usage.Normalized().WindowInputTokens, UsageAvailable: true, UsageSource: "native", MeasurementCommitted: true}
+	for _, frozen := range []bool{false, true} {
+		if !frozen {
+			anchor.MeasurementPrefix = requestmeasure.Prefix{}
+		} else {
+			anchor.MeasurementPrefix = req.RawPlan.MeasurementPrefix
+		}
+		record.MeasurementPrefix = anchor.MeasurementPrefix
+		if !validStoredMeasurement(anchor, record, response) {
+			t.Fatalf("valid reference rejected: frozen=%t", frozen)
+		}
+		for name, change := range map[string]func(*cache.ProviderResponseRecord){
+			"uncommitted": func(r *cache.ProviderResponseRecord) { r.MeasurementCommitted = false },
+			"attempt":     func(r *cache.ProviderResponseRecord) { r.AttemptID = "retry" },
+			"request":     func(r *cache.ProviderResponseRecord) { r.RequestID = "other" },
+			"count":       func(r *cache.ProviderResponseRecord) { r.WindowInputTokens++ },
+			"output_only": func(r *cache.ProviderResponseRecord) { r.InputTokensReported = false },
+		} {
+			invalid := response
+			change(&invalid)
+			if validStoredMeasurement(anchor, record, invalid) {
+				t.Fatalf("accepted %s reference: frozen=%t", name, frozen)
+			}
+		}
 	}
 }

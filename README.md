@@ -79,7 +79,7 @@ continuation and unknown-effect recovery retain their existing boundaries.
 The Engine evaluates each complete frozen next request once. Projected input is
 qualified native input (or native input plus normalized output at a committed
 response boundary) plus an estimate of only the subsequent frozen protocol input.
-Without a matching measurement or comparable execution reference it uses the complete conservative request estimate.
+Every gateway's successful native input count is a historical reference, even without optional item attribution. With a frozen input prefix the Engine counts only the appended items; without that capability it adds the difference between comparable complete request estimates. The latter is an approximate projection, not a new server measurement. Missing or incomparable history uses the complete request estimate.
 The automatic threshold stays min(90% of the window, request safe limit); output
 reservation semantics and the bounded overflow recovery are unchanged.
 
@@ -92,8 +92,7 @@ Suffix estimation uses Floret's estimator; adapters do not calculate pressure.
 Neither method may read attachments, refresh context, authorize tools or count
 through the network. Output refits and retries preserve the frozen input.
 
-InputTokenScope retains its protocol meaning: provider_execution alone never
-qualifies. Incomplete visible attribution does not invalidate a proven total.
+InputTokenScope retains its protocol meaning: an execution count alone is not proof of exact window occupancy. It is still an approximate historical reference. Output-only usage, totals across requests and failed attempts do not supply an input reference. Explicit input zero is valid.
 For a completed, single comparable execution without complete input attribution,
 an adapter can mark the frozen input as `provider.ExecutionInputBoundary` with
 `CompleteInput` and `OpaqueInput` false. Bind the attempt and terminal response ID;
@@ -1025,10 +1024,7 @@ complete attribution. Unknown models retain explicitly approximate vocabulary
 estimates. Opaque proxies, margins and output reserves serve budgets only.
 
 Adapters declare `Usage.InputTokensReported` and `InputTokenScope` from the
-protocol (`request_input`, `provider_execution`, or `unknown`). Only qualified
-request input with complete visible coverage can calibrate pressure. Historical
-anchors without qualification, hosted/opaque execution usage and unknown scopes
-cannot establish exact window occupancy. Existing estimates, bounded compaction
+protocol (`request_input`, `provider_execution`, or `unknown`). A committed native input count calibrates subsequent comparable history regardless of scope; exact occupancy still requires request-input evidence. Missing input is not inferred from total or output tokens. Existing estimates, bounded compaction
 and explicit provider overflow recovery continue to govern execution. No online
 count is added before sending.
 

@@ -17,7 +17,7 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
-func TestUnqualifiedHostedUsageUsesRequestEstimateAcrossTurnsAndRestart(t *testing.T) {
+func TestNativeInputWithoutProtocolProofCalibratesAcrossTurnsAndRestart(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		for _, large := range []bool{false, true} {
 			t.Run(fmt.Sprintf("restart_%t_large_%t", restart, large), func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestUnqualifiedHostedUsageUsesRequestEstimateAcrossTurnsAndRestart(t *testi
 						if snapshot.ContextUsage.Estimate.RequestEstimate.Breakdown.AssistantTokens <= 0 {
 							t.Fatal("new request did not include the prior assistant answer")
 						}
-						if snapshot.ContextUsage.Confirmed.Usage.WindowInputTokens != 71872 || snapshot.ContextUsage.Estimate.ContextPressure.ProjectedInputTokens != next {
+						if snapshot.ContextUsage.Confirmed.Usage.WindowInputTokens != 71872 || snapshot.ContextUsage.Estimate.ContextPressure.ProjectedInputTokens != 71872+next-previous {
 							t.Fatalf("wrong split usage: %+v", snapshot.ContextUsage)
 						}
 						recorder.mu.Lock()
@@ -143,8 +143,8 @@ func TestUnqualifiedHostedUsageUsesRequestEstimateAcrossTurnsAndRestart(t *testi
 					t.Fatalf("requests=%d", len(requests))
 				}
 				pressure := requests[2].ContextStatus.ContextPressure
-				if pressure.Source != config.PressureSourceFullRequestEstimate || pressure.ProjectedInputTokens != next {
-					t.Fatalf("hosted next-turn projection=%+v; want uncalibrated request estimate %d", pressure, next)
+				if pressure.Source != config.PressureSourceUsageAnchoredDelta || pressure.Confidence != config.EstimateApproximate || pressure.ProjectedInputTokens != 71872+next-previous {
+					t.Fatalf("next-turn pressure=%+v; want latest native input plus %d", pressure, next-previous)
 				}
 			})
 		}

@@ -487,7 +487,7 @@ func (kernel *BackendKernel) ReadPressureEvidence(ctx context.Context, scope, pr
 			return err
 		}
 		anchor := response.PressureAnchor
-		measured := anchor.MeasurementPrefix != (cache.PressureAnchorState{}).MeasurementPrefix
+		measured := anchor.RequiresCommittedResponse()
 		match := func(request cache.ProviderRequestRecord) bool {
 			return request.ID == anchor.RequestID && (!measured || request.AttemptID == response.AttemptID)
 		}
