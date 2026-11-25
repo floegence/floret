@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.122.0
+
+- Allow adapters to identify a comparable single execution without claiming complete input attribution. Estimate only new frozen input, preserving the native execution total, output budget and restart boundary.
+
 ## v7.121.6
 
 - Use the Retry-selected history for compaction preparation and atomic installation, preserving the original checkpoint and the independent retry checkpoint.

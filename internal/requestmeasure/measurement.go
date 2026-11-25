@@ -1,6 +1,8 @@
 // Package requestmeasure defines frozen protocol boundaries, never token policy.
 package requestmeasure
 
+const ExecutionInputBoundary = "execution_input"
+
 // Prefix identifies an ordered prefix of complete frozen protocol input. Its
 // fingerprint includes the fixed input surface and every covered protocol item.
 // ExecutionIdentity binds the provider account/connection; it must contain no secrets.
@@ -35,5 +37,5 @@ type Prepared interface {
 }
 
 func (p Prefix) Valid() bool {
-	return p.ExecutionIdentity != "" && p.Format != "" && p.Fingerprint != "" && p.ItemCount >= 0 && (p.Boundary == "input" || p.Boundary == "response_end")
+	return p.ExecutionIdentity != "" && p.Format != "" && p.Fingerprint != "" && p.ItemCount >= 0 && (p.Boundary == "input" || p.Boundary == "response_end" || p.Boundary == ExecutionInputBoundary)
 }

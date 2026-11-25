@@ -15,10 +15,10 @@ import (
 
 func TestMeasuredFrozenPrefixSurvivesPublicGatewayAndRestart(t *testing.T) {
 	for _, restart := range []bool{false, true} {
-		for _, responseEnd := range []bool{false, true} {
-			t.Run(fmt.Sprintf("restart_%t_response_%t", restart, responseEnd), func(t *testing.T) {
+		for _, mode := range []string{"input", "response", "reference_input", "reference_response"} {
+			t.Run(fmt.Sprintf("restart_%t_%s", restart, mode), func(t *testing.T) {
 				recorder := &calibrationRecorder{}
-				gateway := &measurementGateway{ScriptedGateway: florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "measurement", StateCompatibilityKey: "account:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentExpanded}), responseEnd: responseEnd}
+				gateway := &measurementGateway{ScriptedGateway: florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "measurement", StateCompatibilityKey: "account:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentExpanded}), responseEnd: mode == "response" || mode == "reference_response", reference: mode == "reference_input" || mode == "reference_response"}
 				agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: 525000, MaxOutputTokens: 1000}}, gateway, WithAgentEventSink(recorder))
 				if err != nil {
 					t.Fatal(err)
@@ -74,6 +74,9 @@ func TestMeasuredFrozenPrefixSurvivesPublicGatewayAndRestart(t *testing.T) {
 					t.Fatalf("requests=%d", len(requests))
 				}
 				pressure := requests[1].ContextStatus.ContextPressure
+				if gateway.reference && (pressure.Confidence != config.EstimateApproximate || gateway.responseEnd && pressure.ProjectedInputTokens < 1200) {
+					t.Fatalf("lost execution reference: %+v", pressure)
+				}
 				if pressure.Source != config.PressureSourceUsageAnchoredDelta || pressure.ProjectedInputTokens < 1000 || pressure.ProjectedInputTokens >= 10000 {
 					t.Fatalf("measurement was not restored: %+v", pressure)
 				}
@@ -85,6 +88,7 @@ func TestMeasuredFrozenPrefixSurvivesPublicGatewayAndRestart(t *testing.T) {
 type measurementGateway struct {
 	*florettest.ScriptedGateway
 	responseEnd bool
+	reference   bool
 }
 
 func (g *measurementGateway) Prepare(_ context.Context, r provider.Request) (provider.PreparedRequest, error) {
@@ -120,6 +124,9 @@ func (p *measurementPrepared) MeasurementSuffix(v provider.MeasurementPrefix) ([
 }
 func (p *measurementPrepared) Stream(context.Context) (<-chan provider.Event, error) {
 	evidence := &provider.RequestMeasurement{AttemptID: p.request.AttemptID, CompleteInput: true, Input: p.InputMeasurementPrefix(), ResponseID: "response"}
+	if p.gateway.reference {
+		evidence.Input.Boundary, evidence.CompleteInput = provider.ExecutionInputBoundary, false
+	}
 	if p.gateway.responseEnd {
 		var body map[string]any
 		json.Unmarshal(p.raw, &body)

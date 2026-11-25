@@ -341,6 +341,7 @@ const EventTransport github.com/floegence/floret/v7/provider.EventType = "transp
 const EventTruncated github.com/floegence/floret/v7/provider.EventType = "truncated"
 type EventType string
 const EventUsage github.com/floegence/floret/v7/provider.EventType = "usage"
+const ExecutionInputBoundary untyped string = "execution_input"
 type FailureDetails struct
 field FailureDetails.Provider string tag="json:\"provider,omitempty\""
 field FailureDetails.Phase string tag="json:\"phase,omitempty\""

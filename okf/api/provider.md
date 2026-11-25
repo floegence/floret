@@ -394,6 +394,12 @@ only when replayed in the new suffix, not added from the billing total.
 
 InputTokenScope retains its protocol meaning: provider_execution alone never
 qualifies. Incomplete visible attribution does not invalidate a proven total.
+`provider.ExecutionInputBoundary` explicitly identifies a single comparable
+terminal execution, not complete-input proof. Bind its frozen input, attempt and
+response ID; do not issue it for truncation, hidden continuation, aggregate or
+hosted execution. The Engine keeps the native observation and projects from it
+with approximate confidence only across a matching frozen prefix. A committed
+response-end match budgets replayed native output once, including reasoning.
 Encrypted reasoning requires explicit protocol inclusion evidence and a matching
 native boundary, never a ciphertext-length estimate. New opaque suffixes invalidate
 calibration. Model, account/connection, tool/system surface, estimator, canonical

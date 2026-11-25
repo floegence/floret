@@ -17,6 +17,8 @@ import (
 
 var ErrContextWouldOverflow = errors.New("provider request would exceed context window")
 
+const executionReferenceSource contextpolicy.PressureSource = "provider_execution_reference"
+
 type RequestShapeHashes = cache.RequestShapeHashes
 type PressureAnchorState = cache.PressureAnchorState
 
@@ -72,6 +74,9 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 			EstimatedDeltaTokens: difference,
 			Source:               estimate.Source, Method: estimate.Method, Confidence: contextpolicy.EstimateConservative,
 		}
+		if t.anchor.PressureSource == executionReferenceSource {
+			delta.Confidence = contextpolicy.EstimateApproximate
+		}
 		base := estimate
 		base.EstimatedInputTokens = t.anchor.WindowInputTokens
 		base.PrefixTokens, base.MessageTokens, base.ToolDefinitionTokens = 0, 0, 0
@@ -81,13 +86,6 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 }
 
 func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []session.Message, usage provider.Usage) (contextpolicy.ContextPressure, PressureAnchorState) {
-	if t == nil {
-		normalized := usage.Normalized()
-		if !qualifiedPressureUsage(req, normalized) {
-			return contextpolicy.PressureFromProjectedRequest(req.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, req.ContextPolicy), PressureAnchorState{}
-		}
-		return contextpolicy.PressureFromNativeUsage(nativeUsageForPressure(normalized), req.ContextPolicy), PressureAnchorState{}
-	}
 	normalized := usage.Normalized()
 	if !qualifiedPressureUsage(req, normalized) {
 		pressure := req.ContextPressure
@@ -98,6 +96,12 @@ func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []
 		return pressure, PressureAnchorState{}
 	}
 	pressure := contextpolicy.PressureFromNativeUsage(nativeUsageForPressure(normalized), req.ContextPolicy)
+	if normalized.Measurement != nil && normalized.Measurement.Input.Boundary == requestmeasure.ExecutionInputBoundary {
+		pressure.Source, pressure.Confidence = executionReferenceSource, contextpolicy.EstimateApproximate
+	}
+	if t == nil {
+		return pressure, PressureAnchorState{}
+	}
 	if req.ContextPolicy.ModelMaxOutputTokens > 0 {
 		pressure.RequestSafeLimit = req.ContextPressure.RequestSafeLimit
 		pressure.ThresholdTokens = req.ContextPressure.ThresholdTokens
@@ -199,7 +203,11 @@ func (e *Engine) restorePressureAnchor(ctx context.Context, tracker *ContextPres
 
 func validStoredMeasurement(anchor PressureAnchorState, request cache.ProviderRequestRecord, response cache.ProviderResponseRecord) bool {
 	prefix, evidence := anchor.MeasurementPrefix, response.Measurement
-	if !response.MeasurementCommitted || evidence == nil || response.AttemptID == "" || evidence.AttemptID != response.AttemptID || !evidence.CompleteInput || !prefix.Valid() || !request.MeasurementPrefix.Valid() || evidence.Input != request.MeasurementPrefix || prefix.ExecutionIdentity != evidence.Input.ExecutionIdentity || prefix.Format != evidence.Input.Format || request.RequestEstimate.Breakdown.OpaqueBytes > 0 && !evidence.OpaqueInput {
+	if !response.MeasurementCommitted || request.AttemptID != response.AttemptID || !prefix.Valid() || !matchesInputEvidence(evidence, response.AttemptID, response.InputTokenScope, request.MeasurementPrefix, request.RequestEstimate.Breakdown.OpaqueBytes) {
+		return false
+	}
+	reference := evidence.Input.Boundary == requestmeasure.ExecutionInputBoundary
+	if prefix.ExecutionIdentity != evidence.Input.ExecutionIdentity || prefix.Format != evidence.Input.Format || (anchor.PressureSource == executionReferenceSource) != reference || reference && evidence.ResponseID != response.ProviderResponseID {
 		return false
 	}
 	usage := provider.Usage{Source: provider.UsageSource(response.UsageSource), Available: response.UsageAvailable, InputTokensReported: response.InputTokensReported, InputTokens: response.InputTokens, CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens, WindowInputTokens: response.WindowInputTokens}
@@ -207,10 +215,10 @@ func validStoredMeasurement(anchor PressureAnchorState, request cache.ProviderRe
 		return false
 	}
 	if prefix.Boundary == "input" {
-		return prefix == evidence.Input && anchor.WindowInputTokens == usage.WindowInputTokens
+		return prefix == request.MeasurementPrefix && anchor.WindowInputTokens == usage.WindowInputTokens
 	}
 	output, ok := nativeReplayOutput(provider.Usage{OutputTokensReported: response.OutputTokensReported, OutputTokens: response.OutputTokens, ReasoningTokens: response.ReasoningTokens, OutputIncludesReasoning: response.OutputIncludesReasoning})
-	return ok && output <= math.MaxInt64-usage.WindowInputTokens && anchor.WindowInputTokens == usage.WindowInputTokens+output && evidence.ResponseID != "" && evidence.ResponseID == response.ProviderResponseID && prefix == evidence.ResponseEnd && prefix.ItemCount >= evidence.Input.ItemCount && anchor.CanonicalMessageCount >= request.CanonicalMessageCount && anchor.CanonicalHistoryPrefixHash != ""
+	return prefix.Boundary == "response_end" && ok && output <= math.MaxInt64-usage.WindowInputTokens && anchor.WindowInputTokens == usage.WindowInputTokens+output && evidence.ResponseID != "" && evidence.ResponseID == response.ProviderResponseID && prefix == evidence.ResponseEnd && prefix.ItemCount >= evidence.Input.ItemCount && anchor.CanonicalMessageCount >= request.CanonicalMessageCount && anchor.CanonicalHistoryPrefixHash != ""
 }
 
 func pressureAnchorForRequest(req provider.Request, history []session.Message, usage provider.Usage, pressure contextpolicy.ContextPressure) PressureAnchorState {
@@ -326,12 +334,30 @@ func nativeReplayOutput(usage provider.Usage) (int64, bool) {
 }
 
 func qualifiedInputPrefix(req provider.Request, usage provider.Usage) requestmeasure.Prefix {
-	evidence := usage.Measurement
 	prepared, ok := req.Prepared.(requestmeasure.Prepared)
-	if !ok || evidence == nil || evidence.AttemptID == "" || evidence.AttemptID != req.AttemptID || !evidence.CompleteInput || !evidence.Input.Valid() || evidence.Input.Boundary != "input" || evidence.Input != prepared.InputMeasurementPrefix() || req.RequestEstimate.Breakdown.OpaqueBytes > 0 && !evidence.OpaqueInput {
+	if !ok || usage.Measurement == nil {
 		return requestmeasure.Prefix{}
 	}
-	return evidence.Input
+	prefix := req.RawPlan.MeasurementPrefix
+	if !prefix.Valid() {
+		prefix = prepared.InputMeasurementPrefix()
+	}
+	if !matchesInputEvidence(usage.Measurement, req.AttemptID, usage.InputTokenScope, prefix, req.RequestEstimate.Breakdown.OpaqueBytes) {
+		return requestmeasure.Prefix{}
+	}
+	return prefix
+}
+
+func matchesInputEvidence(evidence *requestmeasure.Evidence, attempt, scope string, frozen requestmeasure.Prefix, opaqueBytes int64) bool {
+	if evidence == nil || attempt == "" || evidence.AttemptID != attempt || !frozen.Valid() || frozen.Boundary != "input" {
+		return false
+	}
+	input := evidence.Input
+	if input.Boundary == requestmeasure.ExecutionInputBoundary {
+		input.Boundary = "input"
+		return input == frozen && scope == "provider_execution" && evidence.ResponseID != "" && !evidence.CompleteInput && !evidence.OpaqueInput
+	}
+	return input == frozen && evidence.CompleteInput && (opaqueBytes == 0 || evidence.OpaqueInput)
 }
 
 // ObserveCommittedResponse advances the same anchor only after canonical output

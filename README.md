@@ -79,7 +79,7 @@ continuation and unknown-effect recovery retain their existing boundaries.
 The Engine evaluates each complete frozen next request once. Projected input is
 qualified native input (or native input plus normalized output at a committed
 response boundary) plus an estimate of only the subsequent frozen protocol input.
-Without a matching measurement it uses the complete conservative request estimate.
+Without a matching measurement or comparable execution reference it uses the complete conservative request estimate.
 The automatic threshold stays min(90% of the window, request safe limit); output
 reservation semantics and the bounded overflow recovery are unchanged.
 
@@ -94,6 +94,13 @@ through the network. Output refits and retries preserve the frozen input.
 
 InputTokenScope retains its protocol meaning: provider_execution alone never
 qualifies. Incomplete visible attribution does not invalidate a proven total.
+For a completed, single comparable execution without complete input attribution,
+an adapter can mark the frozen input as `provider.ExecutionInputBoundary` with
+`CompleteInput` and `OpaqueInput` false. Bind the attempt and terminal response ID;
+exclude aggregated calls, truncation, hidden continuations and actual hosted work.
+The Engine uses that native total as an **approximate** base only for identical
+replayed input. A matching committed native output boundary can budget opaque
+output once; otherwise a new opaque suffix invalidates the projection.
 Encrypted reasoning requires explicit protocol inclusion evidence and a matching
 native boundary, never a ciphertext-length estimate. New opaque suffixes invalidate
 calibration. Model, account/connection, tool/system surface, estimator, canonical

@@ -153,6 +153,40 @@ func TestInputBoundaryRejectsNewOpaqueSuffix(t *testing.T) {
 	}
 }
 
+func TestExecutionReferenceEstimatesOnlyNewInput(t *testing.T) {
+	req, history, usage := measurementFixture(t)
+	req.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 322700, ModelMaxOutputTokens: 128000}
+	req.RequestEstimate.EstimatedInputTokens = 290030
+	req.RequestEstimate.Breakdown.OpaqueBytes = 331928
+	prepared := req.Prepared.(*measuredPrepared)
+	prepared.payload = []byte(`{"tools":[{"type":"web_search"}],"input":[{"type":"reasoning","encrypted_content":"old"}]}`)
+	usage.InputTokens, usage.CacheReadTokens = 8686, 222720
+	usage.Measurement.Input = prepared.InputMeasurementPrefix()
+	usage.Measurement.Input.Boundary = "execution_input"
+	usage.Measurement.CompleteInput, usage.Measurement.OpaqueInput = false, false
+	tracker := NewContextPressureTracker("scope")
+	observed, _ := tracker.ObserveSuccess(req, history, usage)
+	if observed.WindowInputTokens != 231406 || observed.Confidence == contextpolicy.EstimateExact {
+		t.Fatalf("execution total not retained as a reference: %+v", observed)
+	}
+	req.RequestEstimate.EstimatedInputTokens = 291179
+	for _, tc := range []struct {
+		name, suffix string
+		compact      bool
+	}{
+		{"identical", "", false}, {"small", `,{"role":"user","content":"next"}`, false},
+		{"large", `,{"role":"user","content":"` + strings.Repeat(" token", 65000) + `"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req.Prepared = &measuredPrepared{identity: prepared.identity, payload: []byte(strings.TrimSuffix(string(prepared.payload), "]}") + tc.suffix + "]}")}
+			got := tracker.Project(req, history)
+			if got.Source != contextpolicy.PressureSourceUsageAnchoredDelta || got.Confidence != contextpolicy.EstimateApproximate || got.CompactionNeeded != tc.compact || got.ProjectedInputTokens < 231406 || tc.suffix == "" && got.ProjectedInputTokens != 231406 {
+				t.Fatalf("reference projection %+v (%s)", got, tracker.anchorReason)
+			}
+		})
+	}
+}
+
 func TestMeasuredZeroAndThresholdBoundaries(t *testing.T) {
 	for _, tokens := range []int64{0, 472499, 472500, 524000, 524001} {
 		req, history, usage := measurementFixture(t)

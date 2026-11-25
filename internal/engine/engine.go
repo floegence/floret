@@ -1090,6 +1090,9 @@ steps:
 			}
 		}
 		usage := stepOutput.Usage
+		if evidence := usage.Measurement; evidence != nil && evidence.Input.Boundary == requestmeasure.ExecutionInputBoundary && evidence.ResponseID != stepOutput.ResponseID {
+			usage.Measurement = nil
+		}
 		metrics.AddUsage(usage)
 		normalizedUsage := usage.Normalized()
 		providerHistory, _, _ := session.ProjectProviderHistory(activeHistory, "")

@@ -10,6 +10,10 @@ import (
 // identity. An OpenAI-compatible transport does not imply an OpenAI tokenizer.
 type RequestFormat string
 
+// ExecutionInputBoundary identifies frozen input for a comparable, single provider
+// execution. Its native total is a reference, not proof of complete input coverage.
+const ExecutionInputBoundary = requestmeasure.ExecutionInputBoundary
+
 const (
 	RequestFormatOpenAIChat      RequestFormat = "openai_chat"
 	RequestFormatOpenAIResponses RequestFormat = "openai_responses"
