@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.121.5
+
+- Bind official DeepSeek stateless input usage to the frozen request so an unchanged prefix can use native tokens plus the estimated suffix. Incomplete, hosted, opaque and unverified requests do not establish a new measured boundary.
+
 ## v7.121.4
 
 - Scope child waits to their frozen targets and committed parent events. Streaming text in concurrent conversations no longer triggers inventory or receipt reads by waiting parents.

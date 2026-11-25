@@ -559,10 +559,10 @@ func (g *deepSeekGateway) Stream(ctx context.Context, req Request) (<-chan Event
 	if err != nil {
 		return nil, err
 	}
-	return g.streamRendered(ctx, body, history, req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed)
+	return g.streamRendered(ctx, body, history, req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed, nil)
 }
 
-func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, history deepSeekHistory, stateAllowed bool) (<-chan Event, error) {
+func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, history deepSeekHistory, stateAllowed bool, measurement *RequestMeasurement) (<-chan Event, error) {
 	if err := CheckRequestBytes(body, g.maxRequestBytes); err != nil {
 		return nil, err
 	}
@@ -615,7 +615,10 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 	go func() {
 		defer close(out)
 		defer response.Body.Close()
-		g.readStream(ctx, response, history, out, stateAllowed)
+		if response.Request == nil || response.Request.URL == nil || response.Request.URL.String() != g.endpoint {
+			measurement = nil
+		}
+		g.readStream(ctx, response, history, out, stateAllowed, measurement)
 	}()
 	return out, nil
 }
@@ -674,9 +677,9 @@ type deepSeekResponse struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
 	Usage *struct {
-		Input        int64 `json:"input_tokens"`
-		Output       int64 `json:"output_tokens"`
-		Total        int64 `json:"total_tokens"`
+		Input        *int64 `json:"input_tokens"`
+		Output       *int64 `json:"output_tokens"`
+		Total        *int64 `json:"total_tokens"`
 		InputDetails struct {
 			Cached int64 `json:"cached_tokens"`
 		} `json:"input_tokens_details"`
@@ -686,7 +689,7 @@ type deepSeekResponse struct {
 	} `json:"usage"`
 }
 
-func (g *deepSeekGateway) readStream(ctx context.Context, response *http.Response, history deepSeekHistory, out chan<- Event, stateAllowed bool) {
+func (g *deepSeekGateway) readStream(ctx context.Context, response *http.Response, history deepSeekHistory, out chan<- Event, stateAllowed bool, measurement *RequestMeasurement) {
 	emit := func(event Event) bool {
 		select {
 		case <-ctx.Done():
@@ -1096,12 +1099,24 @@ func (g *deepSeekGateway) readStream(ctx context.Context, response *http.Respons
 				emit(Event{Type: EventSources, Sources: sources})
 			}
 			if u := r.Usage; u != nil {
+				var input, output int64
+				if u.Input != nil {
+					input = *u.Input
+				}
+				if u.Output != nil {
+					output = *u.Output
+				}
 				cached, reason := u.InputDetails.Cached, u.OutputDetails.Reasoning
-				if u.Input < 0 || u.Output < 0 || cached < 0 || cached > u.Input || reason < 0 || reason > u.Output {
+				if input < 0 || output < 0 || cached < 0 || cached > input || reason < 0 || reason > output {
 					fail(errors.New("invalid DeepSeek usage"))
 					return true
 				}
-				emit(Event{Type: EventUsage, Usage: Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: u.Input - cached, CacheReadTokens: cached, OutputTokens: u.Output - reason, ReasoningTokens: reason, TotalTokens: u.Input + u.Output, WindowInputTokens: u.Input, Source: "native", Available: true}})
+				usage := Usage{InputTokensReported: u.Input != nil, OutputTokensReported: u.Output != nil, InputTokenScope: "request_input", InputTokens: input - cached, CacheReadTokens: cached, OutputTokens: output - reason, ReasoningTokens: reason, TotalTokens: input + output, WindowInputTokens: input, Source: "native", Available: true}
+				if measurement != nil && r.Status == "completed" && len(searches) == 0 && input > 0 && u.Output != nil && u.Total != nil && *u.Total >= input && *u.Total-input == output {
+					measurement.ResponseID = r.ID
+					usage.Measurement = measurement
+				}
+				emit(Event{Type: EventUsage, Usage: usage})
 			}
 			terminal := Event{Type: EventDone, Reason: "stop", ResponseID: r.ID}
 			if r.Status == "incomplete" {
@@ -1190,7 +1205,11 @@ func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedReq
 	if err != nil {
 		return nil, err
 	}
-	return &deepSeekPrepared{gateway: g, body: body, history: history, stateAllowed: req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
+	prepared := &deepSeekPrepared{gateway: g, body: body, history: history, attemptID: req.AttemptID, stateAllowed: req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}
+	if len(req.HostedTools) == 0 && estimate.Breakdown.OpaqueBytes == 0 && (g.endpoint == "https://api.deepseek.com/responses" || g.endpoint == "https://api.deepseek.com/v1/responses") {
+		prepared.measurementIdentity = "deepseek:" + deepSeekHash([]string{g.endpoint, g.apiKey, g.identity.Model, g.identity.StateCompatibilityKey})
+	}
+	return prepared, nil
 }
 
 // Bind attribution by the provider's ordered user projection, never by parsing
@@ -1256,14 +1275,15 @@ func toolAttributionKey(t tools.ToolDefinition) string {
 }
 
 type deepSeekPrepared struct {
-	stateAllowed bool
-	mu           sync.Mutex
-	gateway      *deepSeekGateway
-	body         []byte
-	history      deepSeekHistory
-	fingerprint  string
-	estimate     TokenEstimate
-	used, closed bool
+	attemptID, measurementIdentity string
+	stateAllowed                   bool
+	mu                             sync.Mutex
+	gateway                        *deepSeekGateway
+	body                           []byte
+	history                        deepSeekHistory
+	fingerprint                    string
+	estimate                       TokenEstimate
+	used, closed                   bool
 }
 
 func (p *deepSeekPrepared) Stream(ctx context.Context) (<-chan Event, error) {
@@ -1275,7 +1295,24 @@ func (p *deepSeekPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 	p.used = true
 	body, history := p.body, p.history
 	p.mu.Unlock()
-	return p.gateway.streamRendered(ctx, body, history, p.stateAllowed)
+	var measurement *RequestMeasurement
+	if prefix := p.InputMeasurementPrefix(); prefix.Fingerprint != "" && p.attemptID != "" {
+		measurement = &RequestMeasurement{AttemptID: p.attemptID, CompleteInput: true, Input: prefix}
+	}
+	return p.gateway.streamRendered(ctx, body, history, p.stateAllowed, measurement)
+}
+func (p *deepSeekPrepared) renderedInput() RenderedRequest {
+	return RenderedRequest{Provider: "deepseek", Model: p.gateway.identity.Model, Format: RequestFormatOpenAIResponses, Payload: p.body}
+}
+func (p *deepSeekPrepared) InputMeasurementPrefix() MeasurementPrefix {
+	if p.measurementIdentity == "" {
+		return MeasurementPrefix{}
+	}
+	prefix, _ := RenderedMeasurementPrefix(p.renderedInput(), p.measurementIdentity, "input")
+	return prefix
+}
+func (p *deepSeekPrepared) MeasurementSuffix(prefix MeasurementPrefix) ([]byte, bool) {
+	return RenderedMeasurementSuffix(p.renderedInput(), p.measurementIdentity, prefix)
 }
 func (p *deepSeekPrepared) TokenEstimate() TokenEstimate       { return cloneTokenEstimate(p.estimate) }
 func (p *deepSeekPrepared) RenderedPayloadFingerprint() string { return p.fingerprint }
@@ -1298,11 +1335,11 @@ func validDeepSeekToolName(name string) bool {
 	return true
 }
 
-func (p *deepSeekPrepared) PrepareRetry(ctx context.Context, _ Request) (PreparedRequest, error) {
+func (p *deepSeekPrepared) PrepareRetry(ctx context.Context, next Request) (PreparedRequest, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &deepSeekPrepared{gateway: p.gateway, body: p.body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: p.fingerprint, estimate: p.estimate}, nil
+	return &deepSeekPrepared{gateway: p.gateway, body: p.body, history: p.history, attemptID: next.AttemptID, measurementIdentity: p.measurementIdentity, stateAllowed: p.stateAllowed, fingerprint: p.fingerprint, estimate: p.estimate}, nil
 }
 
 func (p *deepSeekPrepared) WithMaxOutputTokens(ctx context.Context, limit int64) (PreparedRequest, error) {
@@ -1333,5 +1370,5 @@ func (p *deepSeekPrepared) WithMaxOutputTokens(ctx context.Context, limit int64)
 	if err := CheckRequestBytes(body, p.gateway.maxRequestBytes); err != nil {
 		return nil, err
 	}
-	return &deepSeekPrepared{gateway: p.gateway, body: body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: p.estimate}, nil
+	return &deepSeekPrepared{gateway: p.gateway, body: body, history: p.history, attemptID: p.attemptID, measurementIdentity: p.measurementIdentity, stateAllowed: p.stateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: p.estimate}, nil
 }

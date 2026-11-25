@@ -386,6 +386,12 @@ Suffix estimation uses Floret's estimator; adapters do not calculate pressure.
 Neither method may read attachments, refresh context, authorize tools or count
 through the network. Output refits and retries preserve the frozen input.
 
+Official DeepSeek stateless Responses binds transparent input to the endpoint,
+credential, model and actual attempt. Only a complete response with consistent
+native totals qualifies; hosted execution and opaque input provide no such
+proof. The input count includes cached tokens once. Later output is estimated
+only when replayed in the new suffix, not added from the billing total.
+
 InputTokenScope retains its protocol meaning: provider_execution alone never
 qualifies. Incomplete visible attribution does not invalidate a proven total.
 Encrypted reasoning requires explicit protocol inclusion evidence and a matching
