@@ -144,6 +144,7 @@ type AgentHarness struct {
 type ResumeOptions struct{}
 
 type RunOptions struct {
+	PreviousAttemptEpoch        int
 	Steering                    *engine.SteeringControl
 	TurnKind                    string
 	LogicalRequestID            string
@@ -911,14 +912,15 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	eng.SetSink(projection)
 	runInput := engine.RunInput{
-		RunID:               runID,
-		ThreadID:            t.id,
-		TurnID:              turnID,
-		TraceID:             runID,
-		PromptScopeID:       t.id,
-		Labels:              opts.Labels,
-		History:             history,
-		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
+		PreviousAttemptEpoch: opts.PreviousAttemptEpoch,
+		RunID:                runID,
+		ThreadID:             t.id,
+		TurnID:               turnID,
+		TraceID:              runID,
+		PromptScopeID:        t.id,
+		Labels:               opts.Labels,
+		History:              history,
+		SupplementalContext:  engine.CloneTurnSupplementalContext(opts.SupplementalContext),
 	}
 	var result engine.Result
 	preparationTurnID := preparationTurnIDForRun(turnID, retrySource)
@@ -1868,14 +1870,14 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	if err != nil {
 		return compaction.Result{}, nil, engine.WithFailureOrigin(err, engine.FailureOriginStorage)
 	}
-	canonical, err := sessiontree.BuildContextChecked(path, sessiontree.ContextOptions{})
+	canonical, err := sessiontree.BuildCompactionContext(path)
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
-	if !reflect.DeepEqual(canonical, req.History) {
+	if !reflect.DeepEqual(canonical.History, req.History) {
 		return compaction.Result{}, nil, errors.New("active context differs from canonical provider projection")
 	}
-	previous := latestCompactionEntry(path)
+	previous := canonical.Previous
 	if strings.TrimSpace(previous.CompactionID) != strings.TrimSpace(req.PreviousCompactionID) ||
 		previous.CompactionGeneration != req.PreviousGeneration ||
 		strings.TrimSpace(previous.CompactionWindowID) != strings.TrimSpace(req.PreviousWindowID) ||
@@ -1984,15 +1986,6 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	active := committed.Messages
 	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: req.RunID, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
 	return result, active, nil
-}
-
-func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i].Type == sessiontree.EntryCompaction {
-			return path[i]
-		}
-	}
-	return sessiontree.Entry{}
 }
 
 type HarnessRecorder struct {

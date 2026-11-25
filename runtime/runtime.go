@@ -1579,13 +1579,14 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 }
 
 type acceptedTurn struct {
-	TurnKind    TurnKind
-	ThreadID    identity.ThreadID
-	TurnID      identity.TurnID
-	RunID       identity.RunID
-	UserEntryID string
-	BaseLeafID  string
-	Replayed    bool
+	previousAttemptEpoch int
+	TurnKind             TurnKind
+	ThreadID             identity.ThreadID
+	TurnID               identity.TurnID
+	RunID                identity.RunID
+	UserEntryID          string
+	BaseLeafID           string
+	Replayed             bool
 }
 
 func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted acceptedTurn, req runTurnRequest) (TurnResult, error) {
@@ -1612,10 +1613,11 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		ThreadID: string(accepted.ThreadID), TurnID: string(accepted.TurnID), RunID: string(accepted.RunID),
 		UserEntryID: accepted.UserEntryID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed,
 	}, input.Text, agentharness.RunOptions{
-		Steering:         h.steering,
-		TurnKind:         string(req.TurnKind),
-		LogicalRequestID: string(req.LogicalRequestID),
-		RunID:            string(req.RunID), TurnID: string(req.TurnID),
+		PreviousAttemptEpoch: accepted.previousAttemptEpoch,
+		Steering:             h.steering,
+		TurnKind:             string(req.TurnKind),
+		LogicalRequestID:     string(req.LogicalRequestID),
+		RunID:                string(req.RunID), TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(h.runLabels.Correlation),
 			Host:        cloneStringMap(h.runLabels.Host),

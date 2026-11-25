@@ -106,13 +106,14 @@ func (runtime *threadRuntimeState) releaseDeletedState() {
 }
 
 type beginThreadRunInput struct {
-	turnKind         TurnKind
-	turnID           identity.TurnID
-	runID            identity.RunID
-	logicalRequestID identity.LogicalRequestID
-	cancel           context.CancelCauseFunc
-	executionDone    <-chan struct{}
-	clearOutcome     bool
+	previousAttemptEpoch int
+	turnKind             TurnKind
+	turnID               identity.TurnID
+	runID                identity.RunID
+	logicalRequestID     identity.LogicalRequestID
+	cancel               context.CancelCauseFunc
+	executionDone        <-chan struct{}
+	clearOutcome         bool
 }
 
 // beginRun is the only in-memory transition that installs a new provider Run
@@ -137,8 +138,8 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.fragmentCancel = nil
 	runtime.state.steering = nil
 	runtime.state.attemptID = ""
-	runtime.state.attemptEpoch = 0
-	runtime.state.retiredAttempt = false
+	runtime.state.attemptEpoch = input.previousAttemptEpoch
+	runtime.state.retiredAttempt = input.previousAttemptEpoch > 0
 	runtime.state.attemptDraftIDs = nil
 	runtime.state.openTextSegmentID = ""
 	runtime.state.openTextKind = ""

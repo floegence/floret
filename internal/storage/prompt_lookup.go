@@ -287,6 +287,41 @@ func (kernel *BackendKernel) withPromptLookup(ctx context.Context, scope string,
 		}
 	}
 }
+
+func (kernel *BackendKernel) RecoveredAttemptEpoch(ctx context.Context, thread, turn, run, logical string) (int, error) {
+	highest := 0
+	err := kernel.withPromptLookup(ctx, thread, []int{promptRequest}, func(tx spi.ReadTx, counters promptScopeCounters) error {
+		refs, found, err := readLookup[turnSourceOrdinals](tx, promptLookupKey(thread, "turn", turn))
+		if err != nil || !found {
+			return err
+		}
+		count := counters.Counts[promptRequest]
+		if refs.Model == 0 {
+			return nil
+		}
+		if refs.Model > count {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		for ordinal := refs.Model; ordinal <= count; ordinal++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			request, err := readPromptOrdinal[cache.ProviderRequestRecord](tx, thread, promptRequest, ordinal)
+			if err != nil {
+				return err
+			}
+			if request.PromptScopeID != thread || ordinal == refs.Model && request.TurnID != turn {
+				return sessiontree.ErrAuthorityCorrupt
+			}
+			if request.ThreadID == thread && request.TurnID == turn && request.RunID == run && request.LogicalRequestID == logical {
+				highest = max(highest, request.AttemptEpoch)
+			}
+		}
+		return nil
+	})
+	return highest, err
+}
+
 func (kernel *BackendKernel) ReadTurnRequestFacts(ctx context.Context, scope, turn string) (cache.TurnRequestFacts, error) {
 	var facts cache.TurnRequestFacts
 	err := kernel.withPromptLookup(ctx, scope, []int{promptRequest}, func(tx spi.ReadTx, counters promptScopeCounters) error {

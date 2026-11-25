@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.121.6
+
+- Use the Retry-selected history for compaction preparation and atomic installation, preserving the original checkpoint and the independent retry checkpoint.
+- Resume interrupted provider dispatch above the highest recorded attempt of the same execution, without replaying tools or reusing another attempt's measurement evidence.
+
 ## v7.121.5
 
 - Bind official DeepSeek stateless input usage to the frozen request so an unchanged prefix can use native tokens plus the estimated suffix. Incomplete, hosted, opaque and unverified requests do not establish a new measured boundary.

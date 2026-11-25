@@ -2,6 +2,28 @@ package cache
 
 import "context"
 
+func RecoveredAttemptEpoch(ctx context.Context, store Store, thread, turn, run, logical string) (int, error) {
+	if reader, ok := store.(interface {
+		RecoveredAttemptEpoch(context.Context, string, string, string, string) (int, error)
+	}); ok {
+		return reader.RecoveredAttemptEpoch(ctx, thread, turn, run, logical)
+	}
+	requests, err := store.ProviderRequests(ctx, thread)
+	if err != nil {
+		return 0, err
+	}
+	highest := 0
+	for _, request := range requests {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if request.PromptScopeID == thread && request.ThreadID == thread && request.TurnID == turn && request.RunID == run && request.LogicalRequestID == logical {
+			highest = max(highest, request.AttemptEpoch)
+		}
+	}
+	return highest, nil
+}
+
 // LatestRequestReader is an optional internal fast path for current context
 // attribution. It returns the last append, preserving transport-attempt order.
 type LatestRequestReader interface {

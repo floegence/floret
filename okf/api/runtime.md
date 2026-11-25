@@ -267,8 +267,10 @@ context after retained partial assistant output. It states that output may be
 incomplete and tool results remain authoritative; it makes no unsupported claim
 about background processes. The same projection serves continuation, restart,
 Fork, Retry and compaction. Retrying from an earlier savepoint excludes discarded
-output and its terminal fact. Projection revision `provider-context.v12` establishes
-a new rendered cache boundary. Matching v11 canonical prefixes retain opaque native
+output and its terminal fact. Compaction reads the previous checkpoint and retained
+users from the same retry-selected history for generation and atomic installation.
+Superseded entries stay in the journal. Projection revision `provider-context.v12`
+establishes a new rendered cache boundary. Matching v11 canonical prefixes retain opaque native
 history; inserted interruption messages reset incompatible state. Canonical bytes
 and released checkpoint boundaries remain unchanged. This requires no domain schema migration and adds
 no UI message or second transcript.
@@ -525,7 +527,10 @@ thread lists.
 Every new Run enters the actor through one atomic transition. It closes the
 old live segment, installs the new Turn, Run, and logical-request identities,
 resets the attempt epoch, and publishes `preparing` before provider work. The
-first attempt is epoch 1. Later events must match the active Run and logical
+first attempt is epoch 1. Redispatch of an interrupted, already admitted Run
+continues above its highest recorded physical attempt, even if an older writer
+later reused a lower epoch. This also fences stale live events on recovery.
+Later events must match the active Run and logical
 request; only a higher epoch of that same request may replace the active
 attempt. Late events from a waiting or completed Run remain rejected.
 

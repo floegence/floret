@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/outputbody"
+	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -2326,6 +2327,11 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	kind := TurnKind(canonical.TurnStarted.Metadata[sessiontree.TurnKindMetadataKey])
 	input := turnInputFromSessionMessage(canonical.UserMessage.Message)
 	requestKey := strings.TrimSpace(canonical.TurnStarted.RequestKey)
+	previousEpoch, err := cache.RecoveredAttemptEpoch(ctx, service.host.store.prompt, threadID.String(), turnID.String(), runID.String(), requestKey)
+	if err != nil {
+		service.finishUnloadedTerminal(ctx, service.runtime(threadID), threadID, turnID, runID, TurnResult{}, err)
+		return
+	}
 	var retrySourceTurnID identity.TurnID
 	var retrySourceEntryID string
 	if reader, ok := service.host.store.repo.(sessiontree.CanonicalTurnReadRepo); ok && kind != TurnKindContextCompaction {
@@ -2374,7 +2380,8 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	if err := actor.apply(ctx, func() error {
 		if _, beginErr := actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
-			cancel: cancel, executionDone: done, turnKind: kind,
+			previousAttemptEpoch: previousEpoch,
+			cancel:               cancel, executionDone: done, turnKind: kind,
 		}); beginErr != nil {
 			return beginErr
 		}
@@ -2390,7 +2397,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 		TurnKind: kind, RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
 	}
 	applyAgentExecutionPolicy(&request, agent)
-	accepted := acceptedTurn{ThreadID: threadID, TurnID: turnID, RunID: runID, UserEntryID: canonical.UserMessage.ID, BaseLeafID: canonical.BaseLeafID, Replayed: true}
+	accepted := acceptedTurn{ThreadID: threadID, TurnID: turnID, RunID: runID, UserEntryID: canonical.UserMessage.ID, BaseLeafID: canonical.BaseLeafID, Replayed: true, previousAttemptEpoch: previousEpoch}
 	go service.executeAcceptedSend(executionCtx, actor, runner, accepted, request, nil, done)
 }
 

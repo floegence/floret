@@ -136,24 +136,44 @@ func validateContextCompactionCommit(req ContextCompactionCommit) error {
 	return nil
 }
 
+type CompactionContext struct {
+	History  []session.Message
+	Previous Entry
+	selected []Entry
+}
+
+func BuildCompactionContext(path []Entry) (CompactionContext, error) {
+	selected, err := retryProjectedContextPath(path)
+	if err != nil {
+		return CompactionContext{}, err
+	}
+	history, err := buildContextMessages(selected)
+	if err != nil {
+		return CompactionContext{}, err
+	}
+	result := CompactionContext{History: history, selected: selected}
+	for index := len(selected) - 1; index >= 0; index-- {
+		if selected[index].Type == EntryCompaction {
+			result.Previous = selected[index]
+			break
+		}
+	}
+	return result, nil
+}
+
 func projectContextCompactionCommit(path []Entry, req ContextCompactionCommit) ([]session.Message, error) {
-	history, err := BuildContextChecked(path, ContextOptions{})
+	active, err := BuildCompactionContext(path)
 	if err != nil {
 		return nil, err
 	}
-	if req.History != nil && !reflect.DeepEqual(req.History, history) {
+	if req.History != nil && !reflect.DeepEqual(req.History, active.History) {
 		return nil, fmt.Errorf("%w: compaction history changed", ErrStaleAuthority)
 	}
-	var previous Entry
-	for _, entry := range path {
-		if entry.Type == EntryCompaction {
-			previous = entry
-		}
-	}
+	previous := active.Previous
 	if req.Summary.PreviousCompactionID != previous.CompactionID || req.Summary.CompactionGeneration != previous.CompactionGeneration+1 || req.Summary.CompactionID == "" || req.Summary.CompactionWindowID != req.Summary.CompactionID {
 		return nil, fmt.Errorf("%w: compaction generation conflicts with canonical path", ErrAuthorityCorrupt)
 	}
-	projected, err := projectCheckpoint(history, req.Summary, path)
+	projected, err := projectCheckpoint(active.History, req.Summary, active.selected)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
+	"time"
+
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
@@ -12,8 +16,6 @@ import (
 	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
-	"reflect"
-	"time"
 )
 
 type providerAttemptResult struct {
@@ -21,6 +23,16 @@ type providerAttemptResult struct {
 	output   StepOutput
 	latency  int64
 	overflow bool
+}
+
+func (e *Engine) assignProviderAttempt(request *provider.Request) error {
+	if e.attemptEpoch == math.MaxInt {
+		return withFailureOrigin(errors.New("provider attempt epoch exhausted"), FailureOriginContract)
+	}
+	e.attemptEpoch++
+	request.AttemptEpoch = e.attemptEpoch
+	request.AttemptID = fmt.Sprintf("%s:attempt:%d", request.LogicalRequestID, request.AttemptEpoch)
+	return nil
 }
 
 func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options, step int, initial provider.Request, metrics *RunMetrics) (provider.Request, StepOutput, int64, bool, error) {
@@ -55,9 +67,9 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 			// Source intervals are transient canonical projection metadata and
 			// intentionally absent from the serialized request envelope.
 			next.Messages = session.CloneMessages(frozenMessages)
-			e.attemptEpoch++
-			next.AttemptEpoch = e.attemptEpoch
-			next.AttemptID = fmt.Sprintf("%s:attempt:%d", next.LogicalRequestID, next.AttemptEpoch)
+			if err := e.assignProviderAttempt(&next); err != nil {
+				return providerAttemptResult{request: current}, err
+			}
 			next.Attempt = initial.Attempt + n
 			next.PreparationCancel = initial.PreparationCancel
 			next.PromptStore = e.prompt // staged immutable segments were committed on the first send.

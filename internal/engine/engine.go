@@ -404,6 +404,7 @@ func (output StepOutput) assistantMessages() []session.Message {
 }
 
 type RunInput struct {
+	PreviousAttemptEpoch  int
 	RunID                 string
 	ThreadID              string
 	TurnID                string
@@ -696,6 +697,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	if err != nil {
 		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
+	runner.attemptEpoch = input.PreviousAttemptEpoch
 	return runner.run(ctx, "")
 }
 
@@ -748,6 +750,7 @@ func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual Manu
 	if err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
+	runner.attemptEpoch = input.PreviousAttemptEpoch
 	return runner.compactContext(ctx, manual)
 }
 
@@ -3100,9 +3103,9 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	if req.LogicalRequestID == "" {
 		req.LogicalRequestID = fmt.Sprintf("%s:logical", opts.RunID)
 	}
-	e.attemptEpoch++
-	req.AttemptEpoch = e.attemptEpoch
-	req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
+	if err := e.assignProviderAttempt(&req); err != nil {
+		return provider.Request{}, err
+	}
 	req, err = e.prepareProviderRequest(ctx, req)
 	if err != nil {
 		return provider.Request{}, err
