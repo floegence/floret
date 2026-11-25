@@ -99,10 +99,8 @@ an adapter can mark the frozen input as `provider.ExecutionInputBoundary` with
 exclude aggregated calls, truncation, hidden continuations and actual hosted work.
 The Engine uses that native total as an **approximate** base only for identical
 replayed input. A matching committed native output boundary can budget opaque
-output once; otherwise a new opaque suffix invalidates the projection.
-Encrypted reasoning requires explicit protocol inclusion evidence and a matching
-native boundary, never a ciphertext-length estimate. New opaque suffixes invalidate
-calibration. Model, account/connection, tool/system surface, estimator, canonical
+output once. Without that match, new encrypted reasoning has unknown token size:
+retain the measured history, estimate the visible suffix and mark the projection approximate. Never convert ciphertext length into tokens. Model, account/connection, tool/system surface, estimator, canonical
 history and compaction lineage must match. Native cache buckets are counted once;
 OutputTokensReported distinguishes explicit zero, and OutputIncludesReasoning
 prevents duplicate output counting. Aggregated or failed attempts cannot establish

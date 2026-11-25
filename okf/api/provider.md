@@ -399,9 +399,7 @@ response ID; do not issue it for truncation, hidden continuation, aggregate or
 hosted execution. The Engine keeps the native observation and projects from it
 with approximate confidence only across a matching frozen prefix. A committed
 response-end match budgets replayed native output once, including reasoning.
-Encrypted reasoning requires explicit protocol inclusion evidence and a matching
-native boundary, never a ciphertext-length estimate. New opaque suffixes invalidate
-calibration. Model, account/connection, tool/system surface, estimator, canonical
+Without a matching native output boundary, new opaque items keep the projection approximate; their ciphertext length is not a token estimate. The known history and estimated visible suffix still count. Model, account/connection, tool/system surface, estimator, canonical
 history and compaction lineage must match. Native cache buckets are counted once;
 OutputTokensReported distinguishes explicit zero, and OutputIncludesReasoning
 prevents duplicate output counting. Aggregated or failed attempts cannot establish

@@ -53,6 +53,7 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 	if t.anchorReason == "" {
 		difference := estimate.EstimatedInputTokens - t.anchorRequest.RequestEstimate.EstimatedInputTokens
 		baseTokens := t.anchor.WindowInputTokens
+		approximate := t.anchor.PressureSource == contextpolicy.PressureSourceExecutionReference || !t.anchor.MeasurementPrefix.Valid() && estimate.Breakdown.OpaqueBytes > 0
 		if t.anchor.MeasurementPrefix.Valid() {
 			prepared, ok := req.Prepared.(requestmeasure.Prepared)
 			if !ok {
@@ -70,10 +71,11 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 					difference = 0
 				default:
 					counted, err := requestestimate.Count(req.Provider, req.Model, t.anchor.MeasurementPrefix.Format, suffix)
-					if err != nil || counted.Breakdown.OpaqueBytes > 0 {
-						t.anchorReason = "unmeasured_opaque_suffix"
+					if err != nil {
+						t.anchorReason = "suffix_estimate_unavailable"
 					} else {
 						difference = counted.Prefix + counted.Messages + counted.Tools
+						approximate = approximate || counted.Breakdown.OpaqueBytes > 0
 					}
 				}
 			}
@@ -88,7 +90,7 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 			EstimatedDeltaTokens: difference,
 			Source:               estimate.Source, Method: estimate.Method, Confidence: contextpolicy.EstimateConservative,
 		}
-		if t.anchor.PressureSource == contextpolicy.PressureSourceExecutionReference {
+		if approximate {
 			delta.Confidence = contextpolicy.EstimateApproximate
 		}
 		base := estimate
@@ -155,9 +157,6 @@ func (t *ContextPressureTracker) Overflow(policy contextpolicy.Policy) contextpo
 func pressureAnchorInvalidReason(anchor PressureAnchorState, previous cache.ProviderRequestRecord, req provider.Request, history []session.Message) string {
 	if anchor.MeasurementPrefix != (requestmeasure.Prefix{}) && !anchor.MeasurementPrefix.Valid() {
 		return "invalid_measurement_boundary"
-	}
-	if !anchor.MeasurementPrefix.Valid() && anchor.PressureSource != contextpolicy.PressureSourceExecutionReference && (req.RequestEstimate.Breakdown.OpaqueBytes > 0 || len(req.HostedTools) > 0) {
-		return "incomplete_request_coverage"
 	}
 	if !anchor.InputMeasurementQualified {
 		return "unqualified_measurement"

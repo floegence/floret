@@ -142,14 +142,19 @@ func TestMeasurementQualificationRejectsUnprovenUsage(t *testing.T) {
 	}
 }
 
-func TestInputBoundaryRejectsNewOpaqueSuffix(t *testing.T) {
+func TestOpaqueSuffixKeepsNativeBaseWithoutCountingCiphertext(t *testing.T) {
 	req, history, usage := measurementFixture(t)
 	tr := NewContextPressureTracker("scope")
 	tr.ObserveSuccess(req, history, usage, "response")
 	req.RequestEstimate.EstimatedInputTokens = 474100
-	req.Prepared = &measuredPrepared{identity: "account:connection", payload: []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"type":"reasoning","encrypted_content":"not-tokenizable"}]}`)}
-	if got := tr.Project(req, history); got.ProjectedInputTokens != 474100 || tr.anchorReason != "unmeasured_opaque_suffix" {
-		t.Fatalf("opaque suffix lost: %+v %s", got, tr.anchorReason)
+	var projected int64
+	for _, size := range []int{10, 300000} {
+		req.Prepared = &measuredPrepared{identity: "account:connection", payload: []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"type":"reasoning","encrypted_content":"` + strings.Repeat("A", size) + `"},{"role":"user","content":"next"}]}`)}
+		got := tr.Project(req, history)
+		if got.Source != contextpolicy.PressureSourceUsageAnchoredDelta || got.Confidence != contextpolicy.EstimateApproximate || got.ProjectedInputTokens <= usage.Normalized().WindowInputTokens || got.CompactionNeeded || projected != 0 && got.ProjectedInputTokens != projected {
+			t.Fatalf("opaque bytes changed pressure: %+v", got)
+		}
+		projected = got.ProjectedInputTokens
 	}
 }
 
