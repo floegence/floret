@@ -242,3 +242,24 @@ func TestRestoredMeasurementRequiresCommittedMatchingAttempt(t *testing.T) {
 		})
 	}
 }
+
+func TestPartialVisibleReplayUsesOnlyInputReference(t *testing.T) {
+	req, history, usage := measurementFixture(t)
+	usage.Measurement.Input.Boundary = requestmeasure.ExecutionInputBoundary
+	usage.Measurement.CompleteInput, usage.Measurement.OpaqueInput = false, false
+	prepared := req.Prepared.(*measuredPrepared)
+	full := []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"type":"reasoning","encrypted_content":"opaque"},{"role":"assistant","content":"answer"}]}`)
+	usage.Measurement.ResponseEnd, _ = requestmeasure.RenderedPrefix(full, "openai_responses", prepared.identity, "response_end")
+	tracker := NewContextPressureTracker("scope")
+	tracker.ObserveSuccess(req, history, usage)
+	committed := append(history, session.Message{EntryID: "answer", Role: session.Assistant, Content: "answer"})
+	anchor := tracker.ObserveCommittedResponse(req, committed, usage, "response")
+	if anchor.MeasurementPrefix.Boundary != "response_end" {
+		t.Fatal("missing output boundary")
+	}
+	req.Prepared = &measuredPrepared{identity: prepared.identity, payload: []byte(`{"model":"model","input":[{"role":"user","content":"question"},{"role":"assistant","content":"answer"},{"role":"user","content":"next"}]}`)}
+	got := tracker.Project(req, committed)
+	if got.Source != contextpolicy.PressureSourceUsageAnchoredDelta || got.ProjectedInputTokens <= usage.Normalized().WindowInputTokens || got.ProjectedInputTokens >= anchor.WindowInputTokens || tracker.projectedBoundary != "input" {
+		t.Fatalf("double-counted removed output: %+v", got)
+	}
+}

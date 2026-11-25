@@ -23,11 +23,13 @@ type RequestShapeHashes = cache.RequestShapeHashes
 type PressureAnchorState = cache.PressureAnchorState
 
 type ContextPressureTracker struct {
-	softNoopFingerprint string
-	promptScopeID       string
-	anchor              PressureAnchorState
-	anchorRequest       cache.ProviderRequestRecord
-	anchorReason        string
+	softNoopFingerprint  string
+	promptScopeID        string
+	anchor               PressureAnchorState
+	anchorRequest        cache.ProviderRequestRecord
+	anchorReason         string
+	inputReferenceTokens int64
+	projectedBoundary    string
 }
 
 func NewContextPressureTracker(promptScopeID string) *ContextPressureTracker {
@@ -40,6 +42,7 @@ func (t *ContextPressureTracker) SetAnchor(anchor PressureAnchorState, request c
 	}
 	t.anchor = anchor
 	t.anchorRequest = request
+	t.inputReferenceTokens = -1
 }
 
 func (t *ContextPressureTracker) Project(req provider.Request, history []session.Message) contextpolicy.ContextPressure {
@@ -47,24 +50,37 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 		return contextpolicy.PressureFromProjectedRequest(req.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, req.ContextPolicy)
 	}
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
+	t.projectedBoundary = t.anchor.MeasurementPrefix.Boundary
 	t.anchorReason = pressureAnchorInvalidReason(t.anchor, t.anchorRequest, req, history)
 	if t.anchorReason == "" {
 		difference := estimate.EstimatedInputTokens - t.anchorRequest.RequestEstimate.EstimatedInputTokens
+		baseTokens := t.anchor.WindowInputTokens
 		if t.anchor.MeasurementPrefix.Valid() {
 			prepared, ok := req.Prepared.(requestmeasure.Prepared)
 			if !ok {
 				t.anchorReason = "missing_frozen_boundary"
-			} else if suffix, matched := prepared.MeasurementSuffix(t.anchor.MeasurementPrefix); !matched {
-				t.anchorReason = "protocol_prefix_changed"
-			} else if len(suffix) == 0 {
-				difference = 0
-			} else if counted, err := requestestimate.Count(req.Provider, req.Model, t.anchor.MeasurementPrefix.Format, suffix); err != nil || counted.Breakdown.OpaqueBytes > 0 {
-				t.anchorReason = "unmeasured_opaque_suffix"
 			} else {
-				difference = counted.Prefix + counted.Messages + counted.Tools
+				suffix, matched := prepared.MeasurementSuffix(t.anchor.MeasurementPrefix)
+				if !matched && t.projectedBoundary == "response_end" && t.inputReferenceTokens >= 0 && t.anchorRequest.MeasurementPrefix.Valid() {
+					suffix, matched = prepared.MeasurementSuffix(t.anchorRequest.MeasurementPrefix)
+					baseTokens, t.projectedBoundary = t.inputReferenceTokens, "input"
+				}
+				switch {
+				case !matched:
+					t.anchorReason = "protocol_prefix_changed"
+				case len(suffix) == 0:
+					difference = 0
+				default:
+					counted, err := requestestimate.Count(req.Provider, req.Model, t.anchor.MeasurementPrefix.Format, suffix)
+					if err != nil || counted.Breakdown.OpaqueBytes > 0 {
+						t.anchorReason = "unmeasured_opaque_suffix"
+					} else {
+						difference = counted.Prefix + counted.Messages + counted.Tools
+					}
+				}
 			}
 		}
-		if t.anchorReason != "" || difference < 0 || difference > math.MaxInt64-t.anchor.WindowInputTokens {
+		if t.anchorReason != "" || difference < 0 || difference > math.MaxInt64-baseTokens {
 			if t.anchorReason == "" {
 				t.anchorReason = "invalid_suffix_budget"
 			}
@@ -78,7 +94,7 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 			delta.Confidence = contextpolicy.EstimateApproximate
 		}
 		base := estimate
-		base.EstimatedInputTokens = t.anchor.WindowInputTokens
+		base.EstimatedInputTokens = baseTokens
 		base.PrefixTokens, base.MessageTokens, base.ToolDefinitionTokens = 0, 0, 0
 		return contextpolicy.PressureFromProjectedRequest(base, delta, req.ContextPolicy)
 	}
@@ -116,13 +132,17 @@ func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []
 		anchor = pressureAnchorForRequest(req, history, normalized, pressure)
 		if anchor.InputMeasurementQualified {
 			t.SetAnchor(anchor, cache.ProviderRequestRecord{
-				ID: anchor.RequestID, PromptScopeID: req.PromptScopeID, Provider: req.Provider, Model: req.Model,
+				MeasurementPrefix: anchor.MeasurementPrefix,
+				ID:                anchor.RequestID, PromptScopeID: req.PromptScopeID, Provider: req.Provider, Model: req.Model,
 				CanonicalEnvelopeHash:      req.RawPlan.CanonicalEnvelopeHash,
 				CanonicalMessageCount:      req.RawPlan.CanonicalMessageCount,
 				CanonicalHistoryPrefixHash: req.RawPlan.CanonicalHistoryPrefixHash,
 				RenderLineageKey:           req.RawPlan.RenderLineageKey, ContextProjectionRevision: req.RawPlan.ContextProjectionRevision,
 				RequestEstimate: req.RequestEstimate, HasEphemeralOverlay: req.EphemeralUser != nil,
 			})
+			if anchor.PressureSource == executionReferenceSource {
+				t.inputReferenceTokens = normalized.WindowInputTokens
+			}
 		}
 	} else {
 		pressure = req.ContextPressure
@@ -198,6 +218,9 @@ func (e *Engine) restorePressureAnchor(ctx context.Context, tracker *ContextPres
 		return nil
 	}
 	tracker.SetAnchor(evidence.Anchor, evidence.Request)
+	if evidence.Anchor.PressureSource == executionReferenceSource && evidence.Response != nil {
+		tracker.inputReferenceTokens = evidence.Response.WindowInputTokens
+	}
 	return nil
 }
 
