@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Qualify committed bytes, including when the source worktree has unrelated files.
+root=$(git rev-parse --show-toplevel)
+while IFS= read -r name; do unset "$name"; done < <(git rev-parse --local-env-vars)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/floret-pre-push.XXXXXX")
+trap 'rm -rf -- "$tmp"' EXIT
+while read -r _local oid remote _old; do
+  case "$remote" in refs/heads/main|refs/tags/v7.*) ;; *) continue ;; esac
+  [[ "$oid" =~ ^0+$ ]] && continue
+  tip=$(git -C "$root" rev-parse "$oid^{commit}")
+  [[ ! -f "$tmp/$tip" ]] || continue
+  if [[ ! -d "$tmp/source" ]]; then git clone --quiet --local --no-checkout "$root" "$tmp/source"; fi
+  git -C "$tmp/source" checkout --quiet --detach "$tip"
+  (
+    cd "$tmp/source"
+    export GOWORK=off
+    scripts/check_v7_api_compatibility.sh
+    scripts/check_candidate_release_adoption.sh
+  ) </dev/null
+  touch "$tmp/$tip"
+done

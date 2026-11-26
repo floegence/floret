@@ -1,4 +1,4 @@
-package runtime_test
+package adoption_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -90,6 +91,7 @@ func TestReleasedRetainedPrefixContinuation(t *testing.T) {
 					if len(requests) != 1 {
 						t.Fatalf("provider calls=%d", len(requests))
 					}
+					checkReleasedPrefix(t, tc.version, restart, requests[0].Messages)
 					n := 0
 					for _, m := range requests[0].Messages {
 						if m.ToolResult != nil {
@@ -114,5 +116,43 @@ func TestReleasedRetainedPrefixContinuation(t *testing.T) {
 				}()
 			}
 		})
+	}
+}
+
+// The released v7.125.1 reader captured these messages on the original databases.
+func checkReleasedPrefix(t *testing.T, writer string, restart int, messages []provider.Message) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "retained-prefix", writer+".prefix.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []map[string]any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if len(want) == 0 || len(messages) != len(want)+1+2*restart {
+		t.Fatalf("writer %s: got %d messages, want historical prefix of %d plus explicit turns", writer, len(messages), len(want))
+	}
+	for i, expected := range want {
+		msg := messages[i]
+		msg.Attribution = nil // observation only
+		b, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range expected {
+			if !reflect.DeepEqual(got[key], value) {
+				t.Fatalf("writer %s: messages[%d](%s).%s changed", writer, i, msg.Role, key)
+			}
+		}
+		for key := range got {
+			if _, ok := expected[key]; !ok {
+				t.Fatalf("writer %s: unexpected messages[%d](%s).%s", writer, i, msg.Role, key)
+			}
+		}
 	}
 }

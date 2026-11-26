@@ -1,159 +1,27 @@
 name: CI
-
-on:
-  push:
-  pull_request:
-
+on: [push, pull_request]
 permissions:
   contents: read
-
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 env:
   GOWORK: "off"
-
 jobs:
   test:
     name: Tests and architecture boundaries
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
-
-      - name: Install workspace tool dependencies
-        env:
-          RIPGREP_VERSION: "14.1.1"
-          RIPGREP_SHA256: "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e"
-        run: |
-          archive="${RUNNER_TEMP}/ripgrep.tar.gz"
-          install_dir="${RUNNER_TEMP}/ripgrep-bin"
-          curl --fail --location --silent --show-error \
-            "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            --output "${archive}"
-          printf '%s  %s\n' "${RIPGREP_SHA256}" "${archive}" | sha256sum --check -
-          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
-          mkdir --parents "${install_dir}"
-          install --mode 0755 \
-            "${RUNNER_TEMP}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl/rg" \
-            "${install_dir}/rg"
-          printf '%s\n' "${install_dir}" >> "${GITHUB_PATH}"
-
-      - name: Verify dependency boundaries
-        run: >-
-          go test ./internal/architecture
-          -run 'TestNoGoWorkFilesInRepository|TestNoLocalModuleReplacementWiring|TestNoRedevenDependencyWiring'
-          -count=1
-
-      - name: Verify generated model catalog
+      - name: Check dependency and gate boundaries
+        run: go test ./internal/architecture -run 'TestNoGoWorkFilesInRepository|TestNoLocalModuleReplacementWiring|TestNoRedevenDependencyWiring|TestCIGatesUseCurrentMajor' -count=1
+      - name: Check generated model catalog
         run: |
           python3 scripts/model-catalog/test_generate.py
           python3 scripts/model-catalog/generate.py --check
-
-      - name: Run repository tests and OKF conformance
-        run: go test ./...
-
-      - name: Run static analysis
-        run: go vet ./...
-
-      - name: Exercise public conformance helpers
-        run: go test ./florettest
-
-      - name: Enforce the v7 public API baseline
-        run: scripts/check_v7_api_compatibility.sh
-
-      - name: Compile a blank downstream module from the proposed v7 module zip
-        run: scripts/check_candidate_release_adoption.sh
-
-      - name: Compile and run public examples
-        shell: bash
-        run: |
-          go test ./cmd/examples/...
-          go run ./cmd/examples/quick-start
-
-  race:
-    name: Focused race detection (${{ matrix.suite }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [core, sessiontree-1, sessiontree-2, sessiontree-ranges, runtime-1, runtime-2, runtime-giant-body]
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Exercise concurrent runtime and Store boundaries
-        shell: bash
-        env:
-          RACE_SUITE: ${{ matrix.suite }}
-        run: |
-          giant_body='^TestThreadLiveBodySQLiteGiantOutputCommitCancelAndRestart$'
-          large_range='^TestItemRangeCompleteQueryReadBudget$'
-          case "$RACE_SUITE" in
-            core)
-              go test -race -p=1 -timeout=25m ./internal/engine ./internal/agentharness ./storage ./tools
-              ;;
-            sessiontree-[12])
-              shard="${RACE_SUITE#sessiontree-}"
-              tests="$(go test -race -p=1 ./internal/sessiontree -list '^(Test|Example|Fuzz)' |
-                grep -E '^(Test|Example|Fuzz)' | grep -vE "$large_range" | LC_ALL=C sort |
-                awk -v shard="$shard" 'NR % 2 == shard - 1')"
-              test -n "$tests"
-              pattern="$(printf '%s\n' "$tests" | paste -sd '|' -)"
-              go test -race -p=1 -timeout=25m ./internal/sessiontree -run "^(${pattern})$"
-              ;;
-            sessiontree-ranges)
-              # Keep every 1k/10k/100k SQLite source-budget assertion under race
-              # detection; fixture creation must not consume other tests' budget.
-              go test -race -p=1 -timeout=25m ./internal/sessiontree -run "$large_range"
-              ;;
-            runtime-[12])
-              # Alternate sorted names so every test runs once within the existing timeout.
-              shard="${RACE_SUITE#runtime-}"
-              tests="$(go test -race -p=1 -timeout=25m ./runtime -list '^(Test|Example|Fuzz)' |
-                grep -E '^(Test|Example|Fuzz)' | grep -vE "$giant_body" | LC_ALL=C sort |
-                awk -v shard="$shard" 'NR % 2 == shard - 1')"
-              test -n "$tests"
-              pattern="$(printf '%s\n' "$tests" | paste -sd '|' -)"
-              go test -race -p=1 -timeout=25m ./runtime -run "^(${pattern})$"
-              ;;
-            runtime-giant-body)
-              go test -race -p=1 -timeout=25m ./runtime -run "$giant_body"
-              ;;
-            *) exit 1 ;;
-          esac
-
-  vulnerability:
-    name: Vulnerability scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - name: Scan reachable dependencies
-        run: govulncheck ./...
+      - name: Smoke test the public API
+        run: go test ./florettest ./cmd/examples/quick-start

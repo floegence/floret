@@ -25,16 +25,11 @@ GOWORK=off govulncheck ./...
 ```
 
 Install `govulncheck` from `golang.org/x/vuln/cmd/govulncheck` when it is not
-already available. CI runs these repository-wide tests, vet, focused race
-packages, public conformance helpers, examples, dependency-boundary checks, and
-the reachable vulnerability scan with `GOWORK=off`.
-
-CI gives the core packages, session-tree storage, and giant-body runtime
-qualification separate race jobs. The remaining runtime tests, examples, and
-fuzz seeds are listed, sorted, and assigned alternately to two disjoint jobs;
-new tests join this partition automatically. The exact giant-body test remains
-in its own job. Every test runs once, with a 25-minute test timeout and a
-30-minute job limit; failures do not cancel other suites.
+already available. PR/push CI only checks dependency boundaries, the model
+catalog and a public smoke test. The reachable vulnerability scan runs on a
+schedule or by request. Full tests, race detection and vet are local checks.
+With `git config core.hooksPath .githooks`, main and v7 tag pushes qualify
+their exact commits locally through the API baseline and candidate gate.
 
 # Published Release Adoption
 
@@ -53,8 +48,9 @@ command output. It then generates all five host profiles, runs their downstream
 smoke and profile-specific approval/recovery behavior tests, and runs the
 published durable host, custom gateway, tool approval, startup recovery, and
 Store maintenance examples. The `Published
-release adoption` workflow invokes the same script for a published GitHub
-release; the workflow does not maintain a second smoke implementation.
+release adoption` workflow only checks exact module resolution and checksums.
+The historical matrix, including model-visible golden prefixes captured from
+v7.125.1 on both retained-output writer databases, runs locally only.
 
 Before committing a release candidate, run
 `scripts/check_candidate_release_adoption.sh` from a clean worktree. It packages

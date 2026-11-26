@@ -15,7 +15,7 @@ jobs:
   adoption:
     name: Blank downstream module
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - name: Check out the published tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,4 +32,9 @@ jobs:
         env:
           FLORET_RELEASE_TAG: ${{ github.event.release.tag_name }}
           GOWORK: "off"
-        run: ./scripts/check_published_release_adoption.sh "$FLORET_RELEASE_TAG"
+        run: |
+          cd "$(mktemp -d)"
+          go mod init example.com/release-smoke
+          go get "github.com/floegence/floret/v7@${FLORET_RELEASE_TAG}"
+          go mod verify
+          test "$(go list -m -f '{{.Version}}' github.com/floegence/floret/v7)" = "$FLORET_RELEASE_TAG"

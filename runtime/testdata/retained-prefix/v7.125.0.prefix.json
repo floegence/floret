@@ -1,0 +1,32 @@
+[
+  {
+    "role": "system",
+    "text": "Produce output."
+  },
+  {
+    "role": "user",
+    "text": "produce output"
+  },
+  {
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "id": "call",
+        "name": "output",
+        "args": "{}"
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_result": {
+      "call_id": "call",
+      "tool_name": "output",
+      "text": "{\"result\":{\"preview\":\"recorded\"},\"retained_output\":{\"original_bytes\":2400,\"preview_omitted\":true,\"read\":{\"end_byte\":2400,\"source\":\"output:v1:eyJ0aHJlYWRfaWQiOiJ0aHJlYWQtODBjMWRjYWQ3MDM1NGVlNjFhODQwNWY1NGI2ZjM3ZDkiLCJraW5kIjoiYXJ0aWZhY3QiLCJpZCI6InRvb2wtb3V0cHV0LWVmZmVjdC1lZGM1MmE4YjdjYmMyNGRlYmIyMzFkOGYifQ\",\"start_byte\":0},\"ref\":\"output:v1:eyJ0aHJlYWRfaWQiOiJ0aHJlYWQtODBjMWRjYWQ3MDM1NGVlNjFhODQwNWY1NGI2ZjM3ZDkiLCJraW5kIjoiYXJ0aWZhY3QiLCJpZCI6InRvb2wtb3V0cHV0LWVmZmVjdC1lZGM1MmE4YjdjYmMyNGRlYmIyMzFkOGYifQ\",\"sha256\":\"2f0ab90ee8539d4667f4388ca9406eb659a8be02932c478e6ddc96e9c43ffa7c\"},\"status\":\"success\"}"
+    }
+  },
+  {
+    "role": "assistant",
+    "text": "Observed."
+  }
+]

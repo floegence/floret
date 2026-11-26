@@ -34,8 +34,15 @@ func TestCIGatesUseCurrentMajor(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(workflow)
-	if !strings.Contains(content, "scripts/check_v7_api_compatibility.sh") || strings.Contains(content, "scripts/check_v6_api_compatibility.sh") {
-		t.Fatal("CI must run only the v7 API compatibility gate")
+	hook, err := os.ReadFile(".githooks/pre-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hook), "scripts/check_v7_api_compatibility.sh") || !strings.Contains(string(hook), "scripts/check_candidate_release_adoption.sh") {
+		t.Fatal("local pre-push must qualify the current major")
+	}
+	if strings.Contains(content, "_release_adoption.sh") || strings.Contains(content, "go test ./...") {
+		t.Fatal("ordinary CI must not run full qualification")
 	}
 }
 

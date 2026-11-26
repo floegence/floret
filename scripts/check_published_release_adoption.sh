@@ -43,7 +43,7 @@ sed 's/package provider_test/package adoption_test/' "${repository_root}/provide
 sed 's/package tools_test/package adoption_test/' "${repository_root}/tools/preparation_error_external_test.go" > preparation_error_test.go
 mkdir -p testdata
 cp -R "${repository_root}/runtime/testdata/retained-prefix" testdata/
-sed 's/package runtime_test/package adoption_test/' "${repository_root}/runtime/historical_retained_prefix_test.go" > historical_retained_prefix_test.go
+cp "${repository_root}/scripts/testdata/historical_retained_prefix_test.go" historical_retained_prefix_test.go
 cp -R "${repository_root}/provider/testdata/responses-history-v7.98.0" testdata/
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/responses_history_test.go" > responses_history_test.go
 sed 's/package provider_test/package adoption_test/' "${repository_root}/provider/responses_output_test.go" > responses_output_test.go
