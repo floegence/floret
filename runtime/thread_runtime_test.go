@@ -4257,7 +4257,7 @@ func TestThreadServiceProjectsTypedCanonicalFailureInViewAndSummary(t *testing.T
 func waitThreadView(t *testing.T, service ThreadService, threadID identity.ThreadID, ready func(ThreadView) bool) ThreadView {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		view, err := service.View(t.Context(), threadID)
 		if err != nil {
 			t.Fatal(err)
@@ -4265,11 +4265,11 @@ func waitThreadView(t *testing.T, service ThreadService, threadID identity.Threa
 		if ready(view) {
 			return view
 		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("thread %s did not converge: turn=%s activity=%s outcome=%v failure=%+v", threadID, view.TurnID, view.Activity, view.LastOutcome, view.Failure)
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	view, err := service.View(t.Context(), threadID)
-	t.Fatalf("thread view did not converge: view=%#v failure=%+v err=%v", view, view.Failure, err)
-	return ThreadView{}
 }
 
 func waitThreadExecutionDone(t *testing.T, service *threadRuntimeService, threadID identity.ThreadID) {

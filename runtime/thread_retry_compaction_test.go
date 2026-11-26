@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/provider"
@@ -56,9 +58,15 @@ func TestRetryCompactionUsesSelectedCheckpointAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return waitThreadView(t, service, created.ThreadID, func(current ThreadView) bool {
-			return current.TurnID == view.TurnID && current.Activity == ThreadActivityIdle && current.LastOutcome != nil
-		})
+		waited, err := service.(ThreadWaiter).WaitThreads(ctx, WaitThreadsInput{ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute})
+		if err != nil || waited.Reason != ThreadWaitCompleted {
+			t.Fatalf("turn %s did not settle: reason=%s err=%v", view.TurnID, waited.Reason, err)
+		}
+		current, err := service.View(ctx, created.ThreadID)
+		if err != nil || current.TurnID != view.TurnID || current.Activity != ThreadActivityIdle || current.LastOutcome == nil {
+			t.Fatalf("want terminal turn %s: turn=%s activity=%s outcome=%v err=%v", view.TurnID, current.TurnID, current.Activity, current.LastOutcome, err)
+		}
+		return current
 	}
 	seedCompactionHistory(t, service, created.ThreadID)
 	first := wait(service.(ThreadContextCompactor).CompactContext(ctx, CompactContextInput{ThreadID: created.ThreadID, RequestKey: "first"}))
