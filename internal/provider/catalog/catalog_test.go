@@ -186,7 +186,7 @@ func TestBuiltInCatalogUsesAuditedProviderCapabilities(t *testing.T) {
 	}{
 		{provider: ProviderOpenAI, model: "gpt-5.4", context: 1050000, max: 128000},
 		{provider: ProviderGoogle, model: "gemini-3.1-pro-preview", context: 1048576, max: 65536},
-		{provider: ProviderGoogle, model: "gemini-2.5-flash", context: 1048576, max: 65536},
+		{provider: ProviderGoogle, model: "gemini-2.5-flash-lite", context: 1048576, max: 65536},
 		{provider: ProviderDeepSeek, model: "deepseek-flash", context: 1048576, max: 393216},
 		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1048576, max: 393216},
 		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1048576, max: 393216},

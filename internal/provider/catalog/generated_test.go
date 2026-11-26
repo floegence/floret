@@ -35,7 +35,7 @@ func TestCurrentAgentCatalog(t *testing.T) {
 		})
 	}
 	for pid, ids := range map[string][]string{
-		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1", "gpt-6.1-sol", "gpt-6.1-terra"},
+		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.2-astra-healthcare", "gpt-6.2-sol-healthcare"},
 		ProviderMoonshot: {"kimi-k2.6-thinking", "kimi-k2.5"},
 		ProviderGoogle:   {"gemini-3.1-flash-preview", "gemini-3.1-flash-live-preview"},
 		ProviderGroq:     {"qwen/qwen3-32b", "llama-3.3-70b-versatile"},
@@ -83,6 +83,19 @@ func TestMoonshotK31CatalogLimits(t *testing.T) {
 		model, ok := FindModel(ProviderMoonshot, id)
 		if !ok || model.ContextWindow != 1048576 || model.MaxTokens != 1048576 || model.Reasoning.DefaultLevel != provider.ReasoningLevelMax {
 			t.Fatalf("invalid reviewed model %s: %+v", id, model)
+		}
+	}
+}
+
+func TestGemini4ForegroundCapabilities(t *testing.T) {
+	for _, id := range []string{"gemini-4-neon", "gemini-4-hydrogen"} {
+		model, ok := FindModel(ProviderGoogle, id)
+		if !ok || model.ContextWindow != 1048576 || model.MaxTokens != 65536 || !slices.Equal(model.Input, []string{"text", "image"}) {
+			t.Fatalf("%s foreground limits/modalities: %+v", id, model)
+		}
+		levels := []provider.ReasoningLevel{provider.ReasoningLevelLow, provider.ReasoningLevelMedium, provider.ReasoningLevelHigh, provider.ReasoningLevelXHigh}
+		if !slices.Equal(model.Reasoning.SupportedLevels, levels) || model.Reasoning.DefaultLevel != provider.ReasoningLevelHigh || model.Reasoning.SupportsLevel(provider.ReasoningLevelOff) {
+			t.Fatalf("%s thinking controls: %+v", id, model.Reasoning)
 		}
 	}
 }

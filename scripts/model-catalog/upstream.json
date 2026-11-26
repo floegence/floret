@@ -1,4 +1,14 @@
 {
+  "provider_sources": {
+    "google": {
+      "sha256": "0e9a324d88b32ad6e14075997b9f1a0f71e367be0bebfb25b8404701ca03bd1f",
+      "source": "https://models.dev/api.json"
+    },
+    "openai": {
+      "sha256": "0e9a324d88b32ad6e14075997b9f1a0f71e367be0bebfb25b8404701ca03bd1f",
+      "source": "https://models.dev/api.json"
+    }
+  },
   "providers": {
     "anthropic": {
       "claude-fable-5": {
@@ -1541,45 +1551,6 @@
         "release_date": "2026-04-21",
         "tool_call": true
       },
-      "gemini-2.5-computer-use-preview-10-2025": {
-        "cost": {
-          "context_over_200k": {
-            "input": 2.5,
-            "output": 15
-          },
-          "input": 1.25,
-          "output": 10,
-          "tiers": [
-            {
-              "input": 2.5,
-              "output": 15,
-              "tier": {
-                "size": 200000,
-                "type": "context"
-              }
-            }
-          ]
-        },
-        "id": "gemini-2.5-computer-use-preview-10-2025",
-        "limit": {
-          "context": 128000,
-          "output": 64000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Gemini 2.5 Computer Use Preview 10-2025",
-        "reasoning": true,
-        "reasoning_options": [],
-        "release_date": "2025-10-07",
-        "tool_call": true
-      },
       "gemini-2.5-flash": {
         "cost": {
           "cache_read": 0.03,
@@ -1617,17 +1588,17 @@
           }
         ],
         "release_date": "2025-06-17",
+        "status": "deprecated",
         "tool_call": true
       },
       "gemini-2.5-flash-image": {
         "cost": {
-          "cache_read": 0.075,
           "input": 0.3,
-          "output": 30
+          "output": 2.5
         },
         "id": "gemini-2.5-flash-image",
         "limit": {
-          "context": 32768,
+          "context": 65536,
           "output": 32768
         },
         "modalities": {
@@ -1642,7 +1613,7 @@
         },
         "name": "Nano Banana",
         "reasoning": false,
-        "release_date": "2025-08-26",
+        "release_date": "2025-10-02",
         "status": "deprecated",
         "tool_call": false
       },
@@ -1682,7 +1653,7 @@
             "type": "budget_tokens"
           }
         ],
-        "release_date": "2025-06-17",
+        "release_date": "2025-07-22",
         "tool_call": true
       },
       "gemini-2.5-flash-preview-tts": {
@@ -1706,6 +1677,7 @@
         "name": "Gemini 2.5 Flash Preview TTS",
         "reasoning": false,
         "release_date": "2025-05-01",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-2.5-pro": {
@@ -1757,6 +1729,7 @@
           }
         ],
         "release_date": "2025-06-17",
+        "status": "deprecated",
         "tool_call": true
       },
       "gemini-2.5-pro-preview-tts": {
@@ -1780,6 +1753,7 @@
         "name": "Gemini 2.5 Pro Preview TTS",
         "reasoning": false,
         "release_date": "2025-05-01",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-3-flash-preview": {
@@ -1825,7 +1799,7 @@
       "gemini-3-pro-image": {
         "cost": {
           "input": 2,
-          "output": 120
+          "output": 12
         },
         "id": "gemini-3-pro-image",
         "limit": {
@@ -1859,7 +1833,7 @@
       "gemini-3.1-flash-image": {
         "cost": {
           "input": 0.5,
-          "output": 60
+          "output": 3
         },
         "id": "gemini-3.1-flash-image",
         "limit": {
@@ -1890,6 +1864,7 @@
           }
         ],
         "release_date": "2026-05-28",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-3.1-flash-lite": {
@@ -1930,12 +1905,13 @@
           }
         ],
         "release_date": "2026-05-07",
+        "status": "deprecated",
         "tool_call": true
       },
       "gemini-3.1-flash-lite-image": {
         "cost": {
           "input": 0.25,
-          "output": 30
+          "output": 1.5
         },
         "id": "gemini-3.1-flash-lite-image",
         "limit": {
@@ -1945,7 +1921,9 @@
         "modalities": {
           "input": [
             "text",
-            "image"
+            "image",
+            "video",
+            "pdf"
           ],
           "output": [
             "text",
@@ -1964,47 +1942,6 @@
           }
         ],
         "release_date": "2026-06-30",
-        "tool_call": true
-      },
-      "gemini-3.1-flash-lite-preview": {
-        "cost": {
-          "cache_read": 0.025,
-          "input": 0.25,
-          "input_audio": 0.5,
-          "output": 1.5
-        },
-        "id": "gemini-3.1-flash-lite-preview",
-        "limit": {
-          "context": 1048576,
-          "output": 65536
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "video",
-            "audio",
-            "pdf"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "Gemini 3.1 Flash Lite Preview",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2026-03-03",
-        "status": "deprecated",
         "tool_call": true
       },
       "gemini-3.1-flash-live-preview": {
@@ -2069,6 +2006,7 @@
         "reasoning": true,
         "reasoning_options": [],
         "release_date": "2026-04-15",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-3.1-pro-preview": {
@@ -2217,12 +2155,14 @@
           }
         ],
         "release_date": "2026-05-19",
+        "status": "deprecated",
         "tool_call": true
       },
       "gemini-3.5-flash-lite": {
         "cost": {
           "cache_read": 0.03,
           "input": 0.3,
+          "input_audio": 0.3,
           "output": 2.5
         },
         "id": "gemini-3.5-flash-lite",
@@ -2268,7 +2208,7 @@
         "id": "gemini-3.5-live-translate-preview",
         "limit": {
           "context": 16384,
-          "output": 32768
+          "output": 16384
         },
         "modalities": {
           "input": [
@@ -2361,6 +2301,7 @@
           }
         ],
         "release_date": "2026-08-13",
+        "status": "deprecated",
         "tool_call": true
       },
       "gemini-3.8-flash": {
@@ -2480,6 +2421,86 @@
         "release_date": "2026-11-10",
         "tool_call": true
       },
+      "gemini-4-hydrogen": {
+        "cost": {
+          "cache_read": 0.075,
+          "input": 1.5,
+          "input_audio": 1.5,
+          "output": 7.5
+        },
+        "id": "gemini-4-hydrogen",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Gemini 4 Hydrogen",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "release_date": "2026-11-12",
+        "tool_call": true
+      },
+      "gemini-4-neon": {
+        "cost": {
+          "cache_read": 0.15,
+          "input": 3,
+          "input_audio": 3,
+          "output": 15
+        },
+        "id": "gemini-4-neon",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Gemini 4 Neon",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "release_date": "2026-11-18",
+        "tool_call": true
+      },
       "gemini-embedding-001": {
         "cost": {
           "input": 0.15,
@@ -2500,7 +2521,8 @@
         },
         "name": "Gemini Embedding 001",
         "reasoning": false,
-        "release_date": "2025-05-20",
+        "release_date": "2025-07-14",
+        "status": "deprecated",
         "tool_call": false
       },
       "gemini-embedding-2": {
@@ -2567,13 +2589,14 @@
             ]
           }
         ],
-        "release_date": "2026-08-13",
+        "release_date": "2026-09-02",
         "tool_call": true
       },
       "gemini-flash-lite-latest": {
         "cost": {
           "cache_read": 0.03,
           "input": 0.3,
+          "input_audio": 0.3,
           "output": 2.5
         },
         "id": "gemini-flash-lite-latest",
@@ -2608,32 +2631,6 @@
         ],
         "release_date": "2026-07-21",
         "tool_call": true
-      },
-      "gemini-omni-flash-preview": {
-        "cost": {
-          "input": 1.5,
-          "output": 17.5
-        },
-        "id": "gemini-omni-flash-preview",
-        "limit": {
-          "context": 131072,
-          "output": 65536
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "video"
-          ],
-          "output": [
-            "video"
-          ]
-        },
-        "name": "Gemini Omni Flash Preview",
-        "reasoning": true,
-        "reasoning_options": [],
-        "release_date": "2026-06-30",
-        "tool_call": false
       },
       "gemini-pro-latest": {
         "cost": {
@@ -2690,6 +2687,10 @@
         "tool_call": true
       },
       "gemma-4-26b-a4b-it": {
+        "cost": {
+          "input": 0,
+          "output": 0
+        },
         "id": "gemma-4-26b-a4b-it",
         "limit": {
           "context": 262144,
@@ -2715,6 +2716,10 @@
         "tool_call": true
       },
       "gemma-4-31b-it": {
+        "cost": {
+          "input": 0,
+          "output": 0
+        },
         "id": "gemma-4-31b-it",
         "limit": {
           "context": 262144,
@@ -2740,13 +2745,9 @@
         "tool_call": true
       },
       "lyria-3-clip-preview": {
-        "cost": {
-          "input": 0,
-          "output": 0
-        },
         "id": "lyria-3-clip-preview",
         "limit": {
-          "context": 1048576,
+          "context": 131072,
           "output": 65536
         },
         "modalities": {
@@ -2765,13 +2766,9 @@
         "tool_call": false
       },
       "lyria-3-pro-preview": {
-        "cost": {
-          "input": 0,
-          "output": 0
-        },
         "id": "lyria-3-pro-preview",
         "limit": {
-          "context": 1048576,
+          "context": 131072,
           "output": 65536
         },
         "modalities": {
@@ -3364,6 +3361,11 @@
     },
     "openai": {
       "chatgpt-image-latest": {
+        "cost": {
+          "cache_read": 1.25,
+          "input": 5,
+          "output": 10
+        },
         "id": "chatgpt-image-latest",
         "limit": {
           "context": 0,
@@ -3385,80 +3387,6 @@
         "release_date": "2025-12-16",
         "status": "deprecated",
         "tool_call": false
-      },
-      "gpt-3.5-turbo": {
-        "cost": {
-          "cache_read": 0,
-          "input": 0.5,
-          "output": 1.5
-        },
-        "id": "gpt-3.5-turbo",
-        "limit": {
-          "context": 16385,
-          "output": 4096
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-3.5-turbo",
-        "reasoning": false,
-        "release_date": "2023-03-01",
-        "status": "deprecated",
-        "tool_call": false
-      },
-      "gpt-4": {
-        "cost": {
-          "input": 30,
-          "output": 60
-        },
-        "id": "gpt-4",
-        "limit": {
-          "context": 8192,
-          "output": 8192
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-4",
-        "reasoning": false,
-        "release_date": "2023-11-06",
-        "status": "deprecated",
-        "tool_call": true
-      },
-      "gpt-4-turbo": {
-        "cost": {
-          "input": 10,
-          "output": 30
-        },
-        "id": "gpt-4-turbo",
-        "limit": {
-          "context": 128000,
-          "output": 4096
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-4 Turbo",
-        "reasoning": false,
-        "release_date": "2023-11-06",
-        "status": "deprecated",
-        "tool_call": true
       },
       "gpt-4.1": {
         "cost": {
@@ -3484,6 +3412,7 @@
         "name": "GPT-4.1",
         "reasoning": false,
         "release_date": "2025-04-14",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-4.1-mini": {
@@ -3508,31 +3437,6 @@
           ]
         },
         "name": "GPT-4.1 mini",
-        "reasoning": false,
-        "release_date": "2025-04-14",
-        "tool_call": true
-      },
-      "gpt-4.1-nano": {
-        "cost": {
-          "cache_read": 0.025,
-          "input": 0.1,
-          "output": 0.4
-        },
-        "id": "gpt-4.1-nano",
-        "limit": {
-          "context": 1047576,
-          "output": 32768
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-4.1 nano",
         "reasoning": false,
         "release_date": "2025-04-14",
         "status": "deprecated",
@@ -3562,30 +3466,6 @@
         "name": "GPT-4o",
         "reasoning": false,
         "release_date": "2024-05-13",
-        "tool_call": true
-      },
-      "gpt-4o-2024-05-13": {
-        "cost": {
-          "input": 5,
-          "output": 15
-        },
-        "id": "gpt-4o-2024-05-13",
-        "limit": {
-          "context": 128000,
-          "output": 4096
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-4o (2024-05-13)",
-        "reasoning": false,
-        "release_date": "2024-05-13",
         "status": "deprecated",
         "tool_call": true
       },
@@ -3612,6 +3492,7 @@
         "name": "GPT-4o (2024-08-06)",
         "reasoning": false,
         "release_date": "2024-08-06",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-4o-2024-11-20": {
@@ -3637,6 +3518,7 @@
         "name": "GPT-4o (2024-11-20)",
         "reasoning": false,
         "release_date": "2024-11-20",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-4o-mini": {
@@ -3663,6 +3545,7 @@
         "name": "GPT-4o mini",
         "reasoning": false,
         "release_date": "2024-07-18",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5": {
@@ -3700,6 +3583,7 @@
           }
         ],
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5-mini": {
@@ -3737,6 +3621,7 @@
           }
         ],
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5-nano": {
@@ -3774,6 +3659,7 @@
           }
         ],
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5-pro": {
@@ -3807,6 +3693,7 @@
           }
         ],
         "release_date": "2025-10-06",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5.1": {
@@ -3844,6 +3731,7 @@
           }
         ],
         "release_date": "2025-11-13",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5.2": {
@@ -3956,45 +3844,7 @@
           }
         ],
         "release_date": "2026-02-05",
-        "tool_call": true
-      },
-      "gpt-5.3-codex-spark": {
-        "cost": {
-          "cache_read": 0.175,
-          "input": 1.75,
-          "output": 14
-        },
-        "id": "gpt-5.3-codex-spark",
-        "limit": {
-          "context": 128000,
-          "input": 100000,
-          "output": 32000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "pdf"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "GPT-5.3 Codex Spark",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "release_date": "2026-02-05",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5.4": {
@@ -4126,6 +3976,7 @@
           }
         ],
         "release_date": "2026-03-17",
+        "status": "deprecated",
         "tool_call": true
       },
       "gpt-5.4-pro": {
@@ -4576,6 +4427,61 @@
         "release_date": "2026-09-04",
         "tool_call": true
       },
+      "gpt-6-astra-healthcare": {
+        "cost": {
+          "cache_read": 1,
+          "context_over_200k": {
+            "cache_read": 2,
+            "input": 20,
+            "output": 75
+          },
+          "input": 10,
+          "output": 50,
+          "tiers": [
+            {
+              "cache_read": 2,
+              "input": 20,
+              "output": 75,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6-astra-healthcare",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6 Astra Healthcare",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-24",
+        "tool_call": true
+      },
       "gpt-6-luna": {
         "cost": {
           "cache_read": 0.01,
@@ -4752,6 +4658,61 @@
         "release_date": "2026-09-29",
         "tool_call": true
       },
+      "gpt-6.1-sol-healthcare": {
+        "cost": {
+          "cache_read": 0.1,
+          "context_over_200k": {
+            "cache_read": 0.2,
+            "input": 4,
+            "output": 15
+          },
+          "input": 2,
+          "output": 10,
+          "tiers": [
+            {
+              "cache_read": 0.2,
+              "input": 4,
+              "output": 15,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.1-sol-healthcare",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.1 Sol Healthcare",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-24",
+        "tool_call": true
+      },
       "gpt-6.1-terra": {
         "cost": {
           "cache_read": 0.05,
@@ -4809,6 +4770,238 @@
           }
         ],
         "release_date": "2026-10-26",
+        "tool_call": true
+      },
+      "gpt-6.2-astra": {
+        "cost": {
+          "cache_read": 0.4,
+          "cache_write": 10,
+          "context_over_200k": {
+            "cache_read": 0.8,
+            "cache_write": 20,
+            "input": 16,
+            "output": 60
+          },
+          "input": 8,
+          "output": 40,
+          "tiers": [
+            {
+              "cache_read": 0.8,
+              "cache_write": 20,
+              "input": 16,
+              "output": 60,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.2-astra",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.2 Astra",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-17",
+        "tool_call": true
+      },
+      "gpt-6.2-astra-healthcare": {
+        "cost": {
+          "cache_read": 0.4,
+          "cache_write": 10,
+          "context_over_200k": {
+            "cache_read": 0.8,
+            "cache_write": 20,
+            "input": 16,
+            "output": 60
+          },
+          "input": 8,
+          "output": 40,
+          "tiers": [
+            {
+              "cache_read": 0.8,
+              "cache_write": 20,
+              "input": 16,
+              "output": 60,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.2-astra-healthcare",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.2 Astra Healthcare",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-24",
+        "tool_call": true
+      },
+      "gpt-6.2-sol": {
+        "cost": {
+          "cache_read": 0.1,
+          "cache_write": 2.5,
+          "context_over_200k": {
+            "cache_read": 0.2,
+            "cache_write": 5,
+            "input": 4,
+            "output": 15
+          },
+          "input": 2,
+          "output": 10,
+          "tiers": [
+            {
+              "cache_read": 0.2,
+              "cache_write": 5,
+              "input": 4,
+              "output": 15,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.2-sol",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.2 Sol",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-17",
+        "tool_call": true
+      },
+      "gpt-6.2-sol-healthcare": {
+        "cost": {
+          "cache_read": 0.1,
+          "cache_write": 2.5,
+          "context_over_200k": {
+            "cache_read": 0.2,
+            "cache_write": 5,
+            "input": 4,
+            "output": 15
+          },
+          "input": 2,
+          "output": 10,
+          "tiers": [
+            {
+              "cache_read": 0.2,
+              "cache_write": 5,
+              "input": 4,
+              "output": 15,
+              "tier": {
+                "size": 272000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "gpt-6.2-sol-healthcare",
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "GPT-6.2 Sol Healthcare",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-11-24",
         "tool_call": true
       },
       "gpt-daybreak-blue-latest": {
@@ -4934,6 +5127,11 @@
         "tool_call": false
       },
       "gpt-image-1.5": {
+        "cost": {
+          "cache_read": 1.25,
+          "input": 5,
+          "output": 10
+        },
         "id": "gpt-image-1.5",
         "limit": {
           "context": 0,
@@ -4957,11 +5155,6 @@
         "tool_call": false
       },
       "gpt-image-2": {
-        "cost": {
-          "cache_read": 1.25,
-          "input": 5,
-          "output": 30
-        },
         "id": "gpt-image-2",
         "limit": {
           "context": 0,
@@ -4980,121 +5173,8 @@
         "name": "gpt-image-2",
         "reasoning": false,
         "release_date": "2026-04-21",
+        "status": "deprecated",
         "tool_call": false
-      },
-      "gpt-realtime-2.1": {
-        "cost": {
-          "cache_read": 0.4,
-          "input": 4,
-          "input_audio": 32,
-          "output": 24,
-          "output_audio": 64
-        },
-        "id": "gpt-realtime-2.1",
-        "limit": {
-          "context": 128000,
-          "input": 96000,
-          "output": 32000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "audio",
-            "image"
-          ],
-          "output": [
-            "text",
-            "audio"
-          ]
-        },
-        "name": "GPT-Realtime-2.1",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
-          }
-        ],
-        "release_date": "2026-07-06",
-        "tool_call": true
-      },
-      "o1": {
-        "cost": {
-          "cache_read": 7.5,
-          "input": 15,
-          "output": 60
-        },
-        "id": "o1",
-        "limit": {
-          "context": 200000,
-          "output": 100000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "pdf"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "o1",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2024-12-05",
-        "status": "deprecated",
-        "tool_call": true
-      },
-      "o1-pro": {
-        "cost": {
-          "input": 150,
-          "output": 600
-        },
-        "id": "o1-pro",
-        "limit": {
-          "context": 200000,
-          "output": 100000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "o1-pro",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2025-03-19",
-        "status": "deprecated",
-        "tool_call": true
       },
       "o3": {
         "cost": {
@@ -5130,40 +5210,6 @@
           }
         ],
         "release_date": "2025-04-16",
-        "tool_call": true
-      },
-      "o3-mini": {
-        "cost": {
-          "cache_read": 0.55,
-          "input": 1.1,
-          "output": 4.4
-        },
-        "id": "o3-mini",
-        "limit": {
-          "context": 200000,
-          "output": 100000
-        },
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "o3-mini",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2024-12-20",
         "status": "deprecated",
         "tool_call": true
       },
@@ -5199,41 +5245,6 @@
           }
         ],
         "release_date": "2025-06-10",
-        "tool_call": true
-      },
-      "o4-mini": {
-        "cost": {
-          "cache_read": 0.275,
-          "input": 1.1,
-          "output": 4.4
-        },
-        "id": "o4-mini",
-        "limit": {
-          "context": 200000,
-          "output": 100000
-        },
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "name": "o4-mini",
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
-          }
-        ],
-        "release_date": "2025-04-16",
         "status": "deprecated",
         "tool_call": true
       },

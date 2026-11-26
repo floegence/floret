@@ -91,3 +91,11 @@ Hosts must enforce their gateway's supported protocol when exposing these IDs.
 [Qwen4 Max Preview](https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview)
 is a limited Token Plan subscription preview, not the ordinary DashScope API
 inventory. It is not added to the general-purpose provider catalog.
+
+The November 25 Google/OpenAI refresh qualifies [Neon](https://ai.google.dev/gemini-api/docs/models/gemini-4-neon)
+and [Hydrogen](https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen)
+for foreground Chat: 1,048,576 shared tokens, 65,536 output, low/medium/high/xhigh
+effort (default high). Long decode is a separate API capability. Deprecated
+entries leave the selectable inventory. GPT-6.2 Astra/Sol tool calls require
+Responses per the [migration guide](https://developers.openai.com/api/docs/guides/latest-model);
+healthcare-specific endpoints are outside the general-purpose catalog.

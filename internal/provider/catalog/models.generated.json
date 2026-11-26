@@ -1,5 +1,15 @@
 {
   "checked_at": "2026-11-10",
+  "provider_sources": {
+    "google": {
+      "sha256": "0e9a324d88b32ad6e14075997b9f1a0f71e367be0bebfb25b8404701ca03bd1f",
+      "source": "https://models.dev/api.json"
+    },
+    "openai": {
+      "sha256": "0e9a324d88b32ad6e14075997b9f1a0f71e367be0bebfb25b8404701ca03bd1f",
+      "source": "https://models.dev/api.json"
+    }
+  },
   "providers": {
     "anthropic": [
       {
@@ -1370,6 +1380,82 @@
       {
         "context_window": 1048576,
         "cost": {
+          "cache_read_per_mtok": 0.15,
+          "input_per_mtok": 3,
+          "output_per_mtok": 15
+        },
+        "id": "gemini-4-neon",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 65536,
+        "name": "Gemini 4 Neon",
+        "reasoning": {
+          "default_level": "high",
+          "fixture": "openai_chat_reasoning_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-25",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/openai",
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "wire_shape": "openai_chat_reasoning_effort"
+        },
+        "release_date": "2026-11-18",
+        "status": ""
+      },
+      {
+        "context_window": 1048576,
+        "cost": {
+          "cache_read_per_mtok": 0.075,
+          "input_per_mtok": 1.5,
+          "output_per_mtok": 7.5
+        },
+        "id": "gemini-4-hydrogen",
+        "input": [
+          "text",
+          "image"
+        ],
+        "max_tokens": 65536,
+        "name": "Gemini 4 Hydrogen",
+        "reasoning": {
+          "default_level": "high",
+          "fixture": "openai_chat_reasoning_effort",
+          "kind": "effort",
+          "source_checked_at": "2026-11-25",
+          "source_urls": [
+            "https://ai.google.dev/gemini-api/docs/openai",
+            "https://ai.google.dev/gemini-api/docs/thinking",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
+          ],
+          "supported_levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "wire_shape": "openai_chat_reasoning_effort"
+        },
+        "release_date": "2026-11-12",
+        "status": ""
+      },
+      {
+        "context_window": 1048576,
+        "cost": {
           "cache_read_per_mtok": 0.1,
           "input_per_mtok": 2,
           "output_per_mtok": 10
@@ -1384,12 +1470,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1418,12 +1506,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1433,40 +1523,6 @@
           "wire_shape": "openai_chat_reasoning_effort"
         },
         "release_date": "2026-10-13",
-        "status": ""
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "cache_read_per_mtok": 0.075,
-          "input_per_mtok": 0.75,
-          "output_per_mtok": 3.75
-        },
-        "id": "gemini-3.8-flash",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 65536,
-        "name": "Gemini 3.8 Flash",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
-          ],
-          "supported_levels": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2026-09-02",
         "status": ""
       },
       {
@@ -1486,12 +1542,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1500,7 +1558,7 @@
           ],
           "wire_shape": "openai_chat_reasoning_effort"
         },
-        "release_date": "2026-08-13",
+        "release_date": "2026-09-02",
         "status": ""
       },
       {
@@ -1510,22 +1568,24 @@
           "input_per_mtok": 0.75,
           "output_per_mtok": 3.75
         },
-        "id": "gemini-3.7-flash",
+        "id": "gemini-3.8-flash",
         "input": [
           "text",
           "image"
         ],
         "max_tokens": 65536,
-        "name": "Gemini 3.7 Flash",
+        "name": "Gemini 3.8 Flash",
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1534,7 +1594,7 @@
           ],
           "wire_shape": "openai_chat_reasoning_effort"
         },
-        "release_date": "2026-08-13",
+        "release_date": "2026-09-02",
         "status": ""
       },
       {
@@ -1554,12 +1614,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "minimal",
@@ -1589,12 +1651,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "minimal",
@@ -1624,12 +1688,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "minimal",
@@ -1640,76 +1706,6 @@
           "wire_shape": "openai_chat_reasoning_effort"
         },
         "release_date": "2026-07-21",
-        "status": ""
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "cache_read_per_mtok": 0.15,
-          "input_per_mtok": 1.5,
-          "output_per_mtok": 9
-        },
-        "id": "gemini-3.5-flash",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 65536,
-        "name": "Gemini 3.5 Flash",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
-          ],
-          "supported_levels": [
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2026-05-19",
-        "status": ""
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "cache_read_per_mtok": 0.025,
-          "input_per_mtok": 0.25,
-          "output_per_mtok": 1.5
-        },
-        "id": "gemini-3.1-flash-lite",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 65536,
-        "name": "Gemini 3.1 Flash Lite",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
-          ],
-          "supported_levels": [
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2026-05-07",
         "status": ""
       },
       {
@@ -1729,12 +1725,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1763,12 +1761,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1797,12 +1797,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "low",
@@ -1831,12 +1833,14 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "supported_levels": [
             "minimal",
@@ -1848,40 +1852,6 @@
         },
         "release_date": "2025-12-17",
         "status": "beta"
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "cache_read_per_mtok": 0.125,
-          "input_per_mtok": 1.25,
-          "output_per_mtok": 10
-        },
-        "id": "gemini-2.5-pro",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 65536,
-        "name": "Gemini 2.5 Pro",
-        "reasoning": {
-          "budget": {
-            "max_tokens": 32768,
-            "min_tokens": 128
-          },
-          "budget_shape": "gemini_thinking_budget",
-          "fixture": "gemini_openai_thinking_budget",
-          "kind": "budget",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
-          ],
-          "wire_shape": "gemini_openai_thinking_budget"
-        },
-        "release_date": "2025-06-17",
-        "status": ""
       },
       {
         "context_window": 1048576,
@@ -1906,51 +1876,18 @@
           "disable_supported": true,
           "fixture": "gemini_openai_thinking_budget",
           "kind": "toggle_budget",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://ai.google.dev/gemini-api/docs/openai",
             "https://ai.google.dev/gemini-api/docs/thinking",
             "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+            "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
           ],
           "wire_shape": "gemini_openai_thinking_budget"
         },
-        "release_date": "2025-06-17",
-        "status": ""
-      },
-      {
-        "context_window": 1048576,
-        "cost": {
-          "cache_read_per_mtok": 0.03,
-          "input_per_mtok": 0.3,
-          "output_per_mtok": 2.5
-        },
-        "id": "gemini-2.5-flash",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 65536,
-        "name": "Gemini 2.5 Flash",
-        "reasoning": {
-          "budget": {
-            "max_tokens": 24576,
-            "min_tokens": 0
-          },
-          "budget_shape": "gemini_thinking_budget",
-          "disable_supported": true,
-          "fixture": "gemini_openai_thinking_budget",
-          "kind": "toggle_budget",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://ai.google.dev/gemini-api/docs/openai",
-            "https://ai.google.dev/gemini-api/docs/thinking",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-            "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
-          ],
-          "wire_shape": "gemini_openai_thinking_budget"
-        },
-        "release_date": "2025-06-17",
+        "release_date": "2025-07-22",
         "status": ""
       }
     ],
@@ -2331,7 +2268,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2374,7 +2311,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2415,7 +2352,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2456,7 +2393,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2498,7 +2435,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2540,7 +2477,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2582,7 +2519,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2621,7 +2558,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2659,7 +2596,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2684,46 +2621,6 @@
       {
         "context_window": 400000,
         "cost": {
-          "cache_read_per_mtok": 0.02,
-          "input_per_mtok": 0.2,
-          "output_per_mtok": 1.25
-        },
-        "id": "gpt-5.4-nano",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5.4 nano",
-        "reasoning": {
-          "disable_supported": true,
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "off",
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2026-03-17",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
           "cache_read_per_mtok": 0.075,
           "input_per_mtok": 0.75,
           "output_per_mtok": 4.5
@@ -2739,7 +2636,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2777,7 +2674,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2815,7 +2712,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2840,46 +2737,6 @@
       {
         "context_window": 400000,
         "cost": {
-          "cache_read_per_mtok": 0.175,
-          "input_per_mtok": 1.75,
-          "output_per_mtok": 14
-        },
-        "id": "gpt-5.3-codex",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5.3 Codex",
-        "reasoning": {
-          "disable_supported": true,
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "off",
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2026-02-05",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
           "input_per_mtok": 21,
           "output_per_mtok": 168
         },
@@ -2893,7 +2750,7 @@
         "reasoning": {
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2931,7 +2788,7 @@
           "disable_supported": true,
           "fixture": "openai_chat_reasoning_effort",
           "kind": "effort",
-          "source_checked_at": "2026-11-10",
+          "source_checked_at": "2026-11-25",
           "source_urls": [
             "https://developers.openai.com/api/docs/models",
             "https://developers.openai.com/api/docs/guides/reasoning",
@@ -2951,374 +2808,6 @@
           "wire_shape": "openai_chat_reasoning_effort"
         },
         "release_date": "2025-12-11",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
-          "cache_read_per_mtok": 0.125,
-          "input_per_mtok": 1.25,
-          "output_per_mtok": 10
-        },
-        "id": "gpt-5.1",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5.1",
-        "reasoning": {
-          "disable_supported": true,
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "off",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-11-13",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
-          "input_per_mtok": 15,
-          "output_per_mtok": 120
-        },
-        "id": "gpt-5-pro",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 272000,
-        "name": "GPT-5 Pro",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-10-06",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
-          "cache_read_per_mtok": 0.005,
-          "input_per_mtok": 0.05,
-          "output_per_mtok": 0.4
-        },
-        "id": "gpt-5-nano",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5 Nano",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-08-07",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
-          "cache_read_per_mtok": 0.025,
-          "input_per_mtok": 0.25,
-          "output_per_mtok": 2
-        },
-        "id": "gpt-5-mini",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5 Mini",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-08-07",
-        "status": ""
-      },
-      {
-        "context_window": 400000,
-        "cost": {
-          "cache_read_per_mtok": 0.125,
-          "input_per_mtok": 1.25,
-          "output_per_mtok": 10
-        },
-        "id": "gpt-5",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 128000,
-        "name": "GPT-5",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-08-07",
-        "status": ""
-      },
-      {
-        "context_window": 200000,
-        "cost": {
-          "input_per_mtok": 20,
-          "output_per_mtok": 80
-        },
-        "id": "o3-pro",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 100000,
-        "name": "o3-pro",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-06-10",
-        "status": ""
-      },
-      {
-        "context_window": 200000,
-        "cost": {
-          "cache_read_per_mtok": 0.5,
-          "input_per_mtok": 2,
-          "output_per_mtok": 8
-        },
-        "id": "o3",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 100000,
-        "name": "o3",
-        "reasoning": {
-          "fixture": "openai_chat_reasoning_effort",
-          "kind": "effort",
-          "source_checked_at": "2026-11-10",
-          "source_urls": [
-            "https://developers.openai.com/api/docs/models",
-            "https://developers.openai.com/api/docs/guides/reasoning",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6-luna",
-            "https://developers.openai.com/api/docs/models/gpt-6-sol",
-            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
-            "https://developers.openai.com/api/docs/guides/latest-model"
-          ],
-          "supported_levels": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "wire_shape": "openai_chat_reasoning_effort"
-        },
-        "release_date": "2025-04-16",
-        "status": ""
-      },
-      {
-        "context_window": 1047576,
-        "cost": {
-          "cache_read_per_mtok": 0.1,
-          "input_per_mtok": 0.4,
-          "output_per_mtok": 1.6
-        },
-        "id": "gpt-4.1-mini",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 32768,
-        "name": "GPT-4.1 mini",
-        "reasoning": {},
-        "release_date": "2025-04-14",
-        "status": ""
-      },
-      {
-        "context_window": 1047576,
-        "cost": {
-          "cache_read_per_mtok": 0.5,
-          "input_per_mtok": 2,
-          "output_per_mtok": 8
-        },
-        "id": "gpt-4.1",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 32768,
-        "name": "GPT-4.1",
-        "reasoning": {},
-        "release_date": "2025-04-14",
-        "status": ""
-      },
-      {
-        "context_window": 128000,
-        "cost": {
-          "cache_read_per_mtok": 1.25,
-          "input_per_mtok": 2.5,
-          "output_per_mtok": 10
-        },
-        "id": "gpt-4o-2024-11-20",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 16384,
-        "name": "GPT-4o (2024-11-20)",
-        "reasoning": {},
-        "release_date": "2024-11-20",
-        "status": ""
-      },
-      {
-        "context_window": 128000,
-        "cost": {
-          "cache_read_per_mtok": 1.25,
-          "input_per_mtok": 2.5,
-          "output_per_mtok": 10
-        },
-        "id": "gpt-4o-2024-08-06",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 16384,
-        "name": "GPT-4o (2024-08-06)",
-        "reasoning": {},
-        "release_date": "2024-08-06",
-        "status": ""
-      },
-      {
-        "context_window": 128000,
-        "cost": {
-          "cache_read_per_mtok": 0.075,
-          "input_per_mtok": 0.15,
-          "output_per_mtok": 0.6
-        },
-        "id": "gpt-4o-mini",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 16384,
-        "name": "GPT-4o mini",
-        "reasoning": {},
-        "release_date": "2024-07-18",
-        "status": ""
-      },
-      {
-        "context_window": 128000,
-        "cost": {
-          "cache_read_per_mtok": 1.25,
-          "input_per_mtok": 2.5,
-          "output_per_mtok": 10
-        },
-        "id": "gpt-4o",
-        "input": [
-          "text",
-          "image"
-        ],
-        "max_tokens": 16384,
-        "name": "GPT-4o",
-        "reasoning": {},
-        "release_date": "2024-05-13",
         "status": ""
       }
     ],

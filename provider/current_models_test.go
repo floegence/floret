@@ -18,6 +18,8 @@ func TestCurrentChatModelsThroughPublicGateway(t *testing.T) {
 		{"chatglm", "glm-5.2", config.ReasoningLevelOff},
 		{"google", "gemini-4-argon", config.ReasoningLevelMedium},
 		{"google", "gemini-4-carbon", config.ReasoningLevelHigh},
+		{"google", "gemini-4-neon", config.ReasoningLevelXHigh},
+		{"google", "gemini-4-hydrogen", config.ReasoningLevelXHigh},
 	} {
 		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

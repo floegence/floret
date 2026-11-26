@@ -1,5 +1,6 @@
 {
   "checked_at": "2026-11-10",
+  "provider_checked_at": {"google": "2026-11-25", "openai": "2026-11-25"},
   "exclude_pattern": "realtime|(?:^|-)live(?:-|$)|deep-research|computer-use|safeguard|character",
   "exclude": {
     "openai": [
@@ -7,7 +8,13 @@
       "gpt-daybreak-blue-latest",
       "gpt-daybreak-red-latest",
       "gpt-6.1-sol",
-      "gpt-6.1-terra"
+      "gpt-6.1-terra",
+      "gpt-6.2-astra",
+      "gpt-6.2-sol",
+      "gpt-6-astra-healthcare",
+      "gpt-6.1-sol-healthcare",
+      "gpt-6.2-astra-healthcare",
+      "gpt-6.2-sol-healthcare"
     ],
     "google": [],
     "xai": [
@@ -39,7 +46,9 @@
       "https://ai.google.dev/gemini-api/docs/openai",
       "https://ai.google.dev/gemini-api/docs/thinking",
       "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
-      "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+      "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+      "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+      "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon"
     ],
     "moonshot": [
       "https://platform.kimi.com/docs/models",
@@ -77,6 +86,8 @@
     ]
   },
   "models": {
+    "google/gemini-4-neon": {"reasoning": {"default_level": "high"}},
+    "google/gemini-4-hydrogen": {"reasoning": {"default_level": "high"}},
     "anthropic/claude-haiku-5-5": {
       "reasoning": {
         "default_level": "medium"
