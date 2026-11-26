@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.129.3
+
+- Preserve the Host execution gate when refitting a prepared model request or preparing a frozen retry. Suspending or closing the Host still prevents those handles from starting a provider stream.
+
 ## v7.129.2
 
 - During orderly shutdown, give a tool observing its own child dependencies a bounded opportunity to commit its result. Explicit Retry can retain that result; unknown effects remain ineligible for replay. No storage migration.

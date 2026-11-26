@@ -71,6 +71,39 @@ func (p *outputBudgetPrepared) PrepareRetry(ctx context.Context, next provider.R
 	return &outputBudgetPrepared{gateway: p.gateway, request: req, lifetime: p.lifetime}, ctx.Err()
 }
 
+func TestDerivedPreparedRequestsRespectSuspension(t *testing.T) {
+	for _, kind := range []string{"retry", "refit"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := t.Context()
+			gateway := &outputBudgetGateway{ScriptedGateway: florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "budget"}, provider.Capabilities{})}
+			host := &Host{}
+			adapter := agentGatewayAdapter{gateway: gateway, executionGate: host.requireExecution}
+			original, err := adapter.PrepareModelRequest(ctx, modelRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer original.Close()
+			request := original.(agentPreparedRequest)
+			var derived preparedModelRequest
+			if kind == "retry" {
+				derived, err = request.PrepareRetryModel(ctx, modelRequest{})
+			} else {
+				derived, err = request.WithMaxOutputTokensModel(ctx, 100)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer derived.Close()
+			if err := host.SuspendExecution(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := derived.StreamModel(ctx); !errors.Is(err, ErrExecutionDeferred) || len(gateway.Requests()) != 0 {
+				t.Fatalf("suspended stream: err=%v, provider requests=%d", err, len(gateway.Requests()))
+			}
+		})
+	}
+}
+
 func TestRequestOutputBudgetFreezesOnceAndSurvivesRetry(t *testing.T) {
 	g := &outputBudgetGateway{tokens: 68400, ScriptedGateway: florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "budget", StateCompatibilityKey: "budget:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported, OutputControl: provider.OutputControlClient}, florettest.Step{ReturnError: &provider.ProviderHTTPError{StatusCode: 500}}, florettest.Step{Events: []provider.Event{{Type: provider.EventUsage, Usage: provider.Usage{InputTokens: 69000, WindowInputTokens: 69000, Available: true}}, {Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}})}
 	retry := DefaultProviderRetryPolicy()

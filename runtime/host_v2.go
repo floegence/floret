@@ -1185,7 +1185,8 @@ func (request agentPreparedRequest) PrepareRetryModel(ctx context.Context, next 
 	if prepared == nil {
 		return nil, errors.New("provider returned nil retry preparation")
 	}
-	return agentPreparedRequest{prepared: prepared}, nil
+	request.prepared = prepared
+	return request, nil
 }
 
 func (request agentPreparedRequest) WithMaxOutputTokensModel(ctx context.Context, limit int64) (preparedModelRequest, error) {
@@ -1197,7 +1198,8 @@ func (request agentPreparedRequest) WithMaxOutputTokensModel(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	return agentPreparedRequest{prepared: next}, nil
+	request.prepared = next
+	return request, nil
 }
 
 func cloneOutputPart(part *provider.OutputPart) *provider.OutputPart {

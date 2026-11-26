@@ -407,6 +407,10 @@ and [queued question restart test](../../runtime/thread_ask_restart_test.go).
 
 ## Effects and shutdown
 
+Host suspension also gates the next stream on an already prepared model request,
+including a frozen retry or a handle with an adjusted output limit. Preparing a
+request does not reserve permission to dispatch it later.
+
 Tool effects cross a durable one-shot authorization boundary. If the outcome
 of a dispatched effect cannot be confirmed, Floret atomically closes every
 unfinished tool and interaction, clears provider continuation, and fails the
