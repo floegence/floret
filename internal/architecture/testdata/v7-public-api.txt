@@ -1308,6 +1308,7 @@ field ReadParentEventsInput.AfterEventID string
 field ReadParentEventsInput.BeforeEventID string
 field ReadParentEventsInput.Latest bool
 field ReadParentEventsInput.Limit int
+func ReadThreadSummaryPage func(ctx context.Context, reader github.com/floegence/floret/v7/runtime.ThreadSummaryReader, candidates []github.com/floegence/floret/v7/identity.ThreadID, authorize func(context.Context, []github.com/floegence/floret/v7/identity.ThreadID) ([]github.com/floegence/floret/v7/identity.ThreadID, error)) ([]github.com/floegence/floret/v7/runtime.ThreadSummaryResult, error)
 type ReorderQueueInput struct
 field ReorderQueueInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ReorderQueueInput.OrderedItemIDs []string tag="json:\"ordered_item_ids\""
@@ -1990,6 +1991,10 @@ field ThreadSummary.PendingInput *github.com/floegence/floret/v7/runtime.InputPr
 field ThreadSummary.LastItemAt time.Time tag="json:\"last_item_at,omitempty\""
 field ThreadSummary.LastItemPreview string tag="json:\"last_item_preview,omitempty\""
 type ThreadSummaryReader interface interface{Summary(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadSummary, error)}
+type ThreadSummaryResult struct
+field ThreadSummaryResult.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field ThreadSummaryResult.Summary github.com/floegence/floret/v7/runtime.ThreadSummary
+field ThreadSummaryResult.Err error
 type ThreadTextAppend struct
 field ThreadTextAppend.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadTextAppend.Text string tag="json:\"text\""

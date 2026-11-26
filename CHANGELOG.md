@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.127.0
+
+- Read bounded, host-ordered canonical thread summary pages with batch authorization before reading and before returning results. No storage or cursor migration.
+
 ## v7.126.0
 
 - Expose the originating tool call on model-authored Goal set and delete timeline facts, including existing journals. No storage or model-context change.

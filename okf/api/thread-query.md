@@ -7,6 +7,14 @@ tags: [api, threads, queries, references]
 
 # Canonical thread queries
 
+[`runtime.ReadThreadSummaryPage`](../../runtime/thread_summary_page.go) reads a
+host-ordered page through `ThreadSummaryReader`. It retains no cursor and accepts
+at most 200 distinct identities. Its callback must return a currently authorized
+subset. Invalid grants, authorization failure or cancellation fail the whole
+page. Read errors, including mismatched summary identity, return no summary;
+the publication check also protects these errors after revocation. The existing
+exact-scope `ThreadQueryReader` contract is unchanged.
+
 `QueryInput.IncludeContent` includes per-field `ContentRange` values. The
 optional `ThreadQueryContentReader` reads up to 8,000 UTF-8 bytes within the
 requested half-open range. `NextRead` is a complete request, not a handle.

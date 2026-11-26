@@ -536,6 +536,11 @@ five minutes within a 64 MiB global budget, survive append/completion/rename,
 and fail explicitly after scope changes, deletion, expiration or restart.
 See the [thread query contract](okf/api/thread-query.md) for keys and limits.
 
+For host-ordered candidates, `runtime.ReadThreadSummaryPage` reads up to 200
+distinct identities without requiring the workspace inventory. Supply a fresh
+batch authorization callback. Only identities admitted before the read and at
+publication can return summaries or per-thread read errors.
+
 `runtime.MessageReferenceThread` adds a lightweight admitted snapshot using
 `ReferencedThreadID`, `Label`, and `Text`. The provider receives the explicit
 referenced identity as data; hosts retain read authorization. Existing reference
