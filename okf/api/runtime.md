@@ -428,8 +428,8 @@ turn. The runtime checks scope and identities, then admits graceful Stop for
 each active target in parent-first order. Reuse the original snapshot on retry:
 its content-derived request key cannot be reused for different executions;
 refresh on conflict. Inspect the returned prefix even on error and read
-canonical outcomes for settlement. Idle source executions with outstanding
-host-work continuation authority are included. Suppression prevents automatic
+canonical outcomes for settlement. Idle source executions with pending automatic
+queue promotion or host-work continuation authority are included. Suppression prevents automatic
 continuation without deleting results or claiming the host process exited.
 See the [exact tree test](../../runtime/thread_subtree_stop_test.go).
 

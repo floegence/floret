@@ -24,7 +24,7 @@ func (r *MemoryRepo) HostWorks(ctx context.Context, id string) ([]HostWork, erro
 	return works, err
 }
 
-func (r *MemoryRepo) HostWorkStopSources(ctx context.Context, id string) ([]Entry, error) {
+func (r *MemoryRepo) HostWorkStopSources(ctx context.Context, id string) ([]HostWorkExecution, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	meta, ok := r.threads[id]
@@ -35,20 +35,20 @@ func (r *MemoryRepo) HostWorkStopSources(ctx context.Context, id string) ([]Entr
 	if err != nil {
 		return nil, err
 	}
-	return hostWorkStops(path, id, "", "", true)
+	return hostWorkSources(path, true)
 }
 
-func (r *BackendRepo) HostWorkStopSources(ctx context.Context, id string) ([]Entry, error) {
+func (r *BackendRepo) HostWorkStopSources(ctx context.Context, id string) ([]HostWorkExecution, error) {
 	if err := r.prepareSparseSources(ctx, id); err != nil {
 		return nil, err
 	}
-	var sources []Entry
+	var sources []HostWorkExecution
 	err := r.canonicalThreadView(ctx, id, func(tx spi.ReadTx, meta ThreadMeta) error {
 		path, err := canonicalHostWorkPath(ctx, tx, meta)
 		if err != nil {
 			return err
 		}
-		sources, err = hostWorkStops(path, id, "", "", true)
+		sources, err = hostWorkSources(path, true)
 		return err
 	}, func(memory *MemoryRepo) error {
 		var err error
@@ -58,7 +58,7 @@ func (r *BackendRepo) HostWorkStopSources(ctx context.Context, id string) ([]Ent
 	return sources, err
 }
 
-func (r *MemoryRepo) StopHostWork(ctx context.Context, id, turn, run string) error {
+func (r *MemoryRepo) StopHostWork(ctx context.Context, id string, stop HostWorkStop) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	meta, ok := r.threads[id]
@@ -69,12 +69,9 @@ func (r *MemoryRepo) StopHostWork(ctx context.Context, id, turn, run string) err
 	if err != nil {
 		return err
 	}
-	entries, err := hostWorkStops(path, id, turn, run, turn != "")
+	entries, err := hostWorkStops(path, id, stop)
 	if err != nil {
 		return err
-	}
-	if turn != "" && len(entries) == 0 {
-		return ErrRequestConflict
 	}
 	checkpoint := r.checkpointJournalAppendLocked(id)
 	for _, entry := range entries {
@@ -86,7 +83,7 @@ func (r *MemoryRepo) StopHostWork(ctx context.Context, id, turn, run string) err
 	return nil
 }
 
-func (r *BackendRepo) StopHostWork(ctx context.Context, id, turn, run string) error {
+func (r *BackendRepo) StopHostWork(ctx context.Context, id string, stop HostWorkStop) error {
 	if err := r.prepareSparseSources(ctx, id); err != nil {
 		return err
 	}
@@ -95,12 +92,9 @@ func (r *BackendRepo) StopHostWork(ctx context.Context, id, turn, run string) er
 		if err != nil {
 			return err
 		}
-		entries, err := hostWorkStops(path, id, turn, run, turn != "")
+		entries, err := hostWorkStops(path, id, stop)
 		if err != nil {
 			return err
-		}
-		if turn != "" && len(entries) == 0 {
-			return ErrRequestConflict
 		}
 		for _, entry := range entries {
 			if _, err := m.appendFact(entry, AppendOptions{}, true); err != nil {
@@ -108,7 +102,7 @@ func (r *BackendRepo) StopHostWork(ctx context.Context, id, turn, run string) er
 			}
 		}
 		return nil
-	}, func(memory *MemoryRepo) error { return memory.StopHostWork(ctx, id, turn, run) })
+	}, func(memory *MemoryRepo) error { return memory.StopHostWork(ctx, id, stop) })
 }
 func (r *MemoryRepo) BindHostWork(ctx context.Context, w HostWork) (HostWork, error) {
 	r.mu.Lock()

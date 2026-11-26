@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
@@ -71,6 +72,43 @@ func TestHostWorkTransactionalSettlementAndFork(t *testing.T) {
 	changed.ThreadID = fork.ID
 	if _, err := repo.SettleHostWork(t.Context(), changed); !errors.Is(err, ErrInvalidThreadAuthority) {
 		t.Fatalf("fork took execution ownership: %v", err)
+	}
+}
+
+func TestExactHostWorkStopCannotCoverAnotherRunOfSameTurn(t *testing.T) {
+	_, _, attempt := canonicalSettlementFixture(t, true)
+	var path []Entry
+	for _, run := range []string{"old-run", "next-run"} {
+		inv := attempt.Invocation
+		inv.RunID = run
+		w := HostWork{ID: run, State: "bound", ExecutorID: "executor", Invocation: inv}
+		raw, err := json.Marshal(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path = append(path, Entry{ID: hostWorkEntryID(w.ID, false), Type: EntryHostWork, ThreadID: inv.ThreadID, TurnID: inv.TurnID, RunID: inv.RunID, Payload: raw})
+	}
+	stop := HostWorkStop{TurnID: attempt.Invocation.TurnID, Runs: []string{"old-run"}}
+	entries, err := hostWorkStops(path, attempt.Invocation.ThreadID, stop)
+	if !errors.Is(err, ErrRequestConflict) || len(entries) != 0 {
+		t.Fatalf("old-run request yielded turn-wide cancellation: entries=%v err=%v", len(entries), err)
+	}
+	stop.Runs = []string{"next-run", "old-run"}
+	entries, err = hostWorkStops(path, attempt.Invocation.ThreadID, stop)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("complete set: entries=%v err=%v", len(entries), err)
+	}
+	active := append(path, Entry{Type: EntryTurnMarker, TurnID: "continuation", TurnStatus: TurnStarted})
+	if entries, err = hostWorkStops(active, attempt.Invocation.ThreadID, stop); !errors.Is(err, ErrRequestConflict) || len(entries) != 0 {
+		t.Fatalf("suppression after promotion: entries=%v err=%v", len(entries), err)
+	}
+	stop.AdmittedTurnID = "continuation"
+	if entries, err = hostWorkStops(active, attempt.Invocation.ThreadID, stop); err != nil || len(entries) != 1 || entries[0].TurnID != stop.TurnID {
+		t.Fatalf("admitted overlap: entries=%v err=%v", entries, err)
+	}
+	stop.AdmittedTurnID = "other"
+	if entries, err = hostWorkStops(active, attempt.Invocation.ThreadID, stop); !errors.Is(err, ErrRequestConflict) || len(entries) != 0 {
+		t.Fatalf("replacement overlap: entries=%v err=%v", entries, err)
 	}
 }
 

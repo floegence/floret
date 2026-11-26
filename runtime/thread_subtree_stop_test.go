@@ -108,6 +108,92 @@ type subtreeStopFault struct {
 	err   error
 }
 
+type pausedPromotionIDs struct {
+	IDSource
+	entered, resume chan struct{}
+	once            sync.Once
+}
+
+func (p *pausedPromotionIDs) NewTurnID() (identity.TurnID, error) {
+	p.once.Do(func() { close(p.entered); <-p.resume })
+	return p.IDSource.NewTurnID()
+}
+
+func TestExactStopBetweenCompletionAndAutomaticPromotion(t *testing.T) {
+	for _, order := range []string{"stop-first", "promotion-first"} {
+		t.Run(order, func(t *testing.T) {
+			ctx := t.Context()
+			gateway := newBlockingThreadGateway()
+			h, service := testThreadService(t, gateway)
+			v, err := service.Create(ctx, CreateThreadInput{RequestKey: "create"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"first", "queued"} {
+				v, err = service.Send(ctx, SendInput{ThreadID: v.ThreadID, RequestKey: RequestKey(key), Input: UserInput{Text: key}})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			<-gateway.started
+			if len(v.Queue) != 1 {
+				t.Fatalf("queue=%+v", v.Queue)
+			}
+			// Pause allocation for the automatic turn, outside the actor lock.
+			h.idMu.Lock()
+			pause := &pausedPromotionIDs{IDSource: h.idSource, entered: make(chan struct{}), resume: make(chan struct{})}
+			h.idSource = pause
+			h.idMu.Unlock()
+			resume := sync.OnceFunc(func() { close(pause.resume) })
+			defer resume()
+			close(gateway.release)
+			<-pause.entered
+			controller := service.(ThreadSubtreeStopper)
+			snapshot, err := controller.SubtreeExecutions(ctx, v.ThreadID)
+			if err != nil || len(snapshot.Targets) != 1 || snapshot.Targets[0].RunID != v.RunID {
+				t.Fatalf("pending promotion=%+v %v", snapshot, err)
+			}
+			if order == "promotion-first" {
+				resume()
+				waitThreadView(t, service, v.ThreadID, func(cur ThreadView) bool { return cur.Activity == ThreadActivityIdle && cur.TurnID != v.TurnID })
+				out, err := controller.StopSubtree(ctx, snapshot)
+				if !errors.Is(err, ErrRequestConflict) || len(out.Admitted)+len(out.AlreadyEnded)+len(out.Suppressed) != 0 {
+					t.Fatalf("obsolete source=%+v %v", out, err)
+				}
+				current, err := service.View(ctx, v.ThreadID)
+				if err != nil || current.TurnID == v.TurnID || current.Activity != ThreadActivityIdle || current.LastOutcome == nil || *current.LastOutcome != TurnOutcomeCompleted || len(current.Queue) != 0 || gateway.requests.Load() != 2 {
+					t.Fatalf("promotion: requests=%d view=%+v err=%v", gateway.requests.Load(), current, err)
+				}
+				return
+			}
+			svc := service.(*threadRuntimeService)
+			actor := svc.runtime(v.ThreadID)
+			var grant *threadQueuePromotion
+			if err := actor.apply(ctx, func() error { grant = actor.state.autoPromotion; return nil }); err != nil || grant == nil {
+				t.Fatalf("missing promotion: %v", err)
+			}
+			out, err := controller.StopSubtree(ctx, snapshot)
+			if err != nil || len(out.Suppressed) != 1 || len(out.Admitted) != 0 {
+				t.Fatalf("suppression=%+v %v", out, err)
+			}
+			resume()
+			// Even a duplicate callback with the original grant cannot consume the input.
+			svc.startNextQueued(actor, grant)
+			current, err := service.View(ctx, v.ThreadID)
+			if err != nil || gateway.requests.Load() != 1 || current.Activity != ThreadActivityIdle || current.LastOutcome == nil || *current.LastOutcome != TurnOutcomeCompleted || len(current.Queue) != 1 {
+				t.Fatalf("stale promotion: requests=%d outcome=%v queue=%v err=%v", gateway.requests.Load(), current.LastOutcome, current.Queue, err)
+			}
+			if _, err := service.PromoteQueued(ctx, PromoteQueuedInput{ThreadID: v.ThreadID, QueueItemID: current.Queue[0].ID, RequestKey: "explicit"}); err != nil {
+				t.Fatal(err)
+			}
+			waitThreadView(t, service, v.ThreadID, func(cur ThreadView) bool { return cur.Activity == ThreadActivityIdle && cur.TurnID != v.TurnID })
+			if gateway.requests.Load() != 2 {
+				t.Fatalf("explicit promotion requests=%d", gateway.requests.Load())
+			}
+		})
+	}
+}
+
 func (r *subtreeStopFault) CancelTurn(ctx context.Context, req sessiontree.CancelTurnRequest) (sessiontree.CancelTurnResult, error) {
 	if req.RequestOnly {
 		r.mu.Lock()

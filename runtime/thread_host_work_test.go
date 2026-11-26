@@ -6,27 +6,48 @@ import (
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+type failFirstWorkStop struct {
+	*internalstorage.BackendKernel
+	once sync.Once
+	err  error
+}
+
+func (r *failFirstWorkStop) StopHostWork(ctx context.Context, thread string, stop sessiontree.HostWorkStop) error {
+	var err error
+	r.once.Do(func() { err = r.err })
+	if err != nil {
+		return err
+	}
+	return r.BackendKernel.StopHostWork(ctx, thread, stop)
+}
+
 func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
-	for _, mode := range []string{"unknown", "completed", "stopped", "subtree_stopped", "suspended", "overlapping", "completion_before_dispatch_failure"} {
+	for _, mode := range []string{"unknown", "completed", "stopped", "subtree_stopped", "queue_stop_failure", "suspended", "overlapping", "overlapping_stop", "completion_before_dispatch_failure"} {
 		complete := mode != "unknown"
 		t.Run(mode, func(t *testing.T) {
 			var completionGate chan struct{}
-			if mode == "overlapping" {
+			var sourceGate chan struct{}
+			if mode == "queue_stop_failure" {
+				sourceGate = make(chan struct{})
+			}
+			if mode == "overlapping" || mode == "overlapping_stop" {
 				completionGate = make(chan struct{})
 			}
 			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "host-work", StateCompatibilityKey: "host-work"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 				florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "shell-1", Name: "shell", Args: "{}"}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
-				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "The command is running."}, {Type: provider.EventDone, Reason: "stop"}}},
+				florettest.Step{BlockUntil: sourceGate, Events: []provider.Event{{Type: provider.EventDelta, Text: "The command is running."}, {Type: provider.EventDone, Reason: "stop"}}},
 				florettest.Step{BlockUntil: completionGate, Events: []provider.Event{{Type: provider.EventDelta, Text: "Observed completion."}, {Type: provider.EventDone, Reason: "stop"}}},
 				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Retained result."}, {Type: provider.EventDone, Reason: "stop"}}})
 			var service ThreadService
@@ -52,10 +73,14 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := t.TempDir() + "/state.db"
+			writeFailure := errors.New("host-work cancellation write failed")
 			open := func() *Host {
 				h, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if mode == "queue_stop_failure" {
+					h.store.repo = &failFirstWorkStop{BackendKernel: h.store.repo.(*internalstorage.BackendKernel), err: writeFailure}
 				}
 				service, err = h.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
 				if err != nil {
@@ -115,6 +140,50 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				}
 				return
 			}
+			if mode == "queue_stop_failure" {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if err := gateway.WaitForRequests(ctx, 2); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.Send(ctx, SendInput{ThreadID: created.ThreadID, RequestKey: "queued", Input: UserInput{Text: "queue input"}}); err != nil {
+					t.Fatal(err)
+				}
+				host.idMu.Lock()
+				pause := &pausedPromotionIDs{IDSource: host.idSource, entered: make(chan struct{}), resume: make(chan struct{})}
+				host.idSource = pause
+				host.idMu.Unlock()
+				defer close(pause.resume)
+				close(sourceGate)
+				select {
+				case <-pause.entered:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				controller := service.(ThreadSubtreeStopper)
+				frozen, err := controller.SubtreeExecutions(ctx, created.ThreadID)
+				if err != nil || len(frozen.Targets) != 1 {
+					t.Fatalf("combined grant=%+v %v", frozen, err)
+				}
+				out, err := controller.StopSubtree(ctx, frozen)
+				if !errors.Is(err, writeFailure) || len(out.Suppressed)+len(out.Admitted)+len(out.AlreadyEnded) != 0 {
+					t.Fatalf("after failure=%+v %v", out, err)
+				}
+				actor := service.(*threadRuntimeService).runtime(created.ThreadID)
+				if err := actor.apply(ctx, func() error {
+					if actor.state.autoPromotion == nil {
+						return errors.New("queue grant lost on failed write")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				out, err = controller.StopSubtree(ctx, frozen)
+				if err != nil || len(out.Suppressed) != 1 || out.Suppressed[0] != frozen.Targets[0] || len(out.Admitted)+len(out.AlreadyEnded) != 0 {
+					t.Fatalf("frozen retry=%+v %v", out, err)
+				}
+				return
+			}
 			wait(2)
 			var frozen StopSubtreeInput
 			if mode == "subtree_stopped" {
@@ -134,14 +203,30 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if mode == "overlapping" {
-				if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "overlap", Input: UserInput{Text: "continue while the command runs"}}); err != nil {
+			if mode == "overlapping" || mode == "overlapping_stop" {
+				v, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "overlap", Input: UserInput{Text: "continue while the command runs"}})
+				if err != nil {
 					t.Fatal(err)
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
 				if err := gateway.WaitForRequests(ctx, 3); err != nil {
 					t.Fatal(err)
+				}
+				if mode == "overlapping_stop" {
+					stopper := service.(ThreadSubtreeStopper)
+					frozen, err = stopper.SubtreeExecutions(ctx, created.ThreadID)
+					if err != nil || len(frozen.Targets) != 2 {
+						t.Fatalf("overlapping inventory=%+v %v", frozen, err)
+					}
+					out, err := stopper.StopSubtree(ctx, frozen)
+					if err != nil || len(out.Suppressed) != 1 || out.Suppressed[0].RunID != binding.RunID || len(out.Admitted) != 1 || out.Admitted[0].RunID != v.RunID {
+						t.Fatalf("overlapping stop=%+v %v", out, err)
+					}
+					settled := waitThreadView(t, service, v.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+					if settled.LastOutcome == nil || *settled.LastOutcome != TurnOutcomeCancelled {
+						t.Fatalf("settled outcome=%v", settled.LastOutcome)
+					}
 				}
 			}
 			if complete {
@@ -153,6 +238,12 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				if mode == "overlapping" {
 					close(completionGate)
 					wait(3)
+				} else if mode == "overlapping_stop" {
+					close(completionGate)
+					service.(*threadRuntimeService).continueHostWork(created.ThreadID)
+					if len(gateway.Requests()) != 3 {
+						t.Fatal("stopped old source started another execution")
+					}
 				} else if mode != "stopped" && mode != "subtree_stopped" && mode != "suspended" {
 					wait(3)
 				} else {
@@ -169,6 +260,12 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			host = open()
+			if mode == "overlapping_stop" {
+				replayed, err := service.(ThreadSubtreeStopper).StopSubtree(t.Context(), frozen)
+				if err != nil || len(replayed.AlreadyEnded) != 2 || len(replayed.Admitted)+len(replayed.Suppressed) != 0 {
+					t.Fatalf("overlap after restart=%+v %v", replayed, err)
+				}
+			}
 			works, err := service.(ThreadHostWorkService).ListHostWork(t.Context(), created.ThreadID)
 			if err != nil {
 				t.Fatal(err)

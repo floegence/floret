@@ -53,6 +53,9 @@ type threadRuntimeState struct {
 }
 
 type threadRuntimeData struct {
+	// Only natural completion can grant one pending automatic queue promotion.
+	// The callback is process-local; neither an idle read nor restart grants it.
+	autoPromotion       *threadQueuePromotion
 	messageEditKey      string
 	contextErr          error
 	steering            []string
@@ -125,6 +128,7 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	}
 	runtime.finishLiveTextSegment()
 	previousExecution := runtime.state.executionDone
+	runtime.state.autoPromotion = nil
 	runtime.state.turnID = input.turnID
 	runtime.state.runID = input.runID
 	runtime.state.logicalRequestID = input.logicalRequestID

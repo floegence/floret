@@ -211,9 +211,9 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 		}
 		if idle {
 			if queued != nil {
-				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, mode, queued)
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, mode, nil, queued)
 			} else {
-				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, "", "", mode)
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, "", "", mode, nil)
 			}
 			if errors.Is(err, ErrThreadBusy) {
 				continue

@@ -619,9 +619,10 @@ targets conflict without substituting new work. A matching target that has
 already ended needs no cancellation. Admission runs in parent-first order;
 an error may follow confirmed admissions. Read current state after the call:
 admission does not confirm settlement or roll back external effects. In addition
-to active executions the snapshot includes source executions that can still
-start a host-work continuation. `Suppressed` confirms that authority was
-revoked, not that a process exited. Pending queue entries are retained.
+to active executions the snapshot includes executions that can still promote a
+queued input or start a host-work continuation. `Suppressed` confirms that
+automatic execution was prevented, not that a process exited. Queue entries
+remain available for explicit promotion.
 
 Cancelled and interrupted terminal facts produce typed model-only interruption
 context after retained partial assistant output. It states that output may be

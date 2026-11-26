@@ -1760,7 +1760,7 @@ func (service *threadRuntimeService) promoteQueuedCommand(ctx context.Context, i
 	if replayed {
 		return service.currentResult(actor, mode), nil
 	}
-	result, err := service.startAcceptedResult(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key, mode)
+	result, err := service.startAcceptedResult(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key, mode, nil)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -2924,6 +2924,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	read, refreshErr := service.readTerminalCanonical(context.Background(), actor)
 	var canonical canonicalThreadView
 	startQueue := false
+	var promotion *threadQueuePromotion
 	changed := false
 	for {
 		retry := false
@@ -2991,6 +2992,10 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			}
 			view := actor.state.view
 			startQueue = view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && view.Cancellation == nil
+			if startQueue && completed.Status == TurnStatusCompleted && runErr == nil && len(view.Queue) > 0 && actor.state.messageEditKey == "" {
+				promotion = &threadQueuePromotion{ThreadExecutionTarget{view.ThreadID, turnID, runID}, view.Queue[0]}
+				actor.state.autoPromotion = promotion
+			}
 			changed = true
 			return nil
 		})
@@ -3003,7 +3008,9 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		return
 	}
 	if completed.Status == TurnStatusCompleted && runErr == nil && startQueue {
-		service.startNextQueued(actor)
+		if promotion != nil {
+			go service.startNextQueued(actor, promotion)
+		}
 		go service.continueHostWork(identity.ThreadID(actor.threadID))
 	}
 }
@@ -3588,7 +3595,7 @@ func (service *threadRuntimeService) cancelResult(ctx context.Context, in Cancel
 	}
 	if current.Activity != ThreadActivityActive {
 		if repo, ok := service.host.store.repo.(sessiontree.HostWorkRepo); ok {
-			if err := repo.StopHostWork(ctx, threadID.String(), "", ""); err != nil {
+			if err := repo.StopHostWork(ctx, threadID.String(), sessiontree.HostWorkStop{}); err != nil {
 				return ThreadView{}, false, runtimeHostError(err)
 			}
 			service.refreshCanonical(threadID, "")
@@ -4478,44 +4485,35 @@ func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceS
 	return subscription, nil
 }
 
-func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) {
+type threadQueuePromotion struct {
+	source ThreadExecutionTarget
+	next   QueuedInput
+}
+
+func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState, promotion *threadQueuePromotion) {
 	if service.host.requireExecution() != nil {
 		return
 	}
-	var next QueuedInput
-	var threadID identity.ThreadID
-	_ = actor.apply(context.Background(), func() error {
-		if actor.state.messageEditKey != "" || actor.state.view.Activity == ThreadActivityActive || len(actor.state.view.Queue) == 0 {
-			return nil
-		}
-		next = actor.state.view.Queue[0]
-		threadID = actor.state.view.ThreadID
-		return nil
-	})
-	if next.RequestKey == "" || threadID == "" {
-		return
-	}
-	go func() {
-		if _, err := service.startAccepted(context.Background(), actor, threadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID); err != nil {
-			_ = actor.apply(context.Background(), func() error {
-				if actor.state.messageEditKey != "" || actor.state.view.Activity == ThreadActivityActive {
-					return nil
-				}
-				actor.state.view.ViewVersion++
-				actor.state.view.Activity = ThreadActivityIdle
-				outcome := TurnOutcomeFailed
-				actor.state.view.LastOutcome = &outcome
+	next := promotion.next
+	if _, err := service.startAcceptedResult(context.Background(), actor, promotion.source.ThreadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID, threadFullResult, promotion); err != nil {
+		_ = actor.apply(context.Background(), func() error {
+			if actor.state.autoPromotion != promotion {
 				return nil
-			})
-		}
-	}()
+			}
+			actor.state.autoPromotion = nil
+			if actor.state.messageEditKey != "" || actor.state.view.Activity == ThreadActivityActive {
+				return nil
+			}
+			actor.state.view.ViewVersion++
+			actor.state.view.Activity = ThreadActivityIdle
+			outcome := TurnOutcomeFailed
+			actor.state.view.LastOutcome = &outcome
+			return nil
+		})
+	}
 }
 
-func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
-	return service.startAcceptedResult(ctx, actor, threadID, input, supplemental, requestKey, promotedQueueID, promotionRequestKey, threadFullResult, steeringQueued...)
-}
-
-func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, mode threadResultMode, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
+func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, mode threadResultMode, auto *threadQueuePromotion, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -4556,6 +4554,9 @@ func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, ac
 	var result ThreadView
 	var previousExecution <-chan struct{}
 	err = actor.apply(ctx, func() error {
+		if auto != nil && (actor.state.autoPromotion != auto || actor.state.view.TurnID != auto.source.TurnID || actor.state.view.RunID != auto.source.RunID) {
+			return ErrRequestConflict
+		}
 		if actor.state.messageEditKey != "" {
 			return ErrThreadBusy
 		}

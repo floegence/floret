@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -56,8 +57,8 @@ type HostWorkSettlement struct {
 }
 
 type HostWorkRepo interface {
-	HostWorkStopSources(context.Context, string) ([]Entry, error)
-	StopHostWork(ctx context.Context, thread, turn, run string) error
+	HostWorkStopSources(context.Context, string) ([]HostWorkExecution, error)
+	StopHostWork(ctx context.Context, thread string, stop HostWorkStop) error
 	BindHostWork(context.Context, HostWork) (HostWork, error)
 	SettleHostWork(context.Context, HostWorkSettlement) (HostWork, error)
 	HostWorks(context.Context, string) ([]HostWork, error)
@@ -66,7 +67,18 @@ type HostWorkRepo interface {
 	HostWorkContinuationKey(context.Context, string) (string, bool, error)
 }
 
-func hostWorkStops(path []Entry, thread, turn, run string, continuationsOnly bool) ([]Entry, error) {
+type HostWorkExecution struct{ TurnID, RunID string }
+
+type HostWorkStop struct {
+	TurnID      string
+	Runs        []string
+	SnapshotKey string
+	// If nonempty, the caller already admitted cancellation of this exact
+	// overlapping turn. It is never permission to stop a replacement.
+	AdmittedTurnID string
+}
+
+func hostWorkSources(path []Entry, continuationsOnly bool) ([]HostWorkExecution, error) {
 	works, admitted, err := hostWorksFromPath(path)
 	if err != nil {
 		return nil, err
@@ -77,19 +89,71 @@ func hostWorkStops(path []Entry, thread, turn, run string, continuationsOnly boo
 			stopped[entry.TurnID] = true
 		}
 	}
-	var entries []Entry
+	var sources []HostWorkExecution
+	seen := map[HostWorkExecution]bool{}
 	for _, w := range works {
-		if turn != "" && (w.Invocation.TurnID != turn || w.Invocation.RunID != run) {
-			continue
-		}
 		if continuationsOnly && w.State != "bound" && !(w.State == "completed" && w.Notify) {
 			continue
 		}
 		if w.Inherited || admitted[w.ID] || stopped[w.Invocation.TurnID] {
 			continue
 		}
-		stopped[w.Invocation.TurnID] = true
-		entries = append(entries, Entry{ID: "host-work-stop:" + StableHash(w.Invocation.TurnID)[:32], ThreadID: thread, TurnID: w.Invocation.TurnID, RunID: w.Invocation.RunID, Type: EntryCancelRequested, Metadata: map[string]string{"cancellation_source": "user_stop", "cancellation_mode": "immediate"}})
+		source := HostWorkExecution{w.Invocation.TurnID, w.Invocation.RunID}
+		if !seen[source] {
+			seen[source] = true
+			sources = append(sources, source)
+		}
+	}
+	return sources, nil
+}
+
+func HostWorkStopEntryID(turn string) string { return "host-work-stop:" + StableHash(turn)[:32] }
+
+func hostWorkStops(path []Entry, thread string, stop HostWorkStop) ([]Entry, error) {
+	turn, runs := stop.TurnID, stop.Runs
+	sources, err := hostWorkSources(path, turn != "")
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	seen := map[string]bool{}
+	var matched int
+	for _, source := range sources {
+		if turn != "" {
+			if source.TurnID != turn {
+				continue
+			}
+			// The retained cancellation fact covers a turn, not just one run.
+			if !slices.Contains(runs, source.RunID) {
+				return nil, ErrRequestConflict
+			}
+			matched++
+		}
+		if seen[source.TurnID] {
+			continue
+		}
+		seen[source.TurnID] = true
+		entries = append(entries, Entry{ID: HostWorkStopEntryID(source.TurnID), ThreadID: thread, TurnID: source.TurnID, RunID: source.RunID, Type: EntryCancelRequested, RequestFingerprint: stop.SnapshotKey, Metadata: map[string]string{"cancellation_source": "user_stop", "cancellation_mode": "immediate"}})
+	}
+	if turn != "" {
+		if matched == 0 || matched != len(runs) {
+			return nil, ErrRequestConflict
+		}
+		// A continuation (or a new user execution) may already have won
+		// admission. Never report that it was suppressed by this transaction.
+		var active string
+		for _, e := range path {
+			if e.Type == EntryTurnMarker {
+				if e.TurnStatus == TurnStarted {
+					active = e.TurnID
+				} else if terminalTurnMarker(e.TurnStatus) {
+					active = ""
+				}
+			}
+		}
+		if active != "" && (active == turn || active != stop.AdmittedTurnID) {
+			return nil, ErrRequestConflict
+		}
 	}
 	return entries, nil
 }
