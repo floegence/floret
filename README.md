@@ -624,6 +624,11 @@ queued input or start a host-work continuation. `Suppressed` confirms that
 automatic execution was prevented, not that a process exited. Queue entries
 remain available for explicit promotion.
 
+When a running parent sends or steers a direct child, set `ParentExecution` on
+`SendInput` or `SteerInput` to the originating thread, turn and run. The runtime
+checks ownership and fences new input at admission, including when an idle
+child would start a turn. Ordinary user input omits this field.
+
 Cancelled and interrupted terminal facts produce typed model-only interruption
 context after retained partial assistant output. It states that output may be
 incomplete and tool results remain authoritative; it makes no unsupported claim

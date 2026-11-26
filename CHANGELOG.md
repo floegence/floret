@@ -2,7 +2,7 @@
 
 ## v7.129.0
 
-- Add snapshot-bound, parent-first graceful Stop for an authorized subtree, including idle-root trees and suppression of outstanding host-work continuations. No storage migration.
+- Add snapshot-bound, parent-first graceful Stop for an authorized subtree, including idle roots and pending automatic queue or host-work continuations. Pass the originating `ParentExecution` on delegated Send and Steer to reject late input after parent Stop. No storage migration.
 
 ## v7.128.0
 

@@ -429,8 +429,11 @@ each active target in parent-first order. Reuse the original snapshot on retry:
 its content-derived request key cannot be reused for different executions;
 refresh on conflict. Inspect the returned prefix even on error and read
 canonical outcomes for settlement. Idle source executions with pending automatic
-queue promotion or host-work continuation authority are included. Suppression prevents automatic
-continuation without deleting results or claiming the host process exited.
+queue promotion or host-work continuation authority are included. Suppression
+prevents automatic continuation without deleting results or claiming the host
+process exited. Set `ParentExecution` for delegated Send or Steer: the direct
+child must be owned by the named parent and that execution must still be active
+and uncanceled when admitting new input. Ordinary user input omits the field.
 See the [exact tree test](../../runtime/thread_subtree_stop_test.go).
 
 `Delete` marks the whole active subtree as deleting, cancels provider and tool

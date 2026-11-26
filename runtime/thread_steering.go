@@ -25,9 +25,11 @@ type ThreadSteeringController interface {
 }
 
 type SteerInput struct {
-	ThreadID   identity.ThreadID `json:"thread_id"`
-	Input      UserInput         `json:"input"`
-	RequestKey RequestKey        `json:"request_key"`
+	// ParentExecution fences delegated steering, including the idle-to-active path.
+	ParentExecution *ThreadExecutionTarget `json:"parent_execution,omitempty"`
+	ThreadID        identity.ThreadID      `json:"thread_id"`
+	Input           UserInput              `json:"input"`
+	RequestKey      RequestKey             `json:"request_key"`
 }
 
 // SteerQueuedInput atomically consumes the exact pending input. An edited,
@@ -80,6 +82,10 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 	if err != nil {
 		return ThreadView{}, err
 	}
+	guard, err := service.childAdmission(ctx, in.ParentExecution, in.ThreadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	if _, err := service.viewResult(ctx, in.ThreadID, threadAckResult); err != nil {
 		return ThreadView{}, err
 	}
@@ -95,7 +101,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 		var idle, replay, suspended bool
 		var wait <-chan struct{}
 		var current ThreadView
-		err = actor.apply(ctx, func() error {
+		err = guard.apply(ctx, actor, func() error {
 			if actor.state.messageEditKey != "" {
 				return ErrThreadBusy
 			}
@@ -211,9 +217,9 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 		}
 		if idle {
 			if queued != nil {
-				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, mode, nil, queued)
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, queued.QueueItemID, key, mode, nil, guard, queued)
 			} else {
-				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, "", "", mode, nil)
+				current, err = service.startAcceptedResult(ctx, actor, in.ThreadID, input, nil, key, "", "", mode, nil, guard)
 			}
 			if errors.Is(err, ErrThreadBusy) {
 				continue

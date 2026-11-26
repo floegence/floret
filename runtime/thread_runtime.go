@@ -138,6 +138,8 @@ type SetTitleInput struct {
 }
 
 type SendInput struct {
+	// ParentExecution fences a delegated send to a direct child. Omit for user input.
+	ParentExecution     *ThreadExecutionTarget        `json:"parent_execution,omitempty"`
 	ThreadID            identity.ThreadID             `json:"thread_id"`
 	Input               UserInput                     `json:"input"`
 	SupplementalContext []TurnSupplementalContextItem `json:"supplemental_context,omitempty"`
@@ -1479,7 +1481,11 @@ func (service *threadRuntimeService) sendCommand(ctx context.Context, in SendInp
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.sendResult(ctx, in.ThreadID, in.Input, supplemental, key, mode)
+	guard, err := service.childAdmission(ctx, in.ParentExecution, in.ThreadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	return service.sendResult(ctx, in.ThreadID, in.Input, supplemental, key, mode, guard)
 }
 
 func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput) (ThreadView, error) {
@@ -1760,7 +1766,7 @@ func (service *threadRuntimeService) promoteQueuedCommand(ctx context.Context, i
 	if replayed {
 		return service.currentResult(actor, mode), nil
 	}
-	result, err := service.startAcceptedResult(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key, mode, nil)
+	result, err := service.startAcceptedResult(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key, mode, nil, nil)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -2463,12 +2469,12 @@ func (service *threadRuntimeService) CompactContext(ctx context.Context, in Comp
 	return service.completeViewResult(ctx, view, err)
 }
 
-func (service *threadRuntimeService) sendResult(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, mode threadResultMode) (ThreadView, error) {
+func (service *threadRuntimeService) sendResult(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, mode threadResultMode, guard *childAdmission) (ThreadView, error) {
 	normalized, err := normalizeTurnInput(input)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.admitThreadExecutionResult(ctx, threadID, normalized, supplemental, requestKey, "", mode)
+	return service.admitThreadExecutionGuarded(ctx, threadID, normalized, supplemental, requestKey, "", mode, guard)
 }
 
 func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind) (ThreadView, error) {
@@ -2476,6 +2482,10 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 }
 
 func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind, mode threadResultMode) (ThreadView, error) {
+	return service.admitThreadExecutionGuarded(ctx, threadID, input, supplemental, requestKey, kind, mode, nil)
+}
+
+func (service *threadRuntimeService) admitThreadExecutionGuarded(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind, mode threadResultMode, guard *childAdmission) (ThreadView, error) {
 	requestKey = strings.TrimSpace(requestKey)
 	if requestKey == "" {
 		return ThreadView{}, errors.New("send request key is required")
@@ -2550,7 +2560,7 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 	if active {
 		queued := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, SupplementalContext: cloneTurnSupplementalContext(supplemental), CreatedAt: time.Now().UTC()}
 		var replayedQueue bool
-		err := actor.apply(ctx, func() error {
+		err := guard.apply(ctx, actor, func() error {
 			if existing, ok := actor.state.requestKeys[requestKey]; ok {
 				if existing.fingerprint != fingerprint {
 					return &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
@@ -2601,7 +2611,7 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 	var accepted acceptedTurn
 	var replayed bool
 	var previousExecution <-chan struct{}
-	err = actor.apply(ctx, func() error {
+	err = guard.apply(ctx, actor, func() error {
 		if existing, ok := actor.state.requestKeys[requestKey]; ok {
 			if existing.fingerprint != fingerprint {
 				return &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
@@ -4495,7 +4505,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState, 
 		return
 	}
 	next := promotion.next
-	if _, err := service.startAcceptedResult(context.Background(), actor, promotion.source.ThreadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID, threadFullResult, promotion); err != nil {
+	if _, err := service.startAcceptedResult(context.Background(), actor, promotion.source.ThreadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID, threadFullResult, promotion, nil); err != nil {
 		_ = actor.apply(context.Background(), func() error {
 			if actor.state.autoPromotion != promotion {
 				return nil
@@ -4513,7 +4523,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState, 
 	}
 }
 
-func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, mode threadResultMode, auto *threadQueuePromotion, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
+func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, mode threadResultMode, auto *threadQueuePromotion, guard *childAdmission, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -4553,7 +4563,7 @@ func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, ac
 	var accepted acceptedTurn
 	var result ThreadView
 	var previousExecution <-chan struct{}
-	err = actor.apply(ctx, func() error {
+	err = guard.apply(ctx, actor, func() error {
 		if auto != nil && (actor.state.autoPromotion != auto || actor.state.view.TurnID != auto.source.TurnID || actor.state.view.RunID != auto.source.RunID) {
 			return ErrRequestConflict
 		}
