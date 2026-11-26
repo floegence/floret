@@ -18,7 +18,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Check dependency and gate boundaries
-        run: go test ./internal/architecture -run 'TestNoGoWorkFilesInRepository|TestNoLocalModuleReplacementWiring|TestNoRedevenDependencyWiring|TestCIGatesUseCurrentMajor' -count=1
+        run: go test ./internal/architecture -run '^(TestV7ModuleAndIdentityPackageBoundary|TestPublicPackageDependencyDirection|TestCIGatesUseCurrentMajor)$' -count=1 -v
       - name: Check generated model catalog
         run: |
           python3 scripts/model-catalog/test_generate.py
