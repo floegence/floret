@@ -1125,7 +1125,7 @@ compaction clear it. Failed, cancelled, and noop compactions do not clear it.
 Missing native usage updates only the estimate. Existing `Usage` and
 `ContextStatus` fields retain their latest-status semantics.
 The optional `ThreadWaiter.WaitThreads` observes a frozen scoped target set with
-one positive timeout. Results distinguish `missing`, `attention_required`,
+one positive timeout by default. Results distinguish `missing`, `attention_required`,
 `completed` and `timed_out`, in that priority order. Timeout is a normal snapshot;
 caller cancellation, read failure and Host shutdown remain errors. Opt-in pending
 parent-event observation also returns canonical receipts with an `events` reason
@@ -1134,6 +1134,13 @@ execution to install its complete terminal view before an event result returns.
 Waits register before reading and recheck on target lifecycle changes or committed
 events for the specified parent. Text growth does not wake a wait or consume receipts.
 Subscriptions wake a fresh authoritative read, including after deletion; they are not replay.
+Alternatively, set `Until: runtime.ThreadWaitAll` or `ThreadWaitAny`, explicit direct
+child IDs and a parent scope. This waits within the caller's execution without a timer,
+without consuming receipts and without waking an idle parent. The first scoped read binds
+each child's turn and run. A missing or replaced execution, unsuccessful settlement,
+pending interaction or managed tool yield returns early. `Threads` excludes replacement
+executions. Read terminal reports using the returned exact identities; pass only remaining
+dependencies to a subsequent wait. Cancellation and Host shutdown still end the call.
 A tool may return `tools.BoundedWait` only for a full normal timeout with
 unfinished, nonempty targets. The dispatcher measures that handler, excluding
 approval and batch delay. Engine's single batch guard permits repetition only

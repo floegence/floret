@@ -822,6 +822,14 @@ historical bytes or admission. Domain schema remains 22. Hosts own presentation.
 
 ## Bounded thread observation and failure reasons
 
+`WaitThreadsInput.Until` opts into passive dependency observation instead of the
+bounded deadline below. `ThreadWaitAny` and `ThreadWaitAll` require explicit direct
+children and bind their current turn/run on first read. They ignore progress and
+pending receipts; missing, unavailable, unsuccessful, attention and managed tool
+yield terminate observation early. There is no background execution entitlement:
+shutdown releases the subscription and restart cannot re-arm it. The caller owns
+its existing tool exchange; a fresh explicit wait selects its dependencies anew.
+
 The optional public `ThreadWaiter` freezes scoped targets at the first read,
 subscribes before reading, and re-reads canonical current state on wakeup.
 Missing targets take priority over pending interactions, then terminal state;

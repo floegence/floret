@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // ThreadWaiter observes current state without admitting input or resuming parents.
@@ -21,7 +22,17 @@ type WaitThreadsInput struct {
 	Scope     ThreadScope
 	ThreadIDs []identity.ThreadID
 	Timeout   time.Duration
+	// Until observes exact child executions without a timer. It requires explicit
+	// targets, a parent scope, zero Timeout and no pending-receipt trigger.
+	Until ThreadWaitUntil
 }
+type ThreadWaitUntil string
+
+const (
+	ThreadWaitAll ThreadWaitUntil = "all"
+	ThreadWaitAny ThreadWaitUntil = "any"
+)
+
 type ThreadWaitReason string
 
 const ThreadWaitEvents ThreadWaitReason = "events"
@@ -31,13 +42,17 @@ const (
 	ThreadWaitAttentionRequired ThreadWaitReason = "attention_required"
 	ThreadWaitMissing           ThreadWaitReason = "missing"
 	ThreadWaitTimedOut          ThreadWaitReason = "timed_out"
+	ThreadWaitUnavailable       ThreadWaitReason = "unavailable"
+	ThreadWaitUnsuccessful      ThreadWaitReason = "unsuccessful"
+	ThreadWaitYielded           ThreadWaitReason = "yielded"
 )
 
 type ThreadWaitResult struct {
-	ParentEvents     *ParentEventPage    `json:"parent_events,omitempty"`
-	Threads          []ThreadSummary     `json:"threads"`
-	MissingThreadIDs []identity.ThreadID `json:"missing_thread_ids"`
-	Reason           ThreadWaitReason    `json:"reason"`
+	ParentEvents         *ParentEventPage    `json:"parent_events,omitempty"`
+	Threads              []ThreadSummary     `json:"threads"`
+	MissingThreadIDs     []identity.ThreadID `json:"missing_thread_ids"`
+	UnavailableThreadIDs []identity.ThreadID `json:"unavailable_thread_ids,omitempty"`
+	Reason               ThreadWaitReason    `json:"reason"`
 }
 
 var _ ThreadWaiter = (*threadRuntimeService)(nil)
@@ -117,7 +132,11 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 	if in.PendingParentEvents && in.Scope.ParentID == nil {
 		return ThreadWaitResult{}, errors.New("parent event wait requires a parent scope")
 	}
-	if in.Timeout <= 0 {
+	if in.Until != "" {
+		if (in.Until != ThreadWaitAll && in.Until != ThreadWaitAny) || in.Scope.ParentID == nil || *in.Scope.ParentID == "" || len(in.ThreadIDs) == 0 || in.Timeout != 0 || in.PendingParentEvents {
+			return ThreadWaitResult{}, errors.New("dependency wait requires any or all, scoped child IDs, and no timeout or receipt trigger")
+		}
+	} else if in.Timeout <= 0 {
 		return ThreadWaitResult{}, errors.New("thread wait requires a positive timeout")
 	}
 	targets := append([]identity.ThreadID(nil), in.ThreadIDs...)
@@ -128,8 +147,12 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 		}
 		seen[id] = true
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, in.Timeout)
-	defer cancel()
+	waitCtx := ctx
+	if in.Timeout > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, in.Timeout)
+		defer cancel()
+	}
 	var parent identity.ThreadID
 	if in.PendingParentEvents {
 		parent = *in.Scope.ParentID
@@ -144,6 +167,12 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 	}
 	defer interest.Close()
 	var latest ThreadWaitResult
+	var bound map[identity.ThreadID]childWaitExecution
+	var yield <-chan struct{}
+	if in.Until != "" {
+		bound = make(map[identity.ThreadID]childWaitExecution, len(targets))
+		yield = tools.YieldSignal(ctx)
+	}
 	first := true
 	for {
 		if err := ctx.Err(); err != nil {
@@ -168,6 +197,17 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 		}
 		first = false
 		latest = selectWaitThreads(items, targets)
+		if bound != nil {
+			latest = selectChildExecutions(latest, bound, in.Until)
+			if err := ctx.Err(); err != nil {
+				return ThreadWaitResult{}, err
+			}
+			select {
+			case <-yield:
+				latest.Reason = ThreadWaitYielded
+			default:
+			}
+		}
 		if in.PendingParentEvents && len(targets) > 0 && latest.Reason != ThreadWaitMissing && latest.Reason != ThreadWaitAttentionRequired {
 			page, err := service.ListParentEvents(waitCtx, ListParentEventsInput{ThreadID: *in.Scope.ParentID, SourceThreadIDs: targets, PendingOnly: true, Limit: 100})
 			if err != nil {
@@ -210,6 +250,12 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 		select {
 		case <-ctx.Done():
 			return ThreadWaitResult{}, ctx.Err()
+		case <-yield:
+			if err := ctx.Err(); err != nil {
+				return ThreadWaitResult{}, err
+			}
+			latest.Reason = ThreadWaitYielded
+			return latest, nil
 		case <-waitCtx.Done():
 			if err := ctx.Err(); err != nil {
 				return ThreadWaitResult{}, err
@@ -225,6 +271,48 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 			}
 		}
 	}
+}
+
+type childWaitExecution struct {
+	turn identity.TurnID
+	run  identity.RunID
+}
+
+func selectChildExecutions(out ThreadWaitResult, bound map[identity.ThreadID]childWaitExecution, until ThreadWaitUntil) ThreadWaitResult {
+	ready := 0
+	attention, unsuccessful := false, false
+	selected := out.Threads[:0]
+	for _, thread := range out.Threads {
+		exec := childWaitExecution{thread.TurnID, thread.RunID}
+		original, known := bound[thread.ID]
+		if exec.turn == "" || exec.run == "" || known && original != exec || thread.Activity == ThreadActivityIdle && thread.LastOutcome == nil {
+			out.UnavailableThreadIDs = append(out.UnavailableThreadIDs, thread.ID)
+			continue
+		}
+		bound[thread.ID] = exec
+		selected = append(selected, thread)
+		attention = attention || thread.Attention.InputCount > 0 || thread.Attention.ApprovalCount > 0
+		if thread.Activity == ThreadActivityIdle {
+			ready++
+			unsuccessful = unsuccessful || *thread.LastOutcome != TurnOutcomeCompleted
+		}
+	}
+	out.Threads = selected
+	switch {
+	case len(out.MissingThreadIDs) > 0:
+		out.Reason = ThreadWaitMissing
+	case len(out.UnavailableThreadIDs) > 0:
+		out.Reason = ThreadWaitUnavailable
+	case attention:
+		out.Reason = ThreadWaitAttentionRequired
+	case unsuccessful:
+		out.Reason = ThreadWaitUnsuccessful
+	case ready == len(selected) || until == ThreadWaitAny && ready > 0:
+		out.Reason = ThreadWaitCompleted
+	default:
+		out.Reason = ""
+	}
+	return out
 }
 
 func parentEventsSettled(page ParentEventPage, threads []ThreadSummary) bool {

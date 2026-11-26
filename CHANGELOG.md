@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.128.0
+
+- Observe any or all selected child executions without a timer. Dependency waits yield to steering and do not resume idle parents or replace unavailable targets. No storage migration.
+
 ## v7.127.0
 
 - Read bounded, host-ordered canonical thread summary pages with batch authorization before reading and before returning results. No storage or cursor migration.

@@ -2129,6 +2129,8 @@ field ThreadView.RunProgress *github.com/floegence/floret/v7/runtime.ThreadRunPr
 field ThreadView.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items,omitempty\""
 field ThreadView.Queue []github.com/floegence/floret/v7/runtime.QueuedInput tag="json:\"queue,omitempty\""
 field ThreadView.Interactions []github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interactions,omitempty\""
+const ThreadWaitAll github.com/floegence/floret/v7/runtime.ThreadWaitUntil = "all"
+const ThreadWaitAny github.com/floegence/floret/v7/runtime.ThreadWaitUntil = "any"
 const ThreadWaitAttentionRequired github.com/floegence/floret/v7/runtime.ThreadWaitReason = "attention_required"
 const ThreadWaitCompleted github.com/floegence/floret/v7/runtime.ThreadWaitReason = "completed"
 const ThreadWaitEvents github.com/floegence/floret/v7/runtime.ThreadWaitReason = "events"
@@ -2138,8 +2140,13 @@ type ThreadWaitResult struct
 field ThreadWaitResult.ParentEvents *github.com/floegence/floret/v7/runtime.ParentEventPage tag="json:\"parent_events,omitempty\""
 field ThreadWaitResult.Threads []github.com/floegence/floret/v7/runtime.ThreadSummary tag="json:\"threads\""
 field ThreadWaitResult.MissingThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"missing_thread_ids\""
+field ThreadWaitResult.UnavailableThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"unavailable_thread_ids,omitempty\""
 field ThreadWaitResult.Reason github.com/floegence/floret/v7/runtime.ThreadWaitReason tag="json:\"reason\""
 const ThreadWaitTimedOut github.com/floegence/floret/v7/runtime.ThreadWaitReason = "timed_out"
+const ThreadWaitUnavailable github.com/floegence/floret/v7/runtime.ThreadWaitReason = "unavailable"
+const ThreadWaitUnsuccessful github.com/floegence/floret/v7/runtime.ThreadWaitReason = "unsuccessful"
+type ThreadWaitUntil string
+const ThreadWaitYielded github.com/floegence/floret/v7/runtime.ThreadWaitReason = "yielded"
 type ThreadWaiter interface interface{WaitThreads(context.Context, github.com/floegence/floret/v7/runtime.WaitThreadsInput) (github.com/floegence/floret/v7/runtime.ThreadWaitResult, error)}
 const ThreadWindowAfter github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "after"
 const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "around"
@@ -2321,6 +2328,7 @@ field WaitThreadsInput.PendingParentEvents bool
 field WaitThreadsInput.Scope github.com/floegence/floret/v7/runtime.ThreadScope
 field WaitThreadsInput.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
 field WaitThreadsInput.Timeout time.Duration
+field WaitThreadsInput.Until github.com/floegence/floret/v7/runtime.ThreadWaitUntil
 func WithAgentBuiltinToolNames func(names github.com/floegence/floret/v7/runtime.BuiltinToolNames) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runtime.CapabilityOptions) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
