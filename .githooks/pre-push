@@ -11,7 +11,7 @@ while read -r _local oid remote _old; do
   [[ "$oid" =~ ^0+$ ]] && continue
   tip=$(git -C "$root" rev-parse "$oid^{commit}")
   [[ ! -f "$tmp/$tip" ]] || continue
-  if [[ ! -d "$tmp/source" ]]; then git clone --quiet --local --no-checkout "$root" "$tmp/source"; fi
+  if [[ ! -d "$tmp/source" ]]; then git clone --quiet --no-hardlinks --no-checkout "$root" "$tmp/source"; fi
   git -C "$tmp/source" checkout --quiet --detach "$tip"
   (
     cd "$tmp/source"
