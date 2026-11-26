@@ -354,6 +354,24 @@ fixture, checks completed canonical boundaries and continues it through the
 public runtime. Generation and explicit complete validation are outside every
 measured interval. Fixtures alone do not certify production performance.
 
+## Many independent short roots
+
+To test an old link or search hit in a large collection, use the many-root
+writer instead of scaling up one journal. From the exact published module:
+
+    FLORET_MANY_ROOT_FIXTURE_DIR=/absolute/empty/directory FLORET_MANY_ROOT_FIXTURE_ROOTS=100000 GOWORK=off go test github.com/floegence/floret/v7/runtime -run '^TestWriteManyRootQualificationFixture$' -count=1 -timeout=30m -v
+
+The `short-root-pairs-v1` profile creates 1,000, 10,000 or 100,000 independent
+roots. Each has a title and one completed user/assistant exchange. Only the
+oldest input contains the Unicode search marker. `manifest.json` identifies
+the oldest/newest links and records SHA256 for the closed `floret_threads.sqlite`
+and `root_ids.txt` (one ID per line in ascending creation order). Record the
+exact module version, commit and writer source checksum with the manifest.
+Use the ID file only to prepare host-owned memberships; it is not a catalog
+for the system under test. Keep snapshots immutable and measure from fresh
+copies, without listing roots before a cold by-ID read. Neither generation
+time nor this completed profile measures command admission under load, live
+work, authorization, rendering or interactive latency.
 
 ## Provider request preparation
 

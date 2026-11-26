@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.132.2
+
+- Add a test-only SQLite fixture writer for 1,000 to 100,000 independent roots with short completed conversations. No runtime API, storage format or command behavior change.
+
 ## v7.132.1
 
 - Batch canonical host-work reads across proven active-path intervals. Reuse the bounded, in-process admission window for stop inventory; fresh cancellation checks and recovery of observed but unsettled work are preserved.

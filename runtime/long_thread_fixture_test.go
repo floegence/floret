@@ -259,12 +259,20 @@ func TestLongThreadQualificationFixtureRestartsAndContinues(t *testing.T) {
 			t.Fatalf("incomplete historical turn: %+v", turn)
 		}
 	}
+	completed := continueQualificationFixture(t, service, view.ThreadID)
+	if len(completed.Items) != manifest.Items+2 || len(completed.Turns) != manifest.Turns+1 || completed.Items[len(completed.Items)-1].Text != "continued" {
+		t.Fatalf("continued fixture differs: items=%d turns=%d", len(completed.Items), len(completed.Turns))
+	}
+}
+
+func continueQualificationFixture(t *testing.T, service ThreadService, id identity.ThreadID) ThreadView {
+	t.Helper()
 	facts, err := service.(ThreadFactsSource).SubscribeFacts(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer facts.Close()
-	admitted, err := service.(ThreadCommandService).SendAck(t.Context(), SendInput{ThreadID: view.ThreadID, RequestKey: "continue-fixture", Input: UserInput{Text: "Continue synthetic history."}})
+	admitted, err := service.(ThreadCommandService).SendAck(t.Context(), SendInput{ThreadID: id, RequestKey: "continue-fixture", Input: UserInput{Text: "Continue synthetic history."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +292,10 @@ func TestLongThreadQualificationFixtureRestartsAndContinues(t *testing.T) {
 		break
 	}
 	completed, err := service.View(t.Context(), admitted.ThreadID)
-	if err != nil || len(completed.Items) != manifest.Items+2 || len(completed.Turns) != manifest.Turns+1 || completed.Items[len(completed.Items)-1].Text != "continued" {
-		t.Fatalf("continued fixture differs: items=%d turns=%d err=%v", len(completed.Items), len(completed.Turns), err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return completed
 }
 
 func closedFixtureChannel() chan struct{} {
