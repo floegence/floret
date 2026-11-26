@@ -17,6 +17,23 @@ type ThreadQueryReader interface {
 
 var _ ThreadQueryReader = (*threadRuntimeService)(nil)
 
+// ThreadQueryContentReader reads one visible field without a frozen query.
+// The host supplies fresh authorized scope on every read, including after restart.
+type ThreadQueryContentReader interface {
+	ReadQueryContent(context.Context, threadquery.Scope, threadquery.ContentRange) (threadquery.ContentPage, error)
+}
+
+func (s *threadRuntimeService) ReadQueryContent(ctx context.Context, scope threadquery.Scope, in threadquery.ContentRange) (threadquery.ContentPage, error) {
+	if err := s.host.available(); err != nil {
+		return threadquery.ContentPage{}, err
+	}
+	r, ok := s.host.store.repo.(ThreadQueryContentReader)
+	if !ok {
+		return threadquery.ContentPage{}, ErrUnsupportedStoreCapability
+	}
+	return r.ReadQueryContent(ctx, scope, in)
+}
+
 func (s *threadRuntimeService) queryRepo() (ThreadQueryReader, error) {
 	if err := s.host.available(); err != nil {
 		return nil, err

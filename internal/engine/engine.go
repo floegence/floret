@@ -4764,6 +4764,7 @@ func mergeAnyMetadata(left, right map[string]any) map[string]any {
 
 func toolResultView(projection tools.OutputProjection) *session.ToolResultView {
 	view := &session.ToolResultView{
+		Omitted:       projection.Omitted,
 		Truncated:     projection.Truncated,
 		OriginalBytes: projection.OriginalBytes,
 		VisibleBytes:  projection.VisibleBytes,

@@ -7,6 +7,12 @@ tags: [api, threads, queries, references]
 
 # Canonical thread queries
 
+`QueryInput.IncludeContent` includes per-field `ContentRange` values. The
+optional `ThreadQueryContentReader` reads up to 8,000 UTF-8 bytes within the
+requested half-open range. `NextRead` is a complete request, not a handle.
+Fresh authorization, active-path membership and field identity are verified
+on every read. No extra durable or in-memory pagination state is required.
+
 `runtime.ThreadQueryReader` is optional; `ThreadService` implementations keep
 all previously required methods. `Query`, `Read`, and `Aggregate` use public
 [`threadquery`](../../threadquery/query.go) contracts. The canonical journal

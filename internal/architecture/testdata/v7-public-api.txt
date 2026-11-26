@@ -1899,6 +1899,7 @@ type ThreadParentEventService interface interface{ListParentEvents(context.Conte
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn"
+type ThreadQueryContentReader interface interface{ReadQueryContent(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.ContentRange) (github.com/floegence/floret/v7/threadquery.ContentPage, error)}
 type ThreadQueryReader interface interface{Aggregate(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.AggregateInput) (github.com/floegence/floret/v7/threadquery.AggregatePage, error); Query(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.QueryInput) (github.com/floegence/floret/v7/threadquery.Page, error); Read(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.ReadInput) (github.com/floegence/floret/v7/threadquery.ReadPage, error)}
 type ThreadQueueController interface interface{EditQueued(context.Context, github.com/floegence/floret/v7/runtime.EditQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SendQueuedNow(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 type ThreadQueueEditReader interface interface{LookupQueuedEdit(context.Context, github.com/floegence/floret/v7/runtime.LookupQueuedEditInput) (github.com/floegence/floret/v7/runtime.QueuedInputEdit, bool, error)}
@@ -2352,6 +2353,17 @@ type Chunk struct
 field Chunk.Field string tag="json:\"field\""
 field Chunk.Offset int tag="json:\"offset\""
 field Chunk.Text string tag="json:\"text\""
+type ContentField struct
+field ContentField.Field string tag="json:\"field\""
+field ContentField.Read github.com/floegence/floret/v7/threadquery.ContentRange tag="json:\"read\""
+type ContentFields []github.com/floegence/floret/v7/threadquery.ContentField
+type ContentPage struct
+field ContentPage.Text string tag="json:\"text\""
+field ContentPage.NextRead *github.com/floegence/floret/v7/threadquery.ContentRange tag="json:\"next_read\""
+type ContentRange struct
+field ContentRange.Source string tag="json:\"source\""
+field ContentRange.StartByte int64 tag="json:\"start_byte\""
+field ContentRange.EndByte int64 tag="json:\"end_byte\""
 var ErrCursorInvalid error
 var ErrInvalidQuery error
 var ErrRecordUnavailable error
@@ -2387,6 +2399,7 @@ field Page.Total int tag="json:\"total\""
 field Page.NextCursor string tag="json:\"next_cursor,omitempty\""
 field Page.ExpiresAt time.Time tag="json:\"expires_at\""
 type QueryInput struct
+field QueryInput.IncludeContent bool tag="json:\"include_content,omitempty\""
 field QueryInput.Object github.com/floegence/floret/v7/threadquery.Object tag="json:\"object\""
 field QueryInput.Filter github.com/floegence/floret/v7/threadquery.Filter tag="json:\"filter,omitempty\""
 field QueryInput.Sort github.com/floegence/floret/v7/threadquery.Sort tag="json:\"sort,omitempty\""
@@ -2401,6 +2414,7 @@ field ReadPage.Chunks []github.com/floegence/floret/v7/threadquery.Chunk tag="js
 field ReadPage.NextCursor string tag="json:\"next_cursor,omitempty\""
 field ReadPage.ExpiresAt time.Time tag="json:\"expires_at\""
 type Record struct
+field Record.Content *github.com/floegence/floret/v7/threadquery.ContentFields tag="json:\"content,omitempty\""
 field Record.Ref github.com/floegence/floret/v7/threadquery.RecordRef tag="json:\"ref\""
 field Record.Object github.com/floegence/floret/v7/threadquery.Object tag="json:\"object\""
 field Record.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -2708,6 +2722,7 @@ field FileMutationActivityPayload.Truncated bool tag="json:\"truncated,omitempty
 type FileMutationActivityPayloads []github.com/floegence/floret/v7/tools.FileMutationActivityPayload
 func FinalizeActivityPresentation func(in *github.com/floegence/floret/v7/tools.ActivityPresentation, status string) *github.com/floegence/floret/v7/tools.ActivityPresentation
 type FullOutputPlan struct
+field FullOutputPlan.Omitted *github.com/floegence/floret/v7/tools.OutputByteRange
 field FullOutputPlan.Text string
 field FullOutputPlan.Kind string
 field FullOutputPlan.MIME string
@@ -2754,6 +2769,9 @@ func NormalizeInputSchema func(schema map[string]any) (map[string]any, error)
 func NormalizeOutputPolicy func(policy github.com/floegence/floret/v7/tools.OutputPolicy) github.com/floegence/floret/v7/tools.OutputPolicy
 func Nullable func(schema map[string]any) map[string]any
 func Number func(description string) map[string]any
+type OutputByteRange struct
+field OutputByteRange.StartByte int tag="json:\"start_byte\""
+field OutputByteRange.EndByte int tag="json:\"end_byte\""
 const OutputHead github.com/floegence/floret/v7/tools.OutputStrategy = "head"
 const OutputHeadTail github.com/floegence/floret/v7/tools.OutputStrategy = "head_tail"
 type OutputPolicy struct
@@ -2767,6 +2785,7 @@ field OutputPolicy.ArtifactKind string
 field OutputPolicy.ArtifactMIME string
 field OutputPolicy.TruncationNotice string
 type OutputProjection struct
+field OutputProjection.Omitted *github.com/floegence/floret/v7/tools.OutputByteRange
 field OutputProjection.OutputUnavailable string
 field OutputProjection.VisibleText string
 field OutputProjection.Truncated bool

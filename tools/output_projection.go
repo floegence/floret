@@ -41,6 +41,8 @@ type OutputPolicy struct {
 }
 
 type OutputProjection struct {
+	// Omitted identifies the exact gap in a head/tail projection, if known.
+	Omitted *OutputByteRange
 	// OutputUnavailable reports a committed retention failure, not tool failure.
 	OutputUnavailable string
 	VisibleText       string
@@ -55,12 +57,20 @@ type OutputProjection struct {
 	FullOutputPlan    *FullOutputPlan
 }
 
+// OutputByteRange identifies an omitted half-open range in original UTF-8 bytes.
+type OutputByteRange struct {
+	StartByte int `json:"start_byte"`
+	EndByte   int `json:"end_byte"`
+}
+
 // FullOutputPlan is a side-effect-free request to admit the complete tool
 // output together with its canonical result. It is not a durable artifact ref.
 type FullOutputPlan struct {
-	Text string
-	Kind string
-	MIME string
+	// Omitted is optional for a host-projected preview of Text.
+	Omitted *OutputByteRange
+	Text    string
+	Kind    string
+	MIME    string
 }
 
 func DefaultOutputPolicy() OutputPolicy {
@@ -142,10 +152,11 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 	policy = NormalizeOutputPolicy(policy)
 	text := result.Text
 	limited, truncated := text, false
+	var gap *OutputByteRange
 	if policy.Strategy == OutputHeadTail {
 		truncated = len(text) > policy.VisibleMaxBytes || policy.VisibleMaxLines > 0 && countLines(text) > policy.VisibleMaxLines
 		if truncated {
-			limited = headTailOutput(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.TruncationNotice)
+			limited, gap = headTailRange(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.TruncationNotice)
 		}
 	} else {
 		limited, truncated = applyOutputLimits(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy)
@@ -154,6 +165,7 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 		limited = outputWithTruncationNotice(text, policy)
 	}
 	projection := OutputProjection{
+		Omitted:       gap,
 		VisibleText:   limited,
 		Truncated:     truncated,
 		OriginalBytes: len(text),
@@ -168,6 +180,11 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 	}
 	if result.FullOutput != nil {
 		plan := *result.FullOutput
+		projection.Omitted = nil
+		if g := plan.Omitted; !truncated && g != nil && g.StartByte >= 0 && g.EndByte > g.StartByte && g.EndByte <= len(plan.Text) && utf8.RuneStart(plan.Text[g.StartByte]) && (g.EndByte == len(plan.Text) || utf8.RuneStart(plan.Text[g.EndByte])) {
+			copy := *g
+			projection.Omitted = &copy
+		}
 		if plan.Kind == "" {
 			plan.Kind = policy.ArtifactKind
 		}
@@ -213,6 +230,11 @@ func applyOutputLimits(text string, maxBytes, maxLines int, strategy OutputStrat
 // The omission marker participates in both budgets. Byte facts count the
 // original UTF-8 source, not tokens or the length of an escaped JSON envelope.
 func headTailOutput(text string, maxBytes, maxLines int, notice string) string {
+	visible, _ := headTailRange(text, maxBytes, maxLines, notice)
+	return visible
+}
+
+func headTailRange(text string, maxBytes, maxLines int, notice string) (string, *OutputByteRange) {
 	notice = strings.TrimSpace(notice)
 	marker := func(omitted int) string {
 		if notice != "" {
@@ -227,7 +249,7 @@ func headTailOutput(text string, maxBytes, maxLines int, notice string) string {
 		if maxLines > 0 {
 			value, _ = limitLines(value, maxLines, OutputHead)
 		}
-		return safeHead(value, maxBytes)
+		return safeHead(value, maxBytes), &OutputByteRange{EndByte: len(text)}
 	}
 	budget := maxBytes - reserved
 	head := safeHead(text, (budget+1)/2)
@@ -249,7 +271,7 @@ func headTailOutput(text string, maxBytes, maxLines int, notice string) string {
 	}
 	head = strings.TrimSuffix(head, "\n")
 	tail = strings.TrimPrefix(tail, "\n")
-	return head + "\n" + marker(len(text)-len(head)-len(tail)) + "\n" + tail
+	return head + "\n" + marker(len(text)-len(head)-len(tail)) + "\n" + tail, &OutputByteRange{StartByte: len(head), EndByte: len(text) - len(tail)}
 }
 
 func outputWithTruncationNotice(text string, policy OutputPolicy) string {

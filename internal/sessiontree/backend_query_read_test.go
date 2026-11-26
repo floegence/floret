@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,57 @@ import (
 type queryCandidateBackend struct {
 	spi.Backend
 	reads int
+}
+
+func TestStatelessQueryContentReadsWithoutIssuingHandles(t *testing.T) {
+	ctx := t.Context()
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("x", 7999) + "\U0001F338" + strings.Repeat("z", 9000)
+	if _, err := memory.Append(ctx, Entry{ThreadID: "thread", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: text}}, AppendOptions{ID: "immutable"}); err != nil {
+		t.Fatal(err)
+	}
+	_, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareQueryThread(ctx, "thread"); err != nil {
+		t.Fatal(err)
+	}
+	scope := threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{"thread"}}
+	rows, err := repo.Query(ctx, scope, threadquery.QueryInput{Object: threadquery.Messages, IncludeContent: true})
+	if err != nil || len(rows.Records) != 1 || rows.Records[0].Content == nil || len(*rows.Records[0].Content) == 0 {
+		t.Fatalf("rows %v %v", rows, err)
+	}
+	in := (*rows.Records[0].Content)[0].Read
+	repo.threadQuerySnapshots = nil
+	var got strings.Builder
+	for next := &in; next != nil; {
+		page, err := repo.ReadQueryContent(ctx, scope, *next)
+		if err != nil || len(page.Text) > 8000 || len(page.Text) == 0 {
+			t.Fatalf("read %v", err)
+		}
+		got.WriteString(page.Text)
+		next = page.NextRead
+	}
+	if got.String() != text || len(repo.threadQuerySnapshots.snapshots) != 0 {
+		t.Fatal("missing bytes or allocated snapshot")
+	}
+	for _, pair := range [][2]int64{{8000, 8000}, {0, 8000}, {0, int64(len(text)) + 1}, {2, 1}, {-1, 0}} {
+		bad := in
+		bad.StartByte, bad.EndByte = pair[0], pair[1]
+		if _, err := repo.ReadQueryContent(ctx, scope, bad); !errors.Is(err, threadquery.ErrInvalidQuery) {
+			t.Fatalf("bad range %v: %v", pair, err)
+		}
+	}
+	in.StartByte = in.EndByte
+	empty, err := repo.ReadQueryContent(ctx, scope, in)
+	if err != nil || empty.Text != "" || empty.NextRead != nil {
+		t.Fatal("empty range", err)
+	}
+	scope.ThreadIDs = nil
+	if _, err := repo.ReadQueryContent(ctx, scope, in); err == nil {
+		t.Fatal("revoked scope read data")
+	}
 }
 
 func (backend *queryCandidateBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {

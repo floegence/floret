@@ -517,6 +517,10 @@ Live and historical items retain their creation times, including original
 occurrence times in forks.
 Hosts may pin a committed assistant answer with the optional ForkThreadInput.SourceItemID; the runtime resolves its canonical journal boundary and rejects unknown or conflicting anchors.
 
+Set `QueryInput.IncludeContent` to receive field ranges for the optional
+`runtime.ThreadQueryContentReader`. Supply fresh scope for each read; pass
+`NextRead` unchanged to continue without retaining a query snapshot.
+
 The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and
 `Aggregate` using `threadquery` types. It searches canonical active-path threads,
 user/assistant messages, and persisted local/hosted tool facts through the

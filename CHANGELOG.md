@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.125.0
+
+- Add optional stateless UTF-8 range reads of authorized query fields. Field addresses survive restart without a new database or cursor cache.
+
 ## v7.124.2
 
 - Advertise ordinary structured answers without a secrecy flag. Released v7 input declarations, including pending private questions and redacted receipts, retain their original semantics.

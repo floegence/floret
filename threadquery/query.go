@@ -78,11 +78,13 @@ type Sort struct {
 }
 
 type QueryInput struct {
-	Object Object `json:"object"`
-	Filter Filter `json:"filter,omitempty"`
-	Sort   Sort   `json:"sort,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	// IncludeContent includes stateless read ranges for visible record fields.
+	IncludeContent bool   `json:"include_content,omitempty"`
+	Object         Object `json:"object"`
+	Filter         Filter `json:"filter,omitempty"`
+	Sort           Sort   `json:"sort,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+	Cursor         string `json:"cursor,omitempty"`
 }
 
 // RecordRef is an opaque exact reference returned by Query, bound to its scope
@@ -90,6 +92,7 @@ type QueryInput struct {
 type RecordRef string
 
 type Record struct {
+	Content        *ContentFields    `json:"content,omitempty"`
 	Ref            RecordRef         `json:"ref"`
 	Object         Object            `json:"object"`
 	ThreadID       identity.ThreadID `json:"thread_id"`

@@ -23,11 +23,13 @@ const querySnapshotTTL = 5 * time.Minute
 // A query session owns only bounded pagination snapshots and explicit source readers.
 // The repository owner serializes access; it never holds a second transcript.
 type querySession struct {
+	readDirect         func(*queryRecord, string, threadquery.ContentRange) (threadquery.ContentPage, error)
 	now                func() time.Time
 	querySnapshots     *querySnapshots
 	selectRecords      func(context.Context, map[string]bool, threadquery.Object, threadquery.Filter) ([]*queryRecord, error)
 	readParts          func(*queryRecord) ([]queryPart, error)
 	queryRecordContent func(*queryRecord) (*queryRecord, error)
+	lookupContent      func(string, string) (*queryRecord, error)
 }
 
 type queryContinuation struct {
@@ -241,11 +243,12 @@ func (r *querySession) Query(ctx context.Context, scope threadquery.Scope, input
 		return threadquery.Page{}, err
 	}
 	digest := queryDigest(scope, struct {
-		Object threadquery.Object
-		Filter threadquery.Filter
-		Sort   threadquery.Sort
-		Kind   string
-	}{input.Object, input.Filter, input.Sort, "query"})
+		Object         threadquery.Object
+		Filter         threadquery.Filter
+		Sort           threadquery.Sort
+		Kind           string
+		IncludeContent bool
+	}{input.Object, input.Filter, input.Sort, "query", input.IncludeContent})
 	var snapshot *querySnapshot
 	after := ""
 	if input.Cursor != "" {
@@ -287,6 +290,13 @@ func (r *querySession) Query(ctx context.Context, scope threadquery.Scope, input
 			return threadquery.Page{}, err
 		}
 		row := queryRow(snapshot, record, input.Filter)
+		if input.IncludeContent {
+			parts, err := r.readParts(record)
+			if err != nil {
+				return threadquery.Page{}, err
+			}
+			row.Content = describeQueryContent(record, parts)
+		}
 		raw, _ := json.Marshal(row)
 		if used+len(raw) > 64*1024-1024 {
 			break

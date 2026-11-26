@@ -67,6 +67,16 @@ func ProviderContent(message Message) string {
 		}
 		view := message.ToolResult
 		output := map[string]any{"ref": view.OutputRef, "preview_omitted": view.Truncated, "original_bytes": view.OriginalBytes, "sha256": view.ContentSHA256}
+		if view.OutputRef != "" && view.FullOutput != nil && view.OutputUnavailable == "" && view.Truncated {
+			start, end := int64(0), view.FullOutput.SizeBytes
+			if g := view.Omitted; g != nil {
+				start = int64(g.StartByte)
+				end = min(end, int64(g.EndByte))
+			}
+			if start >= 0 && start < end {
+				output["read"] = map[string]any{"source": view.OutputRef, "start_byte": start, "end_byte": end}
+			}
+		}
 		if view.OutputUnavailable != "" {
 			output["unavailable_reason"] = view.OutputUnavailable
 		}

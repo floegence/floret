@@ -144,6 +144,12 @@ func (repo *BackendRepo) canonicalQuerySession(ctx context.Context, tx spi.ReadT
 		repo.threadQuerySnapshots = &querySnapshots{snapshots: map[string]*querySnapshot{}}
 	}
 	return &querySession{now: repo.now, querySnapshots: repo.threadQuerySnapshots,
+		readDirect: func(rec *queryRecord, field string, in threadquery.ContentRange) (threadquery.ContentPage, error) {
+			return readQueryBodyRange(ctx, tx, rec, field, in)
+		},
+		lookupContent: func(thread, key string) (*queryRecord, error) {
+			return canonicalQueryRecordForAppend(ctx, tx, thread, key)
+		},
 		selectRecords: func(ctx context.Context, authorized map[string]bool, object threadquery.Object, filter threadquery.Filter) ([]*queryRecord, error) {
 			ids := make([]string, 0, len(authorized))
 			for id := range authorized {
