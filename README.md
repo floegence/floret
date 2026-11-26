@@ -610,6 +610,16 @@ mode, or descendant scope conflicts. Omitting both fields preserves the existing
 thread-wide contract. Exact subtree cancellation snapshots existing active child
 executions and skips children that have already advanced.
 
+For a Stop control covering a whole tree, including an idle root, use the
+optional `ThreadSubtreeStopper`. Show the result of `SubtreeExecutions` for an
+authorized root. Submit those exact targets with `StopSubtree` and retain them
+and the request key for a transport retry. Foreign, missing or replaced active
+targets conflict without substituting new work. A matching target that has
+already ended needs no cancellation. Admission runs in parent-first order;
+an error may follow confirmed admissions. Read current state after the call:
+admission does not confirm settlement or roll back external effects. The list
+describes active turns, not independent processes or pending queue entries.
+
 Cancelled and interrupted terminal facts produce typed model-only interruption
 context after retained partial assistant output. It states that output may be
 incomplete and tool results remain authoritative; it makes no unsupported claim

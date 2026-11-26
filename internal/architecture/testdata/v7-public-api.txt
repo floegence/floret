@@ -1412,6 +1412,13 @@ field SteerQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field SteerQueuedInput.QueueItemID string tag="json:\"queue_item_id\""
 field SteerQueuedInput.ExpectedInput github.com/floegence/floret/v7/runtime.UserInput tag="json:\"expected_input\""
 field SteerQueuedInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type StopSubtreeInput struct
+field StopSubtreeInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field StopSubtreeInput.Targets []github.com/floegence/floret/v7/runtime.ThreadExecutionTarget tag="json:\"targets\""
+field StopSubtreeInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type StopSubtreeResult struct
+field StopSubtreeResult.Admitted []github.com/floegence/floret/v7/runtime.ThreadExecutionTarget tag="json:\"admitted\""
+field StopSubtreeResult.AlreadyEnded []github.com/floegence/floret/v7/runtime.ThreadExecutionTarget tag="json:\"already_ended\""
 type StorageInspection struct
 field StorageInspection.Exists bool tag="json:\"exists\""
 field StorageInspection.MigrationRequired bool tag="json:\"migration_required\""
@@ -1679,6 +1686,10 @@ field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty
 type ThreadContextUsage struct
 field ThreadContextUsage.Confirmed *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"confirmed,omitempty\""
 field ThreadContextUsage.Estimate *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"estimate,omitempty\""
+type ThreadExecutionTarget struct
+field ThreadExecutionTarget.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadExecutionTarget.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadExecutionTarget.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 type ThreadFactsSource interface interface{SubscribeFacts(context.Context) (*github.com/floegence/floret/v7/runtime.ThreadUpdateSubscription, error)}
 type ThreadFinishConfirmer interface interface{ConfirmTurnFinish(context.Context, github.com/floegence/floret/v7/identity.ThreadID, github.com/floegence/floret/v7/identity.TurnID, github.com/floegence/floret/v7/identity.RunID) error}
 type ThreadForkReader interface interface{LookupFork(context.Context, github.com/floegence/floret/v7/runtime.ForkThreadInput) (github.com/floegence/floret/v7/identity.ThreadID, bool, error)}
@@ -1964,6 +1975,7 @@ type ThreadSteeringController interface interface{Steer(context.Context, github.
 const ThreadSteeringPending github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "pending"
 type ThreadSteeringReader interface interface{LookupSteer(context.Context, github.com/floegence/floret/v7/runtime.LookupSteerInput) (github.com/floegence/floret/v7/runtime.UserInput, bool, error)}
 type ThreadSteeringStatus string
+type ThreadSubtreeStopper interface interface{StopSubtree(context.Context, github.com/floegence/floret/v7/runtime.StopSubtreeInput) (github.com/floegence/floret/v7/runtime.StopSubtreeResult, error); SubtreeExecutions(context.Context, github.com/floegence/floret/v7/identity.ThreadID) ([]github.com/floegence/floret/v7/runtime.ThreadExecutionTarget, error)}
 type ThreadSummary struct
 field ThreadSummary.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadSummary.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""

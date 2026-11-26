@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.129.0
+
+- Add exact, parent-first graceful Stop for the active executions of an authorized subtree, including trees with an idle root. No storage migration.
+
 ## v7.128.0
 
 - Observe any or all selected child executions without a timer. Dependency waits yield to steering and do not resume idle parents or replace unavailable targets. No storage migration.

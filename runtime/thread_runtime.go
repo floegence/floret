@@ -993,6 +993,8 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 	if err != nil {
 		return err
 	}
+	// Deletion takes multiple actor locks; maintain its global lock order.
+	sort.Slice(threadIDs, func(i, j int) bool { return threadIDs[i] < threadIDs[j] })
 	drains, err := service.fenceThreadRuntimes(threadIDs)
 	if err != nil {
 		return err
@@ -1070,7 +1072,6 @@ func (service *threadRuntimeService) subtreeThreadIDs(ctx context.Context, rootT
 	for index := 0; index < len(ids); index++ {
 		ids = append(ids, children[ids[index]]...)
 	}
-	sort.Strings(ids)
 	out := make([]identity.ThreadID, len(ids))
 	for index, threadID := range ids {
 		out[index] = identity.ThreadID(threadID)

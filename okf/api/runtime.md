@@ -422,6 +422,13 @@ normal immediate/graceful effect settlement and queue; unrelated roots are not
 affected. The default remains selected-thread cancellation. See the
 [subtree cancellation tests](../../runtime/thread_subtree_cancel_test.go).
 
+Interactive tree controls can freeze `ThreadSubtreeStopper.SubtreeExecutions`
+from an authorized root and call `StopSubtree` even without an active root
+turn. The runtime checks scope and identities, then admits graceful Stop for
+each active target in parent-first order. Keep original targets on retry;
+refresh on conflict. Inspect the returned prefix even on error and read
+canonical outcomes for settlement. See the [exact tree test](../../runtime/thread_subtree_stop_test.go).
+
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
 After that commit, the actor releases its view, draft buffers, item indexes,
