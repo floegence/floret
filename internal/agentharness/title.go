@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/providerattempt"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	defaultThreadTitleMaxRunes        = 48
+	automaticTitleMaxColumns          = 40
 	defaultThreadTitleMaxOutputTokens = 64
 	defaultThreadTitleReasoningTokens = 1024
 	threadTitlePromptMaxMessages      = 8
@@ -60,7 +61,6 @@ type ProviderTitleGenerator struct {
 	ProviderName    string
 	Model           string
 	Reasoning       provider.ReasoningCapability
-	MaxRunes        int
 	MaxOutputTokens int64
 }
 
@@ -145,18 +145,11 @@ func (g ProviderTitleGenerator) generateTitleAttempt(ctx context.Context, reques
 }
 
 func (g ProviderTitleGenerator) titleResult(raw string) (TitleResult, error) {
-	title := normalizeThreadTitle(raw, g.maxRunes())
+	title := normalizeThreadTitle(raw)
 	if title == "" {
 		return TitleResult{}, errors.New("provider returned empty thread title")
 	}
 	return TitleResult{Title: title, Source: sessiontree.ThreadTitleSourceProvider}, nil
-}
-
-func (g ProviderTitleGenerator) maxRunes() int {
-	if g.MaxRunes > 0 {
-		return g.MaxRunes
-	}
-	return defaultThreadTitleMaxRunes
 }
 
 func (g ProviderTitleGenerator) maxOutputTokens() int64 {
@@ -222,7 +215,8 @@ func threadTitlePromptMessages(messages []session.Message) ([]session.Message, e
 		"Return only one plain-text title.",
 		"Do not reason; return only the title.",
 		"The title must summarize the user's primary intent, not quote the raw transcript.",
-		fmt.Sprintf("Keep the title specific, single-line, and no more than %d Unicode characters.", defaultThreadTitleMaxRunes),
+		"Name the task so the user can find it later. Put the distinguishing subject and action first. Omit redundant project names and introductory phrasing; keep names that distinguish the task.",
+		fmt.Sprintf("Use one short line, usually 8-14 Chinese characters or 3-6 English words. Stay within %d narrow or %d wide characters in total; shorten the phrasing instead of cutting a word.", automaticTitleMaxColumns, automaticTitleMaxColumns/2),
 		"Do not mention chat, thread, assistant, or tools unless central to the request.",
 		"Do not include secrets, credentials, private values, markdown, or extra commentary.",
 	}, "\n")
@@ -267,35 +261,27 @@ func truncateTitlePromptContent(text string, maxRunes int) string {
 	return strings.TrimSpace(string(runes[:maxRunes-3])) + "..."
 }
 
-func normalizeThreadTitle(text string, maxRunes int) string {
-	text = collapseWhitespace(strings.TrimSpace(text))
-	text = trimTitleEdges(text)
-	if text == "" {
-		return ""
+func normalizeThreadTitle(text string) string {
+	text = strings.Trim(collapseWhitespace(text), " \"'`“”‘’")
+	clusters := uniseg.NewGraphemes(text)
+	columns, runes, wordEnd := 0, 0, 0
+	for clusters.Next() {
+		start, end := clusters.Positions()
+		columns += clusters.Width()
+		runes += utf8.RuneCountInString(text[start:end])
+		if columns > automaticTitleMaxColumns || runes > sessiontree.MaxThreadTitleRunes {
+			if clusters.Str() != " " && wordEnd > 0 {
+				start = wordEnd
+			}
+			return strings.TrimSpace(text[:start])
+		}
+		if clusters.IsWordBoundary() {
+			wordEnd = end
+		}
 	}
-	if maxRunes <= 0 {
-		maxRunes = defaultThreadTitleMaxRunes
-	}
-	if utf8.RuneCountInString(text) <= maxRunes {
-		return text
-	}
-	runes := []rune(text)
-	cut := maxRunes
-	for cut > maxRunes/2 && cut < len(runes) && !unicode.IsSpace(runes[cut]) {
-		cut--
-	}
-	if cut <= 0 {
-		cut = maxRunes
-	}
-	return trimTitleEdges(string(runes[:cut]))
+	return text
 }
 
 func collapseWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
-}
-
-func trimTitleEdges(text string) string {
-	return strings.TrimFunc(text, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
-	})
 }

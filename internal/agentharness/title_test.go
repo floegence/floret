@@ -18,6 +18,21 @@ import (
 
 type titleProviderFunc func(context.Context, provider.Request) (<-chan provider.StreamEvent, error)
 
+func TestAutomaticTitleDisplayBudget(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{strings.Repeat("界", 22), strings.Repeat("界", 20)},
+		{strings.Repeat("a", 41), strings.Repeat("a", 40)},
+		{strings.Repeat("界", 14) + " retry token overflow", strings.Repeat("界", 14) + " retry token"},
+		{strings.Repeat("a", 39) + "e\u0301xyz", strings.Repeat("a", 39) + "e\u0301"},
+		{strings.Repeat("a", 38) + "👩‍💻xyz", strings.Repeat("a", 38) + "👩‍💻"},
+	} {
+		got, err := (ProviderTitleGenerator{}).titleResult(tc.input)
+		if err != nil || got.Title != tc.want {
+			t.Errorf("%q: got %q, want %q (%v)", tc.input, got.Title, tc.want, err)
+		}
+	}
+}
+
 func (f titleProviderFunc) Stream(ctx context.Context, request provider.Request) (<-chan provider.StreamEvent, error) {
 	return f(ctx, request)
 }

@@ -195,7 +195,7 @@ func (t *Thread) runAutomaticTitle(
 		t.settleAutomaticTitleFailure(ctx, authority, claim, turnID, runID, err)
 		return
 	}
-	title := normalizeThreadTitle(result.Title, defaultThreadTitleMaxRunes)
+	title := normalizeThreadTitle(result.Title)
 	if title == "" {
 		t.settleAutomaticTitleFailure(ctx, authority, claim, turnID, runID, errors.New("thread title is empty after normalization"))
 		return

@@ -365,8 +365,7 @@ Automatic title generation uses the admitted user text with a separate title
 prompt that instructs the provider to preserve the request language, explicitly
 including English. Host context and the main agent system prompt do not select
 the title language. Language preservation takes priority over compression;
-automatic titles allow up to 48 Unicode characters so English phrases remain
-readable. Generation disables reasoning when supported, otherwise chooses the
+new model titles lead with the distinguishing subject and action, typically 8-14 Chinese characters or 3-6 English words. A 40-display-column ceiling respects grapheme and word boundaries; fallback, manual and historical titles keep their existing contract. Generation disables reasoning when supported, otherwise chooses the
 lowest declared short-request effort. Since provider output limits include
 hidden reasoning, automatic titles allow up to 1,024 output tokens when thinking
 cannot be disabled or its controls are unknown; explicit non-reasoning and

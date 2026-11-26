@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.129.1
+
+- Generate compact, language-preserving automatic titles with a grapheme-safe 40-column limit. Existing titles, manual names, fallbacks and model output budgets are unchanged.
+
 ## v7.129.0
 
 - Add snapshot-bound, parent-first graceful Stop for an authorized subtree, including idle roots and pending automatic queue or host-work continuations. Pass the originating `ParentExecution` on delegated Send and Steer to reject late input after parent Stop. No storage migration.
