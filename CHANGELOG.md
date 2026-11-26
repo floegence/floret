@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.125.1
+
+- Continue released v12 histories with retained tool output. Only a verified pre-range prefix resets native state; unrelated drift still fails before dispatch.
+
 ## v7.125.0
 
 - Add optional stateless UTF-8 range reads of authorized query fields. Field addresses survive restart without a new database or cursor cache.

@@ -190,7 +190,7 @@ func TestLineageFastPathPreservesReturningSurfaceChecks(t *testing.T) {
 	history := []session.Message{{Role: session.User, Content: "hello"}}
 	check := func(system string, segments ...string) (RawPlan, error) {
 		plan := lineagePlan("test", "model", "ns", append([]string{system}, segments...)...)
-		err := ValidateCanonicalLineage(ctx, base, "scope", &plan, system, nil, nil, nil, history)
+		err := ValidateCanonicalLineage(ctx, base, "scope", &plan, system, nil, nil, nil, history, nil)
 		return plan, err
 	}
 	first, err := check("first", "message")

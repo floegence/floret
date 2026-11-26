@@ -17,7 +17,7 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 	req := provider.Request{PromptScopeID: "scope", RunID: "run", Provider: "test", Model: "model", Step: 1,
 		ContextPolicy:   contextpolicy.Policy{ContextWindowTokens: 1000},
 		RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 400, MessageTokens: 100, Source: "test", Method: contextpolicy.EstimateMethodProviderRenderedPayload, Confidence: contextpolicy.EstimateConservative}}
-	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history); err != nil {
+	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	tracker := NewContextPressureTracker("scope")
@@ -90,7 +90,7 @@ func TestMeasuredPrefixDoesNotRepeatWholeHistoryMargin(t *testing.T) {
 	req := provider.Request{PromptScopeID: "scope", RunID: "run", Provider: "test", Model: "model", Step: 1,
 		ContextPolicy:   contextpolicy.Policy{ContextWindowTokens: 525000, ReservedOutputTokens: 1000},
 		RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 464496, Source: "test", Method: contextpolicy.EstimateMethodProviderRenderedPayload, Confidence: contextpolicy.EstimateConservative, Breakdown: contextpolicy.ContextBreakdown{AttributionCoverage: "partial"}}}
-	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history); err != nil {
+	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	tr := NewContextPressureTracker("scope")

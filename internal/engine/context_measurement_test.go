@@ -41,7 +41,7 @@ func measurementFixture(t *testing.T) (provider.Request, []session.Message, prov
 	req := provider.Request{Provider: "test", Model: "model", RunID: "run", Step: 1, AttemptID: "attempt", PromptScopeID: "scope", Prepared: p,
 		ContextPolicy:   contextpolicy.Policy{ContextWindowTokens: 525000, ReservedOutputTokens: 1000},
 		RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 464496, Source: "rendered_proxy_bpe_content_v5", Method: contextpolicy.EstimateMethodProviderRenderedPayload, Confidence: contextpolicy.EstimateApproximate}}
-	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history); err != nil {
+	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	usage := provider.Usage{Source: provider.UsageNative, Available: true, InputTokensReported: true, InputTokenScope: "provider_execution", InputTokens: 5526, CacheReadTokens: 412160,

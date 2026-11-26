@@ -54,6 +54,10 @@ func ValidateMessageContext(items []MessageContextItem) error {
 // ProviderContent renders submitted facts in order without opaque locators.
 // JSON strings delimit host/user data without granting it instruction authority.
 func ProviderContent(message Message) string {
+	return providerContent(message, true)
+}
+
+func providerContent(message Message, includeReadRange bool) string {
 	if message.Role == Tool && message.ToolResult != nil && (message.ToolResult.OutputRef != "" || message.ToolResult.OutputUnavailable != "") {
 		// Keep structured outcomes valid JSON. Retention is separate from the
 		// execution status and from preview omission; it never recommends replay.
@@ -67,7 +71,7 @@ func ProviderContent(message Message) string {
 		}
 		view := message.ToolResult
 		output := map[string]any{"ref": view.OutputRef, "preview_omitted": view.Truncated, "original_bytes": view.OriginalBytes, "sha256": view.ContentSHA256}
-		if view.OutputRef != "" && view.FullOutput != nil && view.OutputUnavailable == "" && view.Truncated {
+		if includeReadRange && view.OutputRef != "" && view.FullOutput != nil && view.OutputUnavailable == "" && view.Truncated {
 			start, end := int64(0), view.FullOutput.SizeBytes
 			if g := view.Omitted; g != nil {
 				start = int64(g.StartByte)

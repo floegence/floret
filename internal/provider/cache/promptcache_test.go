@@ -52,7 +52,7 @@ func TestMediaProjectionMigratesV9OnceWithoutRewritingCanonicalHistory(t *testin
 	store := NewMemoryStore()
 	history := []session.Message{{Role: session.User, Content: "capture", EntryID: "user"}}
 	old := lineagePlan("test", "vision", "ns", "system", "image-omitted")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	old.ContextProjectionRevision = contextProjectionV9
@@ -60,7 +60,7 @@ func TestMediaProjectionMigratesV9OnceWithoutRewritingCanonicalHistory(t *testin
 		t.Fatal(err)
 	}
 	next := lineagePlan("test", "vision", "ns", "system", "image-preserved")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !next.CanonicalLineageReset || next.CanonicalHistoryPrefixHash != old.CanonicalHistoryPrefixHash {
@@ -70,7 +70,7 @@ func TestMediaProjectionMigratesV9OnceWithoutRewritingCanonicalHistory(t *testin
 		t.Fatal(err)
 	}
 	drift := lineagePlan("test", "vision", "ns", "system", "unexpected-rewrite")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &drift, "system", nil, nil, nil, history); !errors.Is(err, ErrContextRenderLineageChanged) {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &drift, "system", nil, nil, nil, history, nil); !errors.Is(err, ErrContextRenderLineageChanged) {
 		t.Fatalf("post-migration drift was not rejected: %v", err)
 	}
 }
@@ -86,7 +86,7 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 		{Role: session.Tool, Content: "contents", ToolCallID: "call-1", ToolName: "read", EntryID: "result", ToolResult: &session.ToolResultView{Status: "success"}},
 	}
 	first := lineagePlan("test", "model", "ns", "tool", "system", "user", "assistant", "call", "result")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, firstHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, firstHistory, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -95,7 +95,7 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 
 	appended := append(append([]session.Message(nil), firstHistory...), session.Message{Role: session.Assistant, Content: "done", Reasoning: "reasoning-2"})
 	next := lineagePlan("test", "model", "ns", "tool", "system", "user", "assistant", "call", "result", "done")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, appended); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, appended, nil); err != nil {
 		t.Fatalf("append-only suffix rejected: %v", err)
 	}
 	if next.CanonicalMessageCount != len(appended) || next.CanonicalPrefixHash == first.CanonicalPrefixHash {
@@ -105,18 +105,18 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 	mutated := append([]session.Message(nil), appended...)
 	mutated[1].Reasoning = "rewritten reasoning"
 	mutatedPlan := lineagePlan("test", "model", "ns", "tool", "system", "user-mutated")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &mutatedPlan, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, mutated); !errors.Is(err, ErrContextPrefixDrift) {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &mutatedPlan, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, mutated, nil); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("mutated prefix error = %v, want ErrContextPrefixDrift", err)
 	}
 	rewrittenEnvelope := lineagePlan("test", "model", "ns", "tool", "new-system")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &rewrittenEnvelope, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &rewrittenEnvelope, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended, nil); err != nil {
 		t.Fatalf("rewritten envelope should create a new render lineage: %v", err)
 	}
 	if rewrittenEnvelope.RenderLineageKey == first.RenderLineageKey {
 		t.Fatal("rewritten envelope reused the previous render lineage")
 	}
 	newModel := lineagePlan("test", "other", "other-ns", "other-tool", "other-system", "other-user")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &newModel, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &newModel, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended, nil); err != nil {
 		t.Fatalf("new model render lineage rejected: %v", err)
 	}
 }
@@ -130,7 +130,7 @@ func TestValidateCanonicalLineageUsesTypedFactsInsteadOfJournalEntryIDs(t *testi
 		{Role: session.Tool, Content: `ERROR: tool "retired_tool" is unavailable in the current version`, ToolCallID: "call-1", ToolName: "retired_tool", EntryID: "run:entry:result", ToolResult: &session.ToolResultView{Status: "error"}},
 	}
 	first := lineagePlan("test", "model", "ns", "system", "user", "call", "result")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, firstHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, firstHistory, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -144,7 +144,7 @@ func TestValidateCanonicalLineageUsesTypedFactsInsteadOfJournalEntryIDs(t *testi
 	}
 	rebuilt = append(rebuilt, session.Message{Role: session.Assistant, Content: "done", EntryID: "journal-assistant"})
 	next := lineagePlan("test", "model", "ns", "system", "user", "call", "result", "assistant")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, rebuilt); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, rebuilt, nil); err != nil {
 		t.Fatalf("canonical journal reconstruction changed typed history: %v", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.
 	store := NewMemoryStore()
 	firstHistory := []session.Message{{Role: session.User, Content: "one"}, {Role: session.Assistant, Content: "a-one"}}
 	firstA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools", "flash-system", "flash-one", "flash-a-one")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstA, "system", nil, nil, map[string]any{"model": "flash"}, firstHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstA, "system", nil, nil, map[string]any{"model": "flash"}, firstHistory, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-a1", ThreadID: "thread", TurnID: "turn-a1"}, 1, "deepseek", "flash", CachePolicy{Namespace: "flash-ns"}, firstA); err != nil {
@@ -163,7 +163,7 @@ func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.
 
 	secondHistory := append(append([]session.Message(nil), firstHistory...), session.Message{Role: session.User, Content: "two"}, session.Message{Role: session.Assistant, Content: "a-two"})
 	firstB := lineagePlan("deepseek", "pro", "pro-ns", "pro-tools", "pro-system", "pro-one", "pro-a-one", "pro-two", "pro-a-two")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstB, "system", nil, nil, map[string]any{"model": "pro"}, secondHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstB, "system", nil, nil, map[string]any{"model": "pro"}, secondHistory, nil); err != nil {
 		t.Fatalf("A to B switch rejected: %v", err)
 	}
 	if firstB.CanonicalLineageReset {
@@ -175,7 +175,7 @@ func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.
 
 	thirdHistory := append(append([]session.Message(nil), secondHistory...), session.Message{Role: session.User, Content: "three"})
 	secondA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools", "flash-system", "flash-one", "flash-a-one", "flash-two", "flash-a-two", "flash-three")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &secondA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &secondA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory, nil); err != nil {
 		t.Fatalf("A to B to A switch rejected: %v", err)
 	}
 	if !slices.Equal(firstA.SegmentIDs, secondA.SegmentIDs[:len(firstA.SegmentIDs)]) {
@@ -183,7 +183,7 @@ func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.
 	}
 
 	driftedA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools-changed", "flash-system", "flash-one")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &driftedA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory); !errors.Is(err, ErrContextRenderLineageChanged) {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &driftedA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory, nil); !errors.Is(err, ErrContextRenderLineageChanged) {
 		t.Fatalf("render prefix drift error = %v, want ErrContextRenderLineageChanged", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestValidateCanonicalLineageRequiresCommittedCompactionForNewGeneration(t *
 	store := NewMemoryStore()
 	history := []session.Message{{Role: session.User, Content: "first"}}
 	first := lineagePlan("test", "model", "ns", "system", "first")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -270,14 +270,14 @@ func TestValidateCanonicalLineageRequiresCommittedCompactionForNewGeneration(t *
 	}
 	invalid := lineagePlan("test", "model", "ns", "system", "first")
 	invalid.CompactionGeneration = 1
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &invalid, "new system", nil, nil, nil, history); !errors.Is(err, ErrContextPrefixDrift) {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &invalid, "new system", nil, nil, nil, history, nil); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("uncommitted generation error = %v, want ErrContextPrefixDrift", err)
 	}
 	valid := lineagePlan("test", "model", "ns", "system", "summary")
 	valid.CompactionGeneration = 1
 	valid.CompactionWindowID = "window-1"
 	valid.CompactionEntryID = "compaction-1"
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &valid, "new system", nil, nil, nil, []session.Message{{Role: session.System, Kind: session.MessageKindCompactionSummary, Content: "summary"}}); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &valid, "new system", nil, nil, nil, []session.Message{{Role: session.System, Kind: session.MessageKindCompactionSummary, Content: "summary"}}, nil); err != nil {
 		t.Fatalf("committed compaction generation rejected: %v", err)
 	}
 	if !valid.CanonicalLineageReset {
@@ -295,7 +295,7 @@ func TestValidateCanonicalLineageMigratesLegacyProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	exact := lineagePlan("test", "model", "ns", "system-old", "message-old", "message-new")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &exact, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); !errors.Is(err, ErrContextLineageMigrationNeeded) {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &exact, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}, nil); !errors.Is(err, ErrContextLineageMigrationNeeded) {
 		t.Fatalf("legacy drift error = %v, want migration", err)
 	}
 }
@@ -320,7 +320,7 @@ func TestValidateCanonicalLineageResetsExactV2ProjectionWithoutCompaction(t *tes
 
 	currentHistory := legacyHistory[:1]
 	first := lineagePlan("test", "model", "ns", "system-v4", "message-1")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, currentHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, currentHistory, nil); err != nil {
 		t.Fatalf("exact v2 to v4 projection reset failed: %v", err)
 	}
 	if !first.CanonicalLineageReset || first.CompactionGeneration != 0 {
@@ -334,7 +334,7 @@ func TestValidateCanonicalLineageResetsExactV2ProjectionWithoutCompaction(t *tes
 
 	appendedHistory := append(append([]session.Message(nil), currentHistory...), session.Message{Role: session.User, Content: "next"})
 	second := lineagePlan("test", "model", "ns", "system-v4", "message-1", "message-2")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &second, "system", nil, nil, nil, appendedHistory); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &second, "system", nil, nil, nil, appendedHistory, nil); err != nil {
 		t.Fatalf("append after projection reset failed: %v", err)
 	}
 	if second.CanonicalLineageReset {
@@ -352,7 +352,7 @@ func TestValidateCanonicalLineageResetsExactV3ProjectionWithoutCompaction(t *tes
 		t.Fatal(err)
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}, nil); err != nil {
 		t.Fatalf("exact v3 to v4 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
@@ -370,7 +370,7 @@ func TestValidateCanonicalLineageResetsExactV4ProjectionWithoutCompaction(t *tes
 		t.Fatal(err)
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "user"}}); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "user"}}, nil); err != nil {
 		t.Fatalf("exact v4 to v6 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
@@ -388,7 +388,7 @@ func TestValidateCanonicalLineageResetsExactV5ProjectionWithoutCompaction(t *tes
 		t.Fatal(err)
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}, nil); err != nil {
 		t.Fatalf("exact v5 to v6 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
@@ -406,7 +406,7 @@ func TestValidateCanonicalLineageResetsExactV6ProjectionWithoutCompaction(t *tes
 		t.Fatal(err)
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}, nil); err != nil {
 		t.Fatalf("exact v6 to v7 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
@@ -424,7 +424,7 @@ func TestValidateCanonicalLineageRejectsUnknownProjectionChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
-	err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}})
+	err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}, nil)
 	if !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("unknown projection error=%v, want ErrContextPrefixDrift", err)
 	}
@@ -1283,7 +1283,7 @@ func TestCanonicalProjectionV10UpgradePreservesRecordedFacts(t *testing.T) {
 	history := []session.Message{{Role: session.User, EntryID: "canonical-user", Content: "continue"}}
 	old := lineagePlan("test", "model", "ns", "old-render")
 	old.ContextProjectionRevision = contextProjectionV10
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &old, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	recorded, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "old"}, 1, "test", "model", CachePolicy{}, old)
@@ -1300,7 +1300,7 @@ func TestCanonicalProjectionV10UpgradePreservesRecordedFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := lineagePlan("test", "model", "ns", "canonical-render")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !next.CanonicalLineageReset || next.ContextProjectionRevision != ContextProjectionRevision {
@@ -1319,7 +1319,7 @@ func TestCanonicalProjectionV10UpgradePreservesRecordedFacts(t *testing.T) {
 		t.Fatal("projection upgrade rewrote recorded requests, responses or usage")
 	}
 	drift := lineagePlan("test", "model", "ns", "unexpected")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &drift, "system", nil, nil, nil, history); !errors.Is(err, ErrContextRenderLineageChanged) {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &drift, "system", nil, nil, nil, history, nil); !errors.Is(err, ErrContextRenderLineageChanged) {
 		t.Fatalf("post-upgrade drift accepted: %v", err)
 	}
 }
@@ -1328,7 +1328,7 @@ func TestCanonicalProjectionV11UpgradePreservesRecordedFacts(t *testing.T) {
 	history := []session.Message{{Role: session.User, EntryID: "canonical-user", Content: "continue"}}
 	old := lineagePlan("test", "model", "ns", "old-render")
 	old.ContextProjectionRevision = contextProjectionV11
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &old, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	recorded, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "old"}, 1, "test", "model", CachePolicy{}, old)
@@ -1345,7 +1345,7 @@ func TestCanonicalProjectionV11UpgradePreservesRecordedFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := lineagePlan("test", "model", "ns", "canonical-render")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if next.CanonicalLineageReset || next.ContextProjectionRevision != ContextProjectionRevision {
@@ -1364,7 +1364,7 @@ func TestCanonicalProjectionV11UpgradePreservesRecordedFacts(t *testing.T) {
 		t.Fatal("projection upgrade rewrote recorded requests, responses or usage")
 	}
 	drift := lineagePlan("test", "model", "ns", "unexpected")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &drift, "system", nil, nil, nil, history); !errors.Is(err, ErrContextRenderLineageChanged) {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &drift, "system", nil, nil, nil, history, nil); !errors.Is(err, ErrContextRenderLineageChanged) {
 		t.Fatalf("post-upgrade drift accepted: %v", err)
 	}
 }

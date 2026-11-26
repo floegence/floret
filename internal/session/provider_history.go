@@ -14,6 +14,17 @@ func HasRetryEligibleDurableInput(message Message) bool {
 // ProjectProviderHistory derives the complete provider history from canonical facts.
 // The returned insertion index is relative to the projected non-system history.
 func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string) ([]Message, int, error) {
+	return projectProviderHistory(history, supplementalAnchorEntryID, true)
+}
+
+// ProjectPreRangeHistory reproduces the pre-v7.125 v12 content for prefix
+// verification only. Never send this projection or persist it as new history.
+func ProjectPreRangeHistory(history []Message) []Message {
+	projected, _, _ := projectProviderHistory(history, "", false) // no supplemental anchor to resolve
+	return projected
+}
+
+func projectProviderHistory(history []Message, supplementalAnchorEntryID string, includeReadRange bool) ([]Message, int, error) {
 	anchor := strings.TrimSpace(supplementalAnchorEntryID)
 	insertAt := -1
 	anchorMatches := 0
@@ -25,7 +36,7 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 			anchorMatches++
 		}
 		message := CloneMessage(original)
-		message.Content = ProviderContent(message)
+		message.Content = providerContent(message, includeReadRange)
 		if message.ToolResult != nil {
 			// The canonical locator was rendered once above. Token accounting of
 			// this projected copy must not nest the same envelope a second time.

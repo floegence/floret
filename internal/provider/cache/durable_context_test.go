@@ -18,7 +18,7 @@ func TestCanonicalLineageFreezesRenderedReferencesAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := lineagePlan("test", "model", "ns", "selected")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", ThreadID: "thread", RunID: "run", TurnID: "turn"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -42,7 +42,7 @@ func TestCanonicalLineageFreezesRenderedReferencesAndContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			plan := lineagePlan("test", "model", "ns", "changed")
-			if err := ValidateCanonicalLineage(t.Context(), store, "thread", &plan, "system", nil, nil, nil, projected); !errors.Is(err, ErrContextPrefixDrift) {
+			if err := ValidateCanonicalLineage(t.Context(), store, "thread", &plan, "system", nil, nil, nil, projected, nil); !errors.Is(err, ErrContextPrefixDrift) {
 				t.Fatalf("unexpected drift result: %v", err)
 			}
 		})
@@ -53,7 +53,7 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 	store := NewMemoryStore()
 	history := []session.Message{{Role: session.User, EntryID: "source", Content: "input"}, {Role: session.Assistant, Content: "previous attempt"}}
 	first := lineagePlan("test", "model", "ns", "source", "answer")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "first"}, 2, "test", "model", CachePolicy{}, first); err != nil {
@@ -62,11 +62,11 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 	retry := lineagePlan("test", "model", "ns", "source")
 	retry.RetryRunID = "retry"
 	retry.RetrySourceEntryID = "wrong"
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, history[:1]); !errors.Is(err, ErrContextPrefixDrift) {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, history[:1], nil); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("wrong source accepted: %v", err)
 	}
 	retry.RetrySourceEntryID = "source"
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, history[:1]); err != nil || !retry.CanonicalLineageReset {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, history[:1], nil); err != nil || !retry.CanonicalLineageReset {
 		t.Fatalf("canonical retry rejected: %v", err)
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "retry"}, 1, "test", "model", CachePolicy{}, retry); err != nil {
@@ -75,7 +75,7 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 	changed := session.CloneMessages(history[:1])
 	changed[0].Content = "rewritten"
 	retry.CanonicalLineageReset = false
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, changed); !errors.Is(err, ErrContextPrefixDrift) {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, changed, nil); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("retry disabled prefix checks: %v", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestCanonicalRetryAllowsOnlyAdmittedFactsAfterSource(t *testing.T) {
 		store := NewMemoryStore()
 		history := []session.Message{{Role: session.User, EntryID: "source", Content: "input"}}
 		first := lineagePlan("test", "model", "ns", "source")
-		if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+		if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history, nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "first"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -94,7 +94,7 @@ func TestCanonicalRetryAllowsOnlyAdmittedFactsAfterSource(t *testing.T) {
 		next := append(session.CloneMessages(history), session.Message{Role: session.User, Kind: kind, EntryID: "new", Content: "fresh runtime facts"})
 		retry := lineagePlan("test", "model", "ns", "source", "new")
 		retry.RetryRunID, retry.RetrySourceEntryID = "retry", "source"
-		err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next)
+		err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next, nil)
 		if kind != session.MessageKindNormal && err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestCanonicalRetryAllowsOnlyAdmittedFactsAfterSource(t *testing.T) {
 		}
 		if kind == session.MessageKindHostWork {
 			next[len(next)-1].EntryID = ""
-			if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next); !errors.Is(err, ErrContextPrefixDrift) {
+			if err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next, nil); !errors.Is(err, ErrContextPrefixDrift) {
 				t.Fatalf("host work without canonical identity accepted: %v", err)
 			}
 		}
@@ -114,7 +114,7 @@ func TestMessageRevisionResetsLineageOnceAndRetainsAudit(t *testing.T) {
 	store := NewMemoryStore()
 	original := []session.Message{{Role: session.User, EntryID: "old", Content: "old"}}
 	first := lineagePlan("test", "model", "ns", "old")
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, original); err != nil {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, original, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "old"}, 1, "test", "model", CachePolicy{}, first); err != nil {
@@ -123,7 +123,7 @@ func TestMessageRevisionResetsLineageOnceAndRetainsAudit(t *testing.T) {
 	changed := []session.Message{{Role: session.User, EntryID: "new", Content: "replacement"}}
 	next := lineagePlan("test", "model", "ns", "new")
 	next.MessageRevisionID = "revision"
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed); err != nil || !next.CanonicalLineageReset {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed, nil); err != nil || !next.CanonicalLineageReset {
 		t.Fatalf("revision %v %+v", err, next)
 	}
 	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "new"}, 1, "test", "model", CachePolicy{}, next); err != nil {
@@ -131,7 +131,7 @@ func TestMessageRevisionResetsLineageOnceAndRetainsAudit(t *testing.T) {
 	}
 	next.CanonicalLineageReset = false
 	changed[0].Content = "illegal rewrite"
-	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed); !errors.Is(err, ErrContextPrefixDrift) {
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, changed, nil); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("unchecked later rewrite: %v", err)
 	}
 }

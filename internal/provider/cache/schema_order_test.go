@@ -13,7 +13,7 @@ func TestToolRenderingRevisionChangesSurfaceOnceWithoutChangingHistory(t *testin
 	history := []session.Message{{Role: session.User, Content: "keep history"}}
 	old := lineagePlan("test", "model", "ns", "old-tools")
 	old.RenderLineageKey = HashStrings("test", "model", Version, "ns", ContextProjectionRevision)
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	surface := TurnSurfaceSnapshot{Provider: "test", Model: "model", StateCompatibilityKey: "stable"}
@@ -25,7 +25,7 @@ func TestToolRenderingRevisionChangesSurfaceOnceWithoutChangingHistory(t *testin
 		t.Fatal(err)
 	}
 	next := lineagePlan("test", "model", "ns", "ordered-tools")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, history, nil); err != nil {
 		t.Fatal(err)
 	}
 	changed, identityChanged, err := ProviderSurfaceChanges(ctx, store, "thread", next.RenderLineageKey, surface)

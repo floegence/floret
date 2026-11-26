@@ -2635,7 +2635,7 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 		"provider": opts.ProviderName, "model": opts.Model,
 		"reasoning": opts.Reasoning, "adapter_version": cache.Version,
 		"state_compatibility_key": opts.StateCompatibilityKey,
-	}, canonicalHistory); err != nil {
+	}, canonicalHistory, history); err != nil {
 		if contextLineageCompactionRequired(err) {
 			return provider.Request{}, err
 		}

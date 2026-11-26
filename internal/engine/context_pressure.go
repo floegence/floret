@@ -418,7 +418,7 @@ func (t *ContextPressureTracker) ObserveCommittedResponse(req provider.Request, 
 	anchor.MeasurementPrefix = prefix
 	anchor.WindowInputTokens = usage.WindowInputTokens + output
 	var plan cache.RawPlan
-	if err := cache.ValidateCanonicalLineage(context.Background(), nil, req.PromptScopeID, &plan, "", nil, nil, nil, history); err != nil {
+	if err := cache.ValidateCanonicalLineage(context.Background(), nil, req.PromptScopeID, &plan, "", nil, nil, nil, history, nil); err != nil {
 		return PressureAnchorState{}
 	}
 	anchor.CanonicalMessageCount, anchor.CanonicalHistoryPrefixHash = plan.CanonicalMessageCount, plan.CanonicalHistoryPrefixHash

@@ -277,6 +277,11 @@ history; inserted interruption messages reset incompatible state. Canonical byte
 and released checkpoint boundaries remain unchanged. This requires no domain schema migration and adds
 no UI message or second transcript.
 
+Projection v13 distinguishes both released v12 retained-output shapes by the
+complete frozen history prefix. An exact match retains compatible provider
+state; only an exact pre-range projection match permits resetting native state.
+Unexplained changes fail before dispatch. No journal or request is rewritten.
+
 ## Queued message controls
 
 The service returned by `Host.ThreadService` also implements the optional

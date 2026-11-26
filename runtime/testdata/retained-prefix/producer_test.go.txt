@@ -1,0 +1,36 @@
+// Run alongside the pinned release's runtime/thread_output_external_test.go
+// in a blank module. Only synthetic data from the public Runtime is retained.
+package runtime_test
+
+import (
+	"fmt"
+	"github.com/floegence/floret/v7/tools"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestWriteReleasedRetainedPrefix(t *testing.T) {
+	f := newOutputRuntimeFixture(t, false, tools.Result{Text: `{"preview":"recorded"}`, FullOutput: &tools.FullOutputPlan{Text: strings.Repeat("synthetic retained line\n", 100)}})
+	req := f.gateway.Requests()[1]
+	found := false
+	for _, m := range req.Messages {
+		if m.ToolResult != nil && strings.Contains(m.ToolResult.Text, `"preview_omitted":true`) {
+			found = true
+			fmt.Printf("thread=%s read=%t\n", f.binding.ThreadID, strings.Contains(m.ToolResult.Text, `"read":`))
+		}
+	}
+	if !found {
+		t.Fatal("missing truncated retained result")
+	}
+	// The fixture helper reopens exactly this file. Backup includes its WAL.
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(t.TempDir()), "*", "output.sqlite"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("fixture database: %v %v", files, err)
+	}
+	if out, err := exec.Command("sqlite3", "-readonly", files[0], ".backup '"+os.Getenv("FIXTURE_PATH")+"'").CombinedOutput(); err != nil {
+		t.Fatalf("backup: %s: %v", out, err)
+	}
+}

@@ -24,7 +24,8 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v12"
+	ContextProjectionRevision = "provider-context.v13"
+	contextProjectionV12      = "provider-context.v12"
 	contextProjectionV11      = "provider-context.v11"
 	contextProjectionV10      = "provider-context.v10"
 	contextProjectionV9       = "provider-context.v9"
@@ -974,7 +975,7 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 
 // ValidateCanonicalLineage binds a rendered request to the append-only,
 // provider-neutral context prefix for one compaction generation.
-func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID string, plan *RawPlan, systemPrompt string, tools []ToolDefinition, hosted []HostedToolDefinition, fixedConfig any, history []session.Message) error {
+func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID string, plan *RawPlan, systemPrompt string, tools []ToolDefinition, hosted []HostedToolDefinition, fixedConfig any, history, source []session.Message) error {
 	if plan == nil {
 		return errors.New("raw plan is required")
 	}
@@ -1041,6 +1042,25 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
+		if previous.ContextProjectionRevision == contextProjectionV12 && plan.ContextProjectionRevision == ContextProjectionRevision {
+			// Two released writers called their projection v12. Trust only a full
+			// prefix match, never a version number or a tool name alone.
+			n := previous.CanonicalMessageCount
+			if previous.CanonicalHistoryPrefixHash == "" {
+				return ErrContextLineageMigrationNeeded
+			}
+			if n < 0 || n > len(messageHashes) {
+				return fmt.Errorf("%w: canonical history was shortened", ErrContextPrefixDrift)
+			}
+			if HashStrings(messageHashes[:n]...) == previous.CanonicalHistoryPrefixHash {
+				return nil
+			}
+			if source != nil && MatchesCanonicalHistoryPrefix(previous, session.ProjectPreRangeHistory(source)) {
+				plan.CanonicalLineageReset = true
+				return nil
+			}
+			return fmt.Errorf("%w: canonical history prefix changed", ErrContextPrefixDrift)
+		}
 		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7 || previous.ContextProjectionRevision == contextProjectionV8 || previous.ContextProjectionRevision == contextProjectionV9 || previous.ContextProjectionRevision == contextProjectionV10 || previous.ContextProjectionRevision == contextProjectionV11) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			// A projection version changes the render boundary, but native history
 			// remains valid when its complete canonical request prefix is identical.
