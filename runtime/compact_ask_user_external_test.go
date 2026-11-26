@@ -18,7 +18,7 @@ import (
 
 // This public-boundary test also runs in blank candidate/published consumers.
 func TestCompactAskUserRestartAndAnswers(t *testing.T) {
-	const args = `{"evidence_refs":["observed-blocker"],"questions":[{"id":"route","header":"Route","question":"Which route?","response_mode":"select_or_write","is_secret":false,"write_label":"Another route","write_placeholder":"Describe your route","choices":[{"choice_id":"staged","label":"Staged rollout","description":"Start with a small group."},{"choice_id":"all","label":"Full rollout"}]},{"id":"note","header":"Note","question":"What should the release note say?","response_mode":"write","is_secret":false}]}`
+	const args = `{"evidence_refs":["observed-blocker"],"questions":[{"id":"route","header":"Route","question":"Which route?","response_mode":"select_or_write","write_label":"Another route","write_placeholder":"Describe your route","choices":[{"choice_id":"staged","label":"Staged rollout","description":"Start with a small group."},{"choice_id":"all","label":"Full rollout"}]},{"id":"note","header":"Note","question":"What should the release note say?","response_mode":"write"}]}`
 	for _, answer := range []string{"Staged rollout", "Custom route"} {
 		t.Run(answer, func(t *testing.T) {
 			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "compact", StateCompatibilityKey: "test:compact:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
@@ -84,7 +84,7 @@ func TestCompactAskUserRestartAndAnswers(t *testing.T) {
 					continue
 				}
 				raw, _ := json.Marshal(def.InputSchema)
-				for _, retired := range []string{"reason_code", "required_from_user", "choices_exhaustive", `"kind"`} {
+				for _, retired := range []string{"is_secret", "reason_code", "required_from_user", "choices_exhaustive", `"kind"`} {
 					if strings.Contains(string(raw), retired) {
 						t.Fatalf("model still sees %s", retired)
 					}
@@ -98,7 +98,7 @@ func TestCompactAskUserRestartAndAnswers(t *testing.T) {
 			if restored.Interactions[0].ID != waiting.Interactions[0].ID || !reflect.DeepEqual(restored.Interactions[0].Input, input) {
 				t.Fatal("restart changed input identity or presentation")
 			}
-			answers := map[string]string{"route": answer, "note": "Ship after review."}
+			answers := map[string]string{"route": answer, "note": "sk-fixture-not-a-credential"}
 			if _, err = service.Respond(t.Context(), runtime.RespondInput{ThreadID: thread.ThreadID, InteractionID: restored.Interactions[0].ID, RequestKey: "answer", Answers: []runtime.InteractionAnswer{{Input: answers}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,7 @@ func TestCompactAskUserRestartAndAnswers(t *testing.T) {
 				}
 				if message.ToolResult != nil && message.ToolResult.CallID == "ask-compact" {
 					results++
-					if !strings.Contains(message.ToolResult.Text, answer) {
+					if !strings.Contains(message.ToolResult.Text, answer) || !strings.Contains(message.ToolResult.Text, answers["note"]) {
 						t.Fatalf("answer missing: %s", message.ToolResult.Text)
 					}
 				}

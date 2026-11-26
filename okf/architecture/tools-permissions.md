@@ -122,11 +122,13 @@ valid without exposing arguments or validation details.
 
 The canonical control schema also owns model-facing field guidance. New model
 calls need only `questions` and `evidence_refs` at the root. Question/choice IDs,
-secret input, response modes and display hints retain their established meaning.
+response modes and display hints retain their established meaning. Answers to
+newly advertised questions are ordinary model-visible conversation history.
+The runtime does not infer sensitivity from the question or answer text.
 `evidence_refs` carries existing tool-call identifiers or an empty array; it grants
 no permission and remains available for exact host provenance resolution.
 
-The model no longer supplies `reason_code`, `required_from_user`,
+The model no longer supplies `is_secret`, `reason_code`, `required_from_user`,
 `choices_exhaustive`, or the constant choice `kind`. The v7 validator still
 accepts and validates these released fields for frozen Turn surfaces and saved
 pending interactions, preserves their source values, and never invents missing

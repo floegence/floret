@@ -90,7 +90,6 @@ func askUserInputSchema() map[string]any {
 			"id":                map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
 			"header":            map[string]any{"type": "string", "minLength": 1, "maxLength": 120},
 			"question":          map[string]any{"type": "string", "minLength": 1, "maxLength": 400},
-			"is_secret":         map[string]any{"type": "boolean"},
 			"response_mode":     map[string]any{"type": "string", "enum": []string{"write", "select_or_write"}, "description": "Use write for a direct text answer. Use select_or_write for fixed choices plus a separate custom-text answer."},
 			"write_label":       map[string]any{"type": "string", "maxLength": 200, "description": "Label for the direct or custom-text answer."},
 			"write_placeholder": map[string]any{"type": "string", "maxLength": 160},
@@ -98,7 +97,7 @@ func askUserInputSchema() map[string]any {
 				"type": "array", "maxItems": 4, "items": choiceItem,
 			},
 		},
-		"required":             []string{"id", "header", "question", "is_secret", "response_mode"},
+		"required":             []string{"id", "header", "question", "response_mode"},
 		"additionalProperties": false,
 	}
 	return tools.StrictObject(map[string]any{
@@ -139,6 +138,7 @@ func ValidateAskUserToolArgs(definition map[string]any, args string) (map[string
 		add(properties, "reason_code", tools.Enum("user_decision_required", "permission_blocked", "missing_external_input", "conflicting_constraints", "safety_confirmation"))
 		add(properties, "required_from_user", map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 200}})
 		add(question, "choices_exhaustive", map[string]any{"type": "boolean"})
+		add(question, "is_secret", map[string]any{"type": "boolean"})
 		add(choice, "kind", tools.Enum("select"))
 	}
 	payload, err := tools.Validate(schema, []byte(strings.TrimSpace(args)))
