@@ -1160,6 +1160,10 @@ each child's turn and run. A missing or replaced execution, unsuccessful settlem
 pending interaction or managed tool yield returns early. `Threads` excludes replacement
 executions. Read terminal reports using the returned exact identities; pass only remaining
 dependencies to a subsequent wait. Cancellation and Host shutdown still end the call.
+During orderly shutdown, the Host gives an executing tool observing its own
+children a bounded opportunity to return and commit its result. Reopening does
+not dispatch work. Explicit Retry can use a committed result, but cannot replay
+an effect whose outcome is unknown, including after a process crash.
 A tool may return `tools.BoundedWait` only for a full normal timeout with
 unfinished, nonempty targets. The dispatcher measures that handler, excluding
 approval and batch delay. Engine's single batch guard permits repetition only

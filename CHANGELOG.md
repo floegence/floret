@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.129.2
+
+- During orderly shutdown, give a tool observing its own child dependencies a bounded opportunity to commit its result. Explicit Retry can retain that result; unknown effects remain ineligible for replay. No storage migration.
+
 ## v7.129.1
 
 - Generate compact, language-preserving automatic titles with a grapheme-safe 40-column limit. Existing titles, manual names, fallbacks and model output budgets are unchanged.

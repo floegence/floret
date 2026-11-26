@@ -850,6 +850,12 @@ a single elapsed deadline returns the latest successful snapshot. Cancellation
 and Host closure remain distinct errors. Hosts map attention to completed-tool
 input requests and resume only after explicit user input.
 
+During orderly Host shutdown, a dispatched tool waiting on its own child
+dependencies can finish committing its result within a shared settlement
+deadline. This includes the interval after the scoped read returns. External
+observers do not acquire execution ownership. Only a canonical commit can
+preserve a result for explicit Retry; shutdown does not synthesize reports.
+
 Pending terminal receipts become wait results only after their exact source
 ThreadID/TurnID/RunID has installed its terminal snapshot. Receipt commit alone
 does not certify result availability. The existing actor subscription supplies
