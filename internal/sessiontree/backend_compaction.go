@@ -19,7 +19,7 @@ func (repo *BackendRepo) CommitContextCompaction(ctx context.Context, req Contex
 			return err
 		}
 		started, err := readCanonicalEntryMetadata(mutation.tx, threadID, runtimeTurnStartedEntryID(turnID))
-		if err != nil || started.RunID != runID || (started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction) != (req.Finish != nil) {
+		if err != nil || !compactionAdmissionMatches(started, req) {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		if cancelled {

@@ -9,6 +9,38 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
+func TestCompactionCommitRejectsSupersededRun(t *testing.T) {
+	for _, kind := range []string{"memory", "backend"} {
+		t.Run(kind, func(t *testing.T) {
+			memory := NewMemoryRepo()
+			request := compactionCommitFixture(t, memory)
+			var repo interface {
+				Repo
+				ContextCompactionRepo
+			} = memory
+			if kind == "backend" {
+				_, backend := openV31ReviewFixture(t, memory)
+				repo = backend
+			}
+			marker := Entry{ThreadID: "thread", TurnID: "turn", RunID: "successor", Type: EntryTurnMarker, TurnStatus: TurnSavePoint}
+			if _, err := repo.Append(t.Context(), marker, AppendOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := repo.Entries(t.Context(), "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.CommitContextCompaction(t.Context(), request); !errors.Is(err, ErrStaleAuthority) {
+				t.Fatalf("superseded commit: %v", err)
+			}
+			after, err := repo.Entries(t.Context(), "thread")
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("superseded run changed the journal: %v", err)
+			}
+		})
+	}
+}
+
 func TestV32CompactionCommitRollbackAndRestart(t *testing.T) {
 	memory := newMemoryRepo(time.Now)
 	request := compactionCommitFixture(t, memory)

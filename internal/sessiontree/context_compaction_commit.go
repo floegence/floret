@@ -47,11 +47,18 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	if !active || activeTurnID != turnID {
 		return ContextCompactionCommitResult{}, ErrStaleAuthority
 	}
+	activeRunID, err := r.activeRunIdentityLocked(threadID, turnID)
+	if err != nil {
+		return ContextCompactionCommitResult{}, err
+	}
+	if activeRunID != runID {
+		return ContextCompactionCommitResult{}, ErrStaleAuthority
+	}
 	started, found, err := r.entryMetadataLocked(threadID, runtimeTurnStartedEntryID(turnID))
 	if err != nil {
 		return ContextCompactionCommitResult{}, err
 	}
-	if !found || started.RunID != runID || (started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction) != (req.Finish != nil) {
+	if !found || !compactionAdmissionMatches(started, req) {
 		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction turn admission identity conflicts", ErrAuthorityCorrupt)
 	}
 	if r.turnCancellationRequestedLocked(threadID, turnID) {
@@ -104,6 +111,12 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	}
 	committed = true
 	return out, nil
+}
+
+// Admission fixes the turn kind; a later continuation may own its execution.
+func compactionAdmissionMatches(started Entry, req ContextCompactionCommit) bool {
+	return started.Type == EntryTurnMarker && started.TurnStatus == TurnStarted && started.TurnID == req.Summary.TurnID && started.ThreadID == req.Summary.ThreadID && started.RunID != "" &&
+		(started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction) == (req.Finish != nil)
 }
 
 func validateContextCompactionCommit(req ContextCompactionCommit) error {

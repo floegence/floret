@@ -64,6 +64,82 @@ func TestIndependentThreadCompactionEmptyHistoryNeverCallsProvider(t *testing.T)
 	}
 }
 
+type resumeCompactionGateway struct{ *florettest.ScriptedGateway }
+
+func (g resumeCompactionGateway) Prepare(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
+	// Only the uncompressed request containing the interaction answer is over budget.
+	var history, answer bool
+	for _, m := range req.Messages {
+		history = history || strings.Contains(m.Text, "Earlier work. Earlier work.")
+		answer = answer || m.ToolResult != nil && m.ToolResult.ToolName == "ask_user"
+	}
+	tokens := int64(1000)
+	if history && answer && len(req.Tools) != 0 {
+		tokens = 300000
+	}
+	return (&outputBudgetGateway{ScriptedGateway: g.ScriptedGateway, tokens: tokens}).Prepare(ctx, req)
+}
+
+func TestAutomaticCompactionAfterInputResume(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "compact", StateCompatibilityKey: "test:compact"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		compactionTestStep("History acknowledged."), florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-1", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Which target?","response_mode":"write","is_secret":false}]}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}}, compactionTestStep("Earlier work is complete."), compactionTestStep("Continued with target blue."))
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(filepath.Join(t.TempDir(), "threads.sqlite"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	agent := compactionTestAgent(t, resumeCompactionGateway{gateway})
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.ThreadID
+	if _, err = service.Send(t.Context(), SendInput{ThreadID: id, RequestKey: "seed", Input: UserInput{Text: strings.Repeat("Earlier work. ", 2800)}}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, id, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	turn, err := service.Send(t.Context(), SendInput{ThreadID: id, RequestKey: "ask", Input: UserInput{Text: "Ask me which target to use."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting := waitThreadView(t, service, id, func(v ThreadView) bool { return len(v.Interactions) == 1 && !v.Interactions[0].Resolved })
+	if _, err = service.Respond(t.Context(), RespondInput{ThreadID: id, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "blue"}}}, RequestKey: "answer"}); err != nil {
+		t.Fatal(err)
+	}
+	done := waitThreadView(t, service, id, func(v ThreadView) bool {
+		return v.TurnID == turn.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
+	})
+	if done.Failure != nil || *done.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("resumed turn: outcome=%v failure=%+v", *done.LastOutcome, done.Failure)
+	}
+	snapshot, err := service.(ThreadContextReader).Context(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Compactions) != 1 || snapshot.Compactions[0].Status != "compacted" || snapshot.Compactions[0].RunID == turn.RunID || snapshot.Compactions[0].TurnID != turn.TurnID {
+		t.Fatalf("resumed compaction: %+v", snapshot.Compactions)
+	}
+	requests := gateway.Requests()
+	if len(requests) != 4 || len(requests[2].Tools) != 0 {
+		t.Fatalf("expected one summary and a continuation, got %d requests", len(requests))
+	}
+	var summary, answer bool
+	for _, message := range requests[3].Messages {
+		summary = summary || strings.Contains(message.Text, "Earlier work is complete.")
+		answer = answer || message.ToolResult != nil && strings.Contains(message.ToolResult.Text, `"q":"blue"`)
+	}
+	if !summary || !answer {
+		t.Fatalf("continuation lost summary (%v) or answer (%v)", summary, answer)
+	}
+}
+
 func compactionTestStep(text string) florettest.Step {
 	return florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: text}, {Type: provider.EventDone, ResponseState: &provider.State{Kind: "test", ID: "continuation"}, Usage: provider.Usage{InputTokens: 9000, OutputTokens: 10, Available: true}}}}
 }
