@@ -622,6 +622,7 @@ type threadRuntimeService struct {
 	mu                     sync.Mutex
 	subscribers            map[*WorkspaceSubscription]struct{}
 	waiters                map[*threadWaitInterest]struct{}
+	observingEffects       map[*threadEffectObserver]struct{}
 	updateSubscribers      map[*ThreadUpdateSubscription]struct{}
 	subscriptionsClosed    bool
 	published              map[string]uint64
@@ -1887,6 +1888,14 @@ func (service *threadRuntimeService) close() error {
 	}
 	service.mu.Lock()
 	service.subscriptionsClosed = true
+	observations := make(map[identity.ThreadID]map[ThreadExecutionTarget]bool)
+	for observer := range service.observingEffects {
+		target := observer.target
+		if observations[target.ThreadID] == nil {
+			observations[target.ThreadID] = make(map[ThreadExecutionTarget]bool)
+		}
+		observations[target.ThreadID][target] = true
+	}
 	for waiter := range service.waiters {
 		close(waiter.changed)
 	}
@@ -1919,8 +1928,30 @@ func (service *threadRuntimeService) close() error {
 	service.runtimesMu.Unlock()
 	drains := make([]threadRuntimeDrain, 0, len(runtimes))
 	var closeErr error
-	for _, runtime := range runtimes {
+	// Wake the registered observation before revoking its commit authority. The
+	// next provider dispatch is fenced. Unrelated runs still settle immediately;
+	// all observing runs share a bounded opportunity to finish normally.
+	settlementCtx, finishSettlement := context.WithTimeout(context.Background(), gracefulCancellationLimit)
+	defer finishSettlement()
+	firstObserver := 0
+	for i, runtime := range runtimes {
+		if observations[identity.ThreadID(runtime.threadID)] == nil {
+			runtimes[i], runtimes[firstObserver] = runtimes[firstObserver], runtimes[i]
+			firstObserver++
+		}
+	}
+	for i, runtime := range runtimes {
 		runtime.mu.Lock()
+		target := ThreadExecutionTarget{identity.ThreadID(runtime.threadID), runtime.state.turnID, runtime.state.runID}
+		if i >= firstObserver && observations[target.ThreadID][target] && runtime.state.activeEffects <= 1 && runtime.state.executionDone != nil {
+			done := runtime.state.executionDone
+			runtime.mu.Unlock()
+			select {
+			case <-done:
+			case <-settlementCtx.Done():
+			}
+			runtime.mu.Lock()
+		}
 		runtime.stopUpdateTimer()
 		var preparationDone, windowPreparationDone <-chan struct{}
 		var cancelPreparation, cancelWindowPreparation context.CancelFunc
@@ -3149,7 +3180,14 @@ func (gate threadRuntimeEffectGate) dispatch(ctx context.Context, request Effect
 		return EffectDispatchResult{}, err
 	}
 	defer actor.releaseEffectDispatch()
-	return gate.downstream.Dispatch(ctx, request, effect)
+	return gate.downstream.Dispatch(ctx, request, func(dispatchCtx context.Context, proof EffectAuthorizationProof) (EffectDispatchResult, error) {
+		if dispatchCtx == nil {
+			return effect(nil, proof)
+		}
+		observer := &threadEffectObserver{service: gate.service, target: ThreadExecutionTarget{request.ThreadID, request.TurnID, request.RunID}}
+		defer observer.finish()
+		return effect(context.WithValue(dispatchCtx, threadEffectObserverKey{}, observer), proof)
+	})
 }
 
 func approvalPresentation(request EffectAuthorizationRequest) *ApprovalPresentation {

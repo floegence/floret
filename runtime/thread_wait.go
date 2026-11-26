@@ -74,9 +74,31 @@ type threadWaitInterest struct {
 	targets      map[identity.ThreadID]bool
 	parentEvents identity.ThreadID
 	changed      chan struct{}
+	observer     *threadEffectObserver
+}
+
+// Only an executing tool can register its own turn for observation settlement.
+// A public WaitThreads caller's parent scope is a query, not execution identity.
+type threadEffectObserver struct {
+	service *threadRuntimeService
+	target  ThreadExecutionTarget
+	ended   bool // protected by service.mu
+}
+
+type threadEffectObserverKey struct{}
+
+func (observer *threadEffectObserver) finish() {
+	observer.service.mu.Lock()
+	defer observer.service.mu.Unlock()
+	observer.ended = true
+	delete(observer.service.observingEffects, observer)
 }
 
 func (service *threadRuntimeService) registerWait(targets map[identity.ThreadID]bool, parent identity.ThreadID) (*threadWaitInterest, error) {
+	return service.registerObservedWait(targets, parent, nil)
+}
+
+func (service *threadRuntimeService) registerObservedWait(targets map[identity.ThreadID]bool, parent identity.ThreadID, observer *threadEffectObserver) (*threadWaitInterest, error) {
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
@@ -88,7 +110,15 @@ func (service *threadRuntimeService) registerWait(targets map[identity.ThreadID]
 	if service.waiters == nil {
 		service.waiters = make(map[*threadWaitInterest]struct{})
 	}
-	interest := &threadWaitInterest{service: service, targets: targets, parentEvents: parent, changed: make(chan struct{}, 1)}
+	// WaitThreads may return before the tool reads the handoff or its result
+	// commits. The dispatch owner, not the subscription, releases this interest.
+	if observer != nil && !observer.ended {
+		if service.observingEffects == nil {
+			service.observingEffects = make(map[*threadEffectObserver]struct{})
+		}
+		service.observingEffects[observer] = struct{}{}
+	}
+	interest := &threadWaitInterest{service: service, targets: targets, parentEvents: parent, changed: make(chan struct{}, 1), observer: observer}
 	service.waiters[interest] = struct{}{}
 	return interest, nil
 }
@@ -161,7 +191,11 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 	if len(targets) == 0 {
 		initial = nil
 	}
-	interest, err := service.registerWait(initial, parent)
+	observer, _ := ctx.Value(threadEffectObserverKey{}).(*threadEffectObserver)
+	if in.Until == "" || observer == nil || observer.service != service || observer.target.ThreadID != *in.Scope.ParentID {
+		observer = nil
+	}
+	interest, err := service.registerObservedWait(initial, parent, observer)
 	if err != nil {
 		return ThreadWaitResult{}, err
 	}
