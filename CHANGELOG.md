@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.124.0
+
+- Add `runtime.ThreadForkReader.LookupFork` to identify an exact existing Fork without creating a thread or reading conversation content. Existing storage and Fork behavior are unchanged.
+
 ## v7.123.0
 
 - Add Gemini 4 Neon and Hydrogen to the foreground Chat catalog with 65,536 output tokens and `xhigh` effort. Refresh the Google and OpenAI inventories; GPT-6.2 Astra and Sol require Responses for tools and are not built-in Chat presets.

@@ -424,6 +424,43 @@ func testThreadServiceWithAgent(t *testing.T, agent *Agent) (*Host, ThreadServic
 	return host, service
 }
 
+func TestLookupForkOnlyReturnsExactLiveOrigin(t *testing.T) {
+	_, service := testThreadService(t, newBlockingThreadGateway())
+	reader, ok := service.(ThreadForkReader)
+	if !ok {
+		t.Fatal("missing canonical fork lookup")
+	}
+	source, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ForkThreadInput{SourceThreadID: source.ThreadID, RequestKey: "branch"}
+	if id, found, err := reader.LookupFork(t.Context(), input); id != "" || found || err != nil {
+		t.Fatalf("fresh lookup: %q %v %v", id, found, err)
+	}
+	if roots, err := service.List(t.Context(), ThreadScope{}); err != nil || len(roots) != 1 {
+		t.Fatalf("lookup mutated inventory: %v %v", roots, err)
+	}
+	fork, err := service.Fork(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, found, err := reader.LookupFork(t.Context(), input); id != fork.ThreadID || !found || err != nil {
+		t.Fatalf("live lookup: %q %v %v", id, found, err)
+	}
+	conflict := input
+	conflict.SourceItemID = "different-anchor"
+	if _, _, err := reader.LookupFork(t.Context(), conflict); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("conflicting lookup: %v", err)
+	}
+	if err := service.Delete(t.Context(), DeleteThreadInput{ThreadID: fork.ThreadID, RequestKey: "delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reader.LookupFork(t.Context(), input); !errors.Is(err, ErrThreadDeleted) {
+		t.Fatalf("deleted lookup: %v", err)
+	}
+}
+
 func TestThreadServiceListProjectsActiveSummaryWithoutFullViewHydration(t *testing.T) {
 	gateway := newBlockingThreadGateway()
 	_, service := testThreadService(t, gateway)

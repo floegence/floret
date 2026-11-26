@@ -171,6 +171,8 @@ or over-budget output preserves the original effective context. The 20,000-token
 summary ceiling is separate from the 50,000-token compacted-context target.
 
 
+`ThreadForkReader.LookupFork` returns the live destination of an exact Fork input without creating, reserving or loading its history. An unused request is absent; conflicting and deleted requests retain their typed errors. Fork rechecks the same origin under its mutation lock.
+
 `ThreadSendStateReader.LookupSendState` resolves the canonical queue or original
 turn marker by request key. A missing key is distinct from removal. A queue item
 consumed by another command is redirected; callers must not cancel the other

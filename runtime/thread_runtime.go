@@ -828,13 +828,18 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 	return service.completeViewResult(ctx, view, err)
 }
 
-func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThreadInput, mode threadResultMode) (ThreadView, error) {
+// ThreadForkReader looks up an exact Fork request without creating a destination.
+type ThreadForkReader interface {
+	LookupFork(context.Context, ForkThreadInput) (identity.ThreadID, bool, error)
+}
+
+func forkRequestIdentity(in ForkThreadInput) (string, string, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
-		return ThreadView{}, err
+		return "", "", err
 	}
 	if _, err := identity.ParseThreadID(in.SourceThreadID.String()); err != nil {
-		return ThreadView{}, err
+		return "", "", err
 	}
 	fingerprint, err := stableFingerprint(struct {
 		Source          identity.ThreadID `json:"source"`
@@ -847,33 +852,56 @@ func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThr
 		HostProfileRef  string            `json:"host_profile_ref,omitempty"`
 		ForkMode        string            `json:"fork_mode,omitempty"`
 	}{in.SourceThreadID, strings.TrimSpace(in.SourceEntryID), strings.TrimSpace(in.SourceItemID), in.ParentThreadID, in.ParentTurnID, strings.TrimSpace(in.TaskName), strings.TrimSpace(in.TaskDescription), strings.TrimSpace(in.HostProfileRef), strings.TrimSpace(in.ForkMode)})
+	return key, fingerprint, err
+}
+
+func (service *threadRuntimeService) LookupFork(ctx context.Context, in ForkThreadInput) (identity.ThreadID, bool, error) {
+	key, fingerprint, err := forkRequestIdentity(in)
+	if err != nil {
+		return "", false, err
+	}
+	destination, found, err := service.lookupForkOrigin(ctx, key, fingerprint, in.SourceThreadID)
+	return destination, found, runtimeHostError(err)
+}
+
+func (service *threadRuntimeService) lookupForkOrigin(ctx context.Context, key, fingerprint string, source identity.ThreadID) (identity.ThreadID, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	origins, ok := service.host.store.repo.(sessiontree.ThreadOriginRepo)
+	if !ok {
+		return "", false, ErrUnsupportedStoreCapability
+	}
+	origin, originErr := origins.ThreadOrigin(ctx, key)
+	if originErr == nil {
+		if origin.Tombstone != nil {
+			if origin.Tombstone.OriginFingerprint != fingerprint || origin.Tombstone.ForkedFromThreadID != source.String() {
+				return "", false, ErrRequestConflict
+			}
+			return "", false, sessiontree.ErrThreadDeleted
+		}
+		if origin.Thread == nil || origin.Thread.OriginFingerprint != fingerprint || origin.Thread.ForkedFromThreadID != source.String() {
+			return "", false, ErrRequestConflict
+		}
+		return identity.ThreadID(origin.Thread.ID), true, nil
+	}
+	if !errors.Is(originErr, sessiontree.ErrThreadNotFound) {
+		return "", false, runtimeHostError(originErr)
+	}
+	return "", false, nil
+}
+
+func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThreadInput, mode threadResultMode) (ThreadView, error) {
+	key, fingerprint, err := forkRequestIdentity(in)
 	if err != nil {
 		return ThreadView{}, err
 	}
 	service.host.mutationMu.Lock()
 	defer service.host.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if destination, found, err := service.lookupForkOrigin(ctx, key, fingerprint, in.SourceThreadID); err != nil {
 		return ThreadView{}, err
-	}
-	origins, ok := service.host.store.repo.(sessiontree.ThreadOriginRepo)
-	if !ok {
-		return ThreadView{}, ErrUnsupportedStoreCapability
-	}
-	origin, originErr := origins.ThreadOrigin(ctx, key)
-	if originErr == nil {
-		if origin.Tombstone != nil {
-			if origin.Tombstone.OriginFingerprint != fingerprint || origin.Tombstone.ForkedFromThreadID != in.SourceThreadID.String() {
-				return ThreadView{}, ErrRequestConflict
-			}
-			return ThreadView{}, sessiontree.ErrThreadDeleted
-		}
-		if origin.Thread == nil || origin.Thread.OriginFingerprint != fingerprint || origin.Thread.ForkedFromThreadID != in.SourceThreadID.String() {
-			return ThreadView{}, ErrRequestConflict
-		}
-		return service.completedCommandResult(ctx, identity.ThreadID(origin.Thread.ID), mode)
-	}
-	if !errors.Is(originErr, sessiontree.ErrThreadNotFound) {
-		return ThreadView{}, runtimeHostError(originErr)
+	} else if found {
+		return service.completedCommandResult(ctx, destination, mode)
 	}
 	source, err := service.host.store.repo.Thread(ctx, in.SourceThreadID.String())
 	if err != nil {

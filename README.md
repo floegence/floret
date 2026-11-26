@@ -1172,6 +1172,8 @@ NextOffsetBytes and SHA256 while HasMore is true, including pages with no matche
 Every page requires fresh scope and private-fact authorization. Cancellation
 abandons only the read, never the Agent run; source hashes prevent mixed results.
 
+`runtime.ThreadForkReader.LookupFork(ctx, input)` reads a Fork's canonical destination without creating it. An unused key returns `found=false`; mismatched and deleted requests retain Fork's typed errors. This lookup does not reserve a key.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the
