@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.126.0
+
+- Expose the originating tool call on model-authored Goal set and delete timeline facts, including existing journals. No storage or model-context change.
+
 ## v7.125.1
 
 - Continue released v12 histories with retained tool output. Only a verified pre-range prefix resets native state; unrelated drift still fails before dispatch.

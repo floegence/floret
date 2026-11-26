@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
@@ -23,11 +24,14 @@ type ThreadGoal struct {
 // ThreadGoalChange is a detached public timeline fact. User mutations may precede
 // the first Turn and therefore do not invent Turn or Run identities.
 type ThreadGoalChange struct {
-	Goal      ThreadGoal `json:"goal"`
-	Operation string     `json:"operation"`
-	Reason    string     `json:"reason,omitempty"`
-	Actor     string     `json:"actor"`
-	At        time.Time  `json:"at"`
+	// SourceToolCallID identifies the model invocation that committed a set or delete,
+	// scoped to the containing item's thread, turn and run. Other changes omit it.
+	SourceToolCallID string     `json:"source_tool_call_id,omitempty"`
+	Goal             ThreadGoal `json:"goal"`
+	Operation        string     `json:"operation"`
+	Reason           string     `json:"reason,omitempty"`
+	Actor            string     `json:"actor"`
+	At               time.Time  `json:"at"`
 }
 
 // ThreadGoalController changes an objective without starting or interrupting execution.
@@ -142,5 +146,11 @@ func goalItem(entry sessiontree.Entry) (ThreadItem, error) {
 		return ThreadItem{}, err
 	}
 	goal := *publicThreadGoal(change.State)
-	return ThreadItem{ID: entry.ID, TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Kind: ThreadItemGoal, CreatedAt: entry.CreatedAt, Goal: &ThreadGoalChange{Goal: goal, Actor: goal.Actor, Operation: change.Operation, Reason: change.Reason, At: entry.CreatedAt}}, nil
+	fact := &ThreadGoalChange{Goal: goal, Actor: goal.Actor, Operation: change.Operation, Reason: change.Reason, At: entry.CreatedAt}
+	if goal.Actor == "model" && (change.Operation == "set" || change.Operation == "delete") && entry.RunID != "" && entry.TurnID != "" {
+		if call, ok := strings.CutPrefix(entry.RequestKey, "model:"+entry.RunID+":"); ok && strings.TrimSpace(call) != "" {
+			fact.SourceToolCallID = call
+		}
+	}
+	return ThreadItem{ID: entry.ID, TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Kind: ThreadItemGoal, CreatedAt: entry.CreatedAt, Goal: fact}, nil
 }

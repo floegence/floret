@@ -14,6 +14,8 @@ management operation starts execution or interrupts an in-flight request.
 The canonical journal is the sole durable authority; products only authorize,
 map and present it. Goals have no dependency on todos.
 
+Model set/delete timeline facts expose `source_tool_call_id` within their thread, turn and run when the journal records the invocation. User changes and committed completion do not claim a source invocation. This presentation metadata does not enter model history.
+
 The Harness installs Goal once per execution, using the same decision for tool
 composition, dispatch, paired-result handling, context admission, reflection and
 the terminal guard. Explicit Goal continuation installs this behavior even when

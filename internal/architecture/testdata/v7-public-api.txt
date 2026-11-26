@@ -1689,6 +1689,7 @@ field ThreadGoal.Status string tag="json:\"status\""
 field ThreadGoal.Actor string tag="json:\"actor\""
 field ThreadGoal.SuppressedAtInput string tag="json:\"suppressed_at_input,omitempty\""
 type ThreadGoalChange struct
+field ThreadGoalChange.SourceToolCallID string tag="json:\"source_tool_call_id,omitempty\""
 field ThreadGoalChange.Goal github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal\""
 field ThreadGoalChange.Operation string tag="json:\"operation\""
 field ThreadGoalChange.Reason string tag="json:\"reason,omitempty\""

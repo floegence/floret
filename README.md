@@ -182,6 +182,7 @@ enter the next new model request. Management never starts execution. Reflection
 reuses the existing context, provider continuation and bounded stop hook; Goal
 completion requires a current evidence-bearing review and successful Turn end.
 Goals are independent of todos. The 22 -> 23 schema edge preserves history.
+Model set/delete timeline facts may identify the originating call via `ThreadGoalChange.SourceToolCallID` within the same thread, turn and run.
 The Harness installs the Goal tool, dispatch, result handling and reflection
 together for each enabled execution, including explicit Goal continuation without
 agent-wide opt-in. Goal declares a write to canonical thread state; it has no
