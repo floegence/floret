@@ -612,13 +612,16 @@ executions and skips children that have already advanced.
 
 For a Stop control covering a whole tree, including an idle root, use the
 optional `ThreadSubtreeStopper`. Show the result of `SubtreeExecutions` for an
-authorized root. Submit those exact targets with `StopSubtree` and retain them
-and the request key for a transport retry. Foreign, missing or replaced active
+authorized root. Pass that snapshot unchanged to `StopSubtree`, including on a
+transport retry. Its request key binds the root and complete target set; it
+does not grant access. Foreign, missing or replaced active
 targets conflict without substituting new work. A matching target that has
 already ended needs no cancellation. Admission runs in parent-first order;
 an error may follow confirmed admissions. Read current state after the call:
-admission does not confirm settlement or roll back external effects. The list
-describes active turns, not independent processes or pending queue entries.
+admission does not confirm settlement or roll back external effects. In addition
+to active executions the snapshot includes source executions that can still
+start a host-work continuation. `Suppressed` confirms that authority was
+revoked, not that a process exited. Pending queue entries are retained.
 
 Cancelled and interrupted terminal facts produce typed model-only interruption
 context after retained partial assistant output. It states that output may be

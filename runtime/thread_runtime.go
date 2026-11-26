@@ -3588,7 +3588,7 @@ func (service *threadRuntimeService) cancelResult(ctx context.Context, in Cancel
 	}
 	if current.Activity != ThreadActivityActive {
 		if repo, ok := service.host.store.repo.(sessiontree.HostWorkRepo); ok {
-			if err := repo.StopHostWork(ctx, threadID.String()); err != nil {
+			if err := repo.StopHostWork(ctx, threadID.String(), "", ""); err != nil {
 				return ThreadView{}, false, runtimeHostError(err)
 			}
 			service.refreshCanonical(threadID, "")

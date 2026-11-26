@@ -56,7 +56,8 @@ type HostWorkSettlement struct {
 }
 
 type HostWorkRepo interface {
-	StopHostWork(context.Context, string) error
+	HostWorkStopSources(context.Context, string) ([]Entry, error)
+	StopHostWork(ctx context.Context, thread, turn, run string) error
 	BindHostWork(context.Context, HostWork) (HostWork, error)
 	SettleHostWork(context.Context, HostWorkSettlement) (HostWork, error)
 	HostWorks(context.Context, string) ([]HostWork, error)
@@ -65,7 +66,7 @@ type HostWorkRepo interface {
 	HostWorkContinuationKey(context.Context, string) (string, bool, error)
 }
 
-func hostWorkStops(path []Entry, thread string) ([]Entry, error) {
+func hostWorkStops(path []Entry, thread, turn, run string, continuationsOnly bool) ([]Entry, error) {
 	works, admitted, err := hostWorksFromPath(path)
 	if err != nil {
 		return nil, err
@@ -78,6 +79,12 @@ func hostWorkStops(path []Entry, thread string) ([]Entry, error) {
 	}
 	var entries []Entry
 	for _, w := range works {
+		if turn != "" && (w.Invocation.TurnID != turn || w.Invocation.RunID != run) {
+			continue
+		}
+		if continuationsOnly && w.State != "bound" && !(w.State == "completed" && w.Notify) {
+			continue
+		}
 		if w.Inherited || admitted[w.ID] || stopped[w.Invocation.TurnID] {
 			continue
 		}

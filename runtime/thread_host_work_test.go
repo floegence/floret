@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
@@ -15,7 +17,7 @@ import (
 )
 
 func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
-	for _, mode := range []string{"unknown", "completed", "stopped", "suspended", "overlapping", "completion_before_dispatch_failure"} {
+	for _, mode := range []string{"unknown", "completed", "stopped", "subtree_stopped", "suspended", "overlapping", "completion_before_dispatch_failure"} {
 		complete := mode != "unknown"
 		t.Run(mode, func(t *testing.T) {
 			var completionGate chan struct{}
@@ -63,7 +65,15 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 			}
 			host := open()
 			defer func() { host.Shutdown(context.Background()) }()
-			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+			in := CreateThreadInput{RequestKey: "create"}
+			if mode == "subtree_stopped" {
+				root, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "idle-root"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				in.ParentThreadID, in.TaskName, in.HostProfileRef = root.ThreadID, "background", "test"
+			}
+			created, err := service.Create(t.Context(), in)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,6 +116,19 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				return
 			}
 			wait(2)
+			var frozen StopSubtreeInput
+			if mode == "subtree_stopped" {
+				stopper := service.(ThreadSubtreeStopper)
+				snapshot, err := stopper.SubtreeExecutions(t.Context(), in.ParentThreadID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				frozen = snapshot
+				out, err := stopper.StopSubtree(t.Context(), snapshot)
+				if err != nil || len(out.Admitted) != 0 || len(out.Suppressed) != 1 || out.Suppressed[0].ThreadID != created.ThreadID {
+					t.Fatalf("continuation suppression=%+v err=%v", out, err)
+				}
+			}
 			if mode == "stopped" {
 				if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-background"}); err != nil {
 					t.Fatal(err)
@@ -130,7 +153,7 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 				if mode == "overlapping" {
 					close(completionGate)
 					wait(3)
-				} else if mode != "stopped" && mode != "suspended" {
+				} else if mode != "stopped" && mode != "subtree_stopped" && mode != "suspended" {
 					wait(3)
 				} else {
 					time.Sleep(30 * time.Millisecond)
@@ -212,6 +235,21 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 			}
 			if complete {
 				out, err := service.(ThreadHostWorkService).ReadHostWorkOutput(t.Context(), created.ThreadID, "process-1")
+				if mode == "subtree_stopped" {
+					if !errors.Is(err, ErrSubAgentParentRequired) || out != "" {
+						t.Fatalf("unscoped artifact read=%q %v", out, err)
+					}
+					bindings, readErr := host.store.repo.(sessiontree.HostWorkRepo).HostWorks(t.Context(), created.ThreadID.String())
+					if readErr != nil || len(bindings) != 1 || bindings[0].Output == nil {
+						t.Fatalf("bindings=%+v %v", bindings, readErr)
+					}
+					artifact, readErr := host.store.repo.(sessiontree.ArtifactAuthorityRepo).ReadArtifact(t.Context(), sessiontree.ArtifactReadRequest{ThreadID: created.ThreadID.String(), ParentThreadID: in.ParentThreadID.String(), ArtifactID: bindings[0].Output.ID})
+					out, err = artifact.Text, readErr
+					replay, stopErr := service.(ThreadSubtreeStopper).StopSubtree(t.Context(), frozen)
+					if stopErr != nil || len(replay.AlreadyEnded) != 1 || len(replay.Suppressed)+len(replay.Admitted) != 0 {
+						t.Fatalf("restart replay=%+v %v", replay, stopErr)
+					}
+				}
 				if err != nil || out != "sealed UTF-8 output 中文" {
 					t.Fatalf("output=%q err=%v", out, err)
 				}

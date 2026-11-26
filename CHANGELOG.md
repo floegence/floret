@@ -2,7 +2,7 @@
 
 ## v7.129.0
 
-- Add exact, parent-first graceful Stop for the active executions of an authorized subtree, including trees with an idle root. No storage migration.
+- Add snapshot-bound, parent-first graceful Stop for an authorized subtree, including idle-root trees and suppression of outstanding host-work continuations. No storage migration.
 
 ## v7.128.0
 

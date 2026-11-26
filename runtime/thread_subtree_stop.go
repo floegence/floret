@@ -1,16 +1,19 @@
 package runtime
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
 // ThreadSubtreeStopper observes and stops concrete active executions in an
 // authorized ownership subtree, even when the selected thread itself is idle.
 type ThreadSubtreeStopper interface {
-	SubtreeExecutions(context.Context, identity.ThreadID) ([]ThreadExecutionTarget, error)
+	SubtreeExecutions(context.Context, identity.ThreadID) (StopSubtreeInput, error)
 	StopSubtree(context.Context, StopSubtreeInput) (StopSubtreeResult, error)
 }
 
@@ -31,84 +34,130 @@ type StopSubtreeInput struct {
 type StopSubtreeResult struct {
 	Admitted     []ThreadExecutionTarget `json:"admitted"`
 	AlreadyEnded []ThreadExecutionTarget `json:"already_ended"`
+	// Suppressed means a source can no longer start a host-work continuation.
+	// It does not assert that the external work stopped.
+	Suppressed []ThreadExecutionTarget `json:"suppressed"`
 }
 
-func (s *threadRuntimeService) SubtreeExecutions(ctx context.Context, root identity.ThreadID) ([]ThreadExecutionTarget, error) {
+// The observation supplies the idempotency key. No server-side lease or
+// receipt is needed to reject a retry carrying a different set after restart.
+func subtreeStopKey(root identity.ThreadID, targets []ThreadExecutionTarget) (RequestKey, error) {
+	ordered := slices.Clone(targets)
+	slices.SortFunc(ordered, func(a, b ThreadExecutionTarget) int {
+		return cmp.Or(cmp.Compare(a.ThreadID, b.ThreadID), cmp.Compare(a.TurnID, b.TurnID), cmp.Compare(a.RunID, b.RunID))
+	})
+	key, err := stableFingerprint(struct {
+		Root    identity.ThreadID
+		Targets []ThreadExecutionTarget
+	}{root, ordered})
+	return RequestKey(key), err
+}
+
+// Walk in admission order. A running turn owns any host work bound to that
+// execution; an older turn can independently retain continuation authority.
+func (s *threadRuntimeService) subtreeStopInventory(ctx context.Context, root identity.ThreadID) (ordered []ThreadExecutionTarget, latest map[identity.ThreadID]ThreadSummary, err error) {
 	if err := s.host.available(); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	repo, ok := s.host.store.repo.(sessiontree.HostWorkRepo)
+	if !ok {
+		return nil, nil, ErrUnsupportedStoreCapability
 	}
 	ids, err := s.subtreeThreadIDs(ctx, root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := []ThreadExecutionTarget{}
+	latest = make(map[identity.ThreadID]ThreadSummary, len(ids))
 	for _, id := range ids {
 		v, err := s.Summary(ctx, id)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		latest[id] = v
+		active := ThreadExecutionTarget{id, v.TurnID, v.RunID}
 		if v.Activity == ThreadActivityActive {
-			out = append(out, ThreadExecutionTarget{id, v.TurnID, v.RunID})
+			ordered = append(ordered, active)
+		}
+		sources, err := repo.HostWorkStopSources(ctx, id.String())
+		if err != nil {
+			return nil, nil, runtimeHostError(err)
+		}
+		for _, source := range sources {
+			target := ThreadExecutionTarget{id, identity.TurnID(source.TurnID), identity.RunID(source.RunID)}
+			if v.Activity != ThreadActivityActive || target != active {
+				ordered = append(ordered, target)
+			}
 		}
 	}
-	return out, nil
+	return ordered, latest, nil
+}
+
+func (s *threadRuntimeService) SubtreeExecutions(ctx context.Context, root identity.ThreadID) (StopSubtreeInput, error) {
+	out, _, err := s.subtreeStopInventory(ctx, root)
+	if err != nil {
+		return StopSubtreeInput{}, err
+	}
+	key, err := subtreeStopKey(root, out)
+	return StopSubtreeInput{ThreadID: root, Targets: out, RequestKey: key}, err
 }
 
 func (s *threadRuntimeService) StopSubtree(ctx context.Context, in StopSubtreeInput) (out StopSubtreeResult, err error) {
 	if err := s.host.requireExecution(); err != nil {
 		return out, err
 	}
-	key, err := cleanRequestKey(in.RequestKey)
-	if err != nil {
-		return out, err
-	}
 	if len(in.Targets) == 0 {
 		return out, errors.New("subtree stop requires exact execution targets")
 	}
-	targets := make(map[identity.ThreadID]ThreadExecutionTarget, len(in.Targets))
+	targets := make(map[ThreadExecutionTarget]bool, len(in.Targets))
 	for _, target := range in.Targets {
-		if target.ThreadID == "" || target.TurnID == "" || target.RunID == "" || targets[target.ThreadID].ThreadID != "" {
+		if target.ThreadID == "" || target.TurnID == "" || target.RunID == "" || targets[target] {
 			return out, errors.New("invalid subtree execution target")
 		}
-		targets[target.ThreadID] = target
+		targets[target] = true
+	}
+	key, err := subtreeStopKey(in.ThreadID, in.Targets)
+	if err != nil {
+		return out, err
+	}
+	if key != in.RequestKey {
+		return out, ErrRequestConflict
 	}
 	s.host.mutationMu.Lock()
 	defer s.host.mutationMu.Unlock()
-	ids, err := s.subtreeThreadIDs(ctx, in.ThreadID)
+	current, latest, err := s.subtreeStopInventory(ctx, in.ThreadID)
 	if err != nil {
 		return out, err
 	}
 	// Reject foreign targets and incomplete or replaced snapshots before any
 	// admission. Completion of the original execution is harmless.
-	active := make([]ThreadExecutionTarget, 0, len(targets))
-	for _, id := range ids {
-		target, selected := targets[id]
-		v, err := s.Summary(ctx, id)
-		if err != nil {
-			return out, err
-		}
-		if v.Activity == ThreadActivityActive && !selected {
+	for _, target := range current {
+		if !targets[target] {
 			return out, ErrRequestConflict
 		}
-		if !selected {
+		delete(targets, target)
+	}
+	for _, target := range in.Targets {
+		if !targets[target] {
 			continue
 		}
-		delete(targets, id)
-		if target.TurnID != v.TurnID || target.RunID != v.RunID {
-			return out, ErrRequestConflict
+		v, ok := latest[target.ThreadID]
+		if !ok || target.TurnID != v.TurnID || target.RunID != v.RunID || v.Activity != ThreadActivityIdle {
+			return StopSubtreeResult{}, ErrRequestConflict
 		}
-		if v.Activity == ThreadActivityActive {
-			active = append(active, target)
-		} else {
-			out.AlreadyEnded = append(out.AlreadyEnded, target)
-		}
-	}
-	if len(targets) > 0 {
-		return StopSubtreeResult{}, ErrRequestConflict
+		out.AlreadyEnded = append(out.AlreadyEnded, target)
 	}
 	// subtreeThreadIDs visits every parent before its dependencies.
-	for _, target := range active {
-		childKey, err := stableFingerprint([]string{"subtree-stop", in.ThreadID.String(), key, target.ThreadID.String()})
+	for _, target := range current {
+		before := latest[target.ThreadID]
+		if before.Activity != ThreadActivityActive || before.TurnID != target.TurnID || before.RunID != target.RunID {
+			repo := s.host.store.repo.(sessiontree.HostWorkRepo)
+			if err := repo.StopHostWork(ctx, target.ThreadID.String(), target.TurnID.String(), target.RunID.String()); err != nil {
+				return out, runtimeHostError(err)
+			}
+			out.Suppressed = append(out.Suppressed, target)
+			continue
+		}
+		childKey, err := stableFingerprint([]string{"subtree-stop", string(key), target.ThreadID.String()})
 		if err != nil {
 			return out, err
 		}
