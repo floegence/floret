@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
@@ -169,10 +170,46 @@ func TestReferenceHistoryForkSeparatesModelEvidenceFromDirectConversation(t *tes
 	}
 	host, svc = open()
 	admitted, found, err := svc.(ThreadSendReader).LookupSend(ctx, LookupSendInput{ThreadID: child.ThreadID, RequestKey: "material-C"})
+	refs, refErr := svc.(ThreadReferenceAttachmentReader).ReadReferenceAttachments(ctx, child.ThreadID)
+	if refErr != nil || len(refs) != 1 || refs[0].ResourceRef != "opaque:original-image" {
+		t.Fatalf("archived attachments: %+v %v", refs, refErr)
+	}
+	if direct, err := svc.(ThreadReferenceAttachmentReader).ReadReferenceAttachments(ctx, p.ThreadID); err != nil || len(direct) != 0 {
+		t.Fatalf("direct inputs are not archived attachments: %+v %v", direct, err)
+	}
 	if err != nil || !found || admitted.Text != "material-C" {
 		t.Fatalf("uncertain send lookup: %+v %t %v", admitted, found, err)
 	}
 	if _, found, err := svc.(ThreadSendReader).LookupSend(ctx, LookupSendInput{ThreadID: child.ThreadID, RequestKey: "material-A"}); err != nil || found {
 		t.Fatalf("parent admission recovered as child send: %t %v", found, err)
+	}
+	scope := threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{child.ThreadID}}
+	sub, err := svc.(ThreadWindowSource).SubscribeWindowUpdates(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	windowCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := sub.SetWindow(windowCtx, scope, ThreadWindowInput{ThreadID: child.ThreadID, Limit: 20, IncludeSummary: true, PreviewBytes: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		update, err := sub.Next(windowCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if update.Window != nil && update.Window.Value != nil {
+			w := update.Window.Value
+			raw, err := json.Marshal(w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(raw)
+			if w.HasBefore || w.HasAfter || !strings.Contains(body, "material-C") || strings.Contains(body, "material-A") || strings.Contains(body, "recorded-A") || strings.Contains(body, "original-image") {
+				t.Fatalf("unexpected direct window: %s", body)
+			}
+			break
+		}
 	}
 }

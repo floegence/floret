@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+## v7.130.0
+
 - Add optional `runtime.ThreadForkOriginReader` for recovering the immutable origin of a known destination. Replaying a deleted Fork now reports the public `ErrThreadDeleted`, as does `LookupFork`.
 - Add `ForkThreadInput.ReferenceHistory` for independent model-reference forks with empty direct history and independent execution state. Domain 41 migrates to 42 without rewriting historical messages. Logical fence 18 prevents older writers from admitting the new format.
+- Expose inherited host-resource descriptors through `ThreadReferenceAttachmentReader`; preserve uncertain external effects separately from the historical tool status.
 
 ## v7.129.3
 

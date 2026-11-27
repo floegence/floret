@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
 // ThreadForkOrigin identifies the immutable source selected when a Fork was
@@ -24,6 +25,47 @@ type ThreadForkOriginReader interface {
 }
 
 var _ ThreadForkOriginReader = (*threadRuntimeService)(nil)
+
+// ThreadReferenceAttachmentReader returns the opaque host-owned descriptors
+// in a destination's archived prefix, in canonical order. These facts are
+// neither a direct user turn nor permission to load a resource. Authorize the
+// destination before reading, and separately validate each resource grant.
+type ThreadReferenceAttachmentReader interface {
+	ReadReferenceAttachments(context.Context, identity.ThreadID) ([]MessageAttachment, error)
+}
+
+var _ ThreadReferenceAttachmentReader = (*threadRuntimeService)(nil)
+
+func (service *threadRuntimeService) ReadReferenceAttachments(ctx context.Context, destination identity.ThreadID) ([]MessageAttachment, error) {
+	if _, err := identity.ParseThreadID(destination.String()); err != nil {
+		return nil, err
+	}
+	reader, ok := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
+	if !ok {
+		return nil, ErrUnsupportedStoreCapability
+	}
+	options := sessiontree.PathWindowOptions{ThreadID: destination.String(), Direction: sessiontree.PathWindowAfter, Limit: 32}
+	var out []MessageAttachment
+	for {
+		page, err := reader.PathEntriesWindow(ctx, options)
+		if err != nil {
+			return nil, runtimeHostError(err)
+		}
+		for _, entry := range page.Entries {
+			if entry.Type != sessiontree.EntryReferenceHistory {
+				return out, nil
+			}
+			out = append(out, runtimeMessageAttachments(entry.Message.Attachments)...)
+		}
+		if !page.HasAfter {
+			return out, nil
+		}
+		if len(page.Entries) == 0 || page.Entries[len(page.Entries)-1].ID == options.AnchorID {
+			return nil, ErrAuthorityCorrupt
+		}
+		options.LeafID, options.AnchorID = page.LeafID, page.Entries[len(page.Entries)-1].ID
+	}
+}
 
 func (service *threadRuntimeService) ReadForkOrigin(ctx context.Context, destination identity.ThreadID) (ThreadForkOrigin, bool, error) {
 	if _, err := identity.ParseThreadID(destination.String()); err != nil {

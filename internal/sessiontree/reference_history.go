@@ -7,21 +7,23 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // referenceHistoryFact is historical data, not a session.Message: the role,
 // call identity and result can be described without admitting a tool exchange
 // or installing a managed-context baseline in the destination.
 type referenceHistoryFact struct {
-	Role        session.Role        `json:"role"`
-	Kind        session.MessageKind `json:"kind,omitempty"`
-	Content     string              `json:"content,omitempty"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	CallID      string              `json:"call_id,omitempty"`
-	Arguments   string              `json:"arguments,omitempty"`
-	Outcome     string              `json:"outcome,omitempty"`
-	Truncated   bool                `json:"truncated,omitempty"`
-	Unavailable string              `json:"unavailable,omitempty"`
+	Role          session.Role        `json:"role"`
+	Kind          session.MessageKind `json:"kind,omitempty"`
+	Content       string              `json:"content,omitempty"`
+	ToolName      string              `json:"tool_name,omitempty"`
+	CallID        string              `json:"call_id,omitempty"`
+	Arguments     string              `json:"arguments,omitempty"`
+	Outcome       string              `json:"outcome,omitempty"`
+	EffectOutcome tools.EffectOutcome `json:"effect_outcome,omitempty"`
+	Truncated     bool                `json:"truncated,omitempty"`
+	Unavailable   string              `json:"unavailable,omitempty"`
 }
 
 // Keep opaque attachment handles out of model text. The fork transaction must
@@ -81,6 +83,7 @@ func referenceHistoryAt(ctx context.Context, path []Entry) ([]referenceHistorySo
 		var output *session.ToolResultView
 		if result := message.ToolResult; result != nil {
 			fact.Outcome = result.Status
+			fact.EffectOutcome = result.EffectOutcome
 			fact.Truncated, fact.Unavailable = result.Truncated, result.OutputUnavailable
 			attachments = append(append([]session.MessageAttachment(nil), attachments...), result.Attachments...)
 			if result.FullOutput != nil {

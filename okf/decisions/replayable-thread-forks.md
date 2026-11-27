@@ -55,6 +55,10 @@ historical roles, text and tool outcomes as evidence, not active tool exchanges.
 Direct views, cursors, title generation and execution see only new turns. No
 source Goal, todo, interaction, queue, or delegated ownership is installed.
 The mode is immutable origin metadata and participates in request identity.
+The optional `ThreadReferenceAttachmentReader` exposes only the destination's
+archived attachment descriptors for host retention. Do not enumerate the source
+or use a retention descriptor as a permission grant. Tool execution status and
+external effect uncertainty remain distinct historical facts.
 Domain 42 and logical fence 18 protect these records from older writers;
 upgrading a domain-41 store does not rewrite its conversation entries.
 

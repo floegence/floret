@@ -1218,6 +1218,8 @@ For a known, authorized destination, `runtime.ThreadForkOriginReader.ReadForkOri
 
 Set `ForkThreadInput.ReferenceHistory` to create an independent fork with source evidence in model context but no inherited direct turns, active Goal, todo, approval or queued input. The archived prefix is fixed on admission and persists after restart. `ReadForkOrigin` identifies the mode even when the source was empty. The zero value preserves ordinary Fork semantics and request fingerprints. This option does not implement a product visibility policy; hosts must authorize every destination and resource independently.
 
+Use `runtime.ThreadReferenceAttachmentReader.ReadReferenceAttachments` on the authorized destination to validate and retain the host resources referenced by its archive. Direct items omit those descriptors. The inventory grants no permission to resolve them and never reads the source thread.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the

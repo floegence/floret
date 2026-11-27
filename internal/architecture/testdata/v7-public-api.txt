@@ -1932,6 +1932,7 @@ field ThreadReadiness.Ready bool tag="json:\"ready\""
 field ThreadReadiness.DisplayReady bool tag="json:\"display_ready\""
 field ThreadReadiness.DisplayError string tag="json:\"display_error,omitempty\""
 field ThreadReadiness.Storage github.com/floegence/floret/v7/runtime.StorageMigrationStatus tag="json:\"storage\""
+type ThreadReferenceAttachmentReader interface interface{ReadReferenceAttachments(context.Context, github.com/floegence/floret/v7/identity.ThreadID) ([]github.com/floegence/floret/v7/runtime.MessageAttachment, error)}
 type ThreadResumer interface interface{Resume(context.Context, github.com/floegence/floret/v7/runtime.ResumeThreadInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error)}
 type ThreadRunPhase string
 const ThreadRunPhaseAwaitingConfirmation github.com/floegence/floret/v7/runtime.ThreadRunPhase = "awaiting_confirmation"

@@ -30,6 +30,38 @@ import (
 	"github.com/floegence/floret/v7/tools/websearch"
 )
 
+func TestPublishedReferenceHistoryForkOrigin(t *testing.T) {
+	ctx := t.Context()
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory(), DeferExecution: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	svc, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("reference fork must not execute")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := svc.Create(ctx, runtime.CreateThreadInput{RequestKey: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := runtime.ForkThreadInput{SourceThreadID: parent.ThreadID, RequestKey: "independent", ReferenceHistory: true}
+	dest, err := svc.Fork(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, found, err := svc.(runtime.ThreadForkOriginReader).ReadForkOrigin(ctx, dest.ThreadID)
+	attachments, readErr := svc.(runtime.ThreadReferenceAttachmentReader).ReadReferenceAttachments(ctx, dest.ThreadID)
+	if readErr != nil || len(attachments) != 0 {
+		t.Fatalf("empty reference attachments: %+v %v", attachments, readErr)
+	}
+	if err != nil || !found || !origin.ReferenceHistory || origin.SourceThreadID != parent.ThreadID || origin.SourceEntryID != "" || origin.RequestKey != in.RequestKey || len(dest.Turns) != 0 {
+		t.Fatalf("empty reference fork: %+v %t %v", origin, found, err)
+	}
+}
+
 func TestPublishedEmptyActivitySourceDefault(t *testing.T) {
 	defaultValue := &tools.ActivityPresentation{Label: "Inspect", Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "running"}}
 	source := runtime.ThreadActivityBody{EntryID: "historical-call", DefaultPresentation: defaultValue}

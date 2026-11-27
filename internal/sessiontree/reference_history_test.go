@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestReferenceHistorySeparatesConversationFromSourceControl(t *testing.T) {
@@ -33,6 +34,23 @@ func TestReferenceHistorySeparatesConversationFromSourceControl(t *testing.T) {
 	cancel()
 	if _, err := referenceHistoryAt(ctx, path); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestReferenceHistoryKeepsUncertainEffectsDistinctFromToolStatus(t *testing.T) {
+	path := []Entry{{ID: "call", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolCallID: "request", ToolName: "write", ToolArgs: `{}`}}, {ID: "result", Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolCallID: "request", ToolName: "write", Content: "Arrival not confirmed", ToolResult: &session.ToolResultView{Status: "error", EffectOutcome: tools.EffectOutcomeUncertain, Truncated: true, OutputUnavailable: "storage_error"}}}}
+	archive, err := referenceForkPath(t.Context(), "source", path, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := referenceProviderMessage(archive[len(archive)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"effect_outcome":"uncertain"`, `"outcome":"error"`, `"truncated":true`, `"unavailable":"storage_error"`} {
+		if !strings.Contains(message.Content, want) {
+			t.Fatalf("lost %s in %s", want, message.Content)
+		}
 	}
 }
 
