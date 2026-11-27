@@ -1214,6 +1214,8 @@ abandons only the read, never the Agent run; source hashes prevent mixed results
 
 `runtime.ThreadForkReader.LookupFork(ctx, input)` reads a Fork's canonical destination without creating it. An unused key returns `found=false`; mismatched and deleted requests retain Fork's typed errors. This lookup does not reserve a key.
 
+For a known, authorized destination, `runtime.ThreadForkOriginReader.ReadForkOrigin` returns the original source thread, pinned entry (empty for an empty source), and opaque request key. An ordinary non-fork returns `found=false` without an error. Reading an origin neither enumerates destinations nor grants access to its source. Do not expose the key to the user or model.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the

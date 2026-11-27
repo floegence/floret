@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add optional `runtime.ThreadForkOriginReader` for recovering the immutable origin of a known destination. Replaying a deleted Fork now reports the public `ErrThreadDeleted`, as does `LookupFork`. No storage migration.
+
 ## v7.129.3
 
 - Preserve the Host execution gate when refitting a prepared model request or preparing a frozen retry. Suspending or closing the Host still prevents those handles from starting a provider stream.

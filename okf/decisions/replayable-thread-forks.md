@@ -15,6 +15,14 @@ returns the durable target projection. A replay with the same identity returns
 the existing result; a changed source, target, or metadata request fails with a
 conflict instead of creating another thread.
 
+Expose the reverse lookup as optional `runtime.ThreadForkOriginReader`, not a
+required `ThreadService` method or a public-list field. A host recovering its
+catalog can verify the immutable origin of a known destination after a restart.
+It must authorize the destination first and separately authorize any access to
+the source. This read returns no conversation content, acquires no reservation,
+and cannot revive a deleted fork. Product visibility and membership are not
+inferred from the origin alone.
+
 # Reason
 
 A lost response must be distinguishable from a different fork request without

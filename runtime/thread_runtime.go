@@ -902,7 +902,7 @@ func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThr
 	service.host.mutationMu.Lock()
 	defer service.host.mutationMu.Unlock()
 	if destination, found, err := service.lookupForkOrigin(ctx, key, fingerprint, in.SourceThreadID); err != nil {
-		return ThreadView{}, err
+		return ThreadView{}, runtimeHostError(err)
 	} else if found {
 		return service.completedCommandResult(ctx, destination, mode)
 	}
