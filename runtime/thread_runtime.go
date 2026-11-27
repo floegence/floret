@@ -2722,30 +2722,6 @@ func (service *threadRuntimeService) admitThreadExecutionGuarded(ctx context.Con
 	return result, nil
 }
 
-func (service *threadRuntimeService) acceptAndExecutePreparedSend(
-	ctx context.Context,
-	actor *threadRuntimeState,
-	prepared <-chan preparedThreadExecution,
-	threadID identity.ThreadID,
-	request turnExecutionRequest,
-	previousExecution <-chan struct{},
-	executionDone chan<- struct{},
-	requestKey string,
-	retry bool,
-) {
-	accepted, err := service.acceptCanonicalTurn(ctx, threadID, request)
-	if err != nil {
-		close(executionDone)
-		if retry {
-			service.rollbackProvisionalRetry(actor, request.TurnID, request.RunID, requestKey)
-		} else {
-			service.rollbackProvisionalSend(actor, request.TurnID, request.RunID, requestKey)
-		}
-		return
-	}
-	service.executePreparedSend(ctx, actor, prepared, accepted, request, previousExecution, executionDone)
-}
-
 func (service *threadRuntimeService) prepareExecution(ctx context.Context, actor *threadRuntimeState, request AgentRequest) <-chan preparedThreadExecution {
 	ready := make(chan preparedThreadExecution, 1)
 	if err := service.host.requireExecution(); err != nil {
@@ -2844,32 +2820,6 @@ func applyAgentExecutionPolicy(request *turnExecutionRequest, agent *Agent) {
 		Definitions: CoreControlDefinitions(),
 		Project:     ProjectCoreControlSignal,
 	}
-}
-
-func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey string) {
-	_ = actor.apply(context.Background(), func() error {
-		if actor.state.turnID != turnID || actor.state.runID != runID {
-			return nil
-		}
-		for index := len(actor.state.view.Items) - 1; index >= 0; index-- {
-			if actor.state.view.Items[index].ID == "user:"+requestKey {
-				actor.state.view.Items = append(actor.state.view.Items[:index], actor.state.view.Items[index+1:]...)
-				actor.markItem("user:"+requestKey, ThreadItemRemoved)
-				actor.invalidateItemIndex()
-				actor.mutations.order = true
-				break
-			}
-		}
-		delete(actor.state.requestKeys, requestKey)
-		actor.state.view.Activity = ThreadActivityIdle
-		actor.state.view.TurnID = ""
-		actor.state.view.RunID = ""
-		actor.state.view.RunProgress = nil
-		actor.state.view.ToolCallPreviews = nil
-		actor.markComponents(threadPreviewsChanged)
-		actor.state.view.ViewVersion++
-		return nil
-	})
 }
 
 func (service *threadRuntimeService) appendQueueFact(ctx context.Context, threadID identity.ThreadID, kind sessiontree.EntryType, entryID, requestKey, fingerprint string, payload any) error {
@@ -4343,6 +4293,11 @@ func (service *threadRuntimeService) retryResult(ctx context.Context, threadID i
 		return ThreadView{}, err
 	}
 	turnID, runID := retryExecutionIDs(threadID, requestKey)
+	request := turnExecutionRequest{
+		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID,
+		TurnKind: kind, Input: sourceInput, RetrySourceTurnID: identity.TurnID(sourceEntry.TurnID), RetrySourceEntryID: sourceEntryID,
+	}
+	var accepted acceptedTurn
 	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
 	actor := service.runtime(threadID)
@@ -4365,6 +4320,10 @@ func (service *threadRuntimeService) retryResult(ctx context.Context, threadID i
 			return ErrThreadBusy
 		}
 		var beginErr error
+		accepted, beginErr = service.acceptCanonicalTurn(ctx, threadID, request)
+		if beginErr != nil {
+			return beginErr
+		}
 		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
 			cancel: cancel, executionDone: executionDone, clearOutcome: true, turnKind: kind,
@@ -4388,11 +4347,7 @@ func (service *threadRuntimeService) retryResult(ctx context.Context, threadID i
 		return result, nil
 	}
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{TurnKind: kind, ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: sourceInput, CanonicalTurnInput: sourceInput, RetrySource: sourceTurnID})
-	request := turnExecutionRequest{
-		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID,
-		TurnKind: kind, Input: sourceInput, RetrySourceTurnID: identity.TurnID(sourceEntry.TurnID), RetrySourceEntryID: sourceEntryID,
-	}
-	go service.acceptAndExecutePreparedSend(executionCtx, actor, prepared, threadID, request, previousExecution, executionDone, requestKey, true)
+	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
 }
 
@@ -4491,29 +4446,13 @@ func retryContinuationEntryID(turn sessiontree.CanonicalTurn) string {
 		for index := len(turn.Entries) - 1; index >= 0; index-- {
 			entry := turn.Entries[index].Entry
 			if index > lastUncertain && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint {
-				sourceEntryID = entry.ParentID
+				// The marker owns the checkpoint; its parent can be a receipt for another turn.
+				sourceEntryID = entry.ID
 				break
 			}
 		}
 	}
 	return sourceEntryID
-}
-
-func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey string) {
-	_ = actor.apply(context.Background(), func() error {
-		if actor.state.turnID != turnID || actor.state.runID != runID {
-			return nil
-		}
-		delete(actor.state.requestKeys, requestKey)
-		actor.state.view.Activity = ThreadActivityIdle
-		actor.state.view.TurnID = ""
-		actor.state.view.RunID = ""
-		actor.state.view.RunProgress = nil
-		actor.state.view.ToolCallPreviews = nil
-		actor.markComponents(threadPreviewsChanged)
-		actor.state.view.ViewVersion++
-		return nil
-	})
 }
 
 func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceSubscription, error) {

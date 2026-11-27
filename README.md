@@ -1475,6 +1475,11 @@ own transaction, and retained sources are removed only after full inventory
 verification. Released KV term documents are removed; current metadata uses its
 own namespace. Inspection reports required upgrades without writing the source.
 
+Logical format 19 protects retry references to a savepoint marker when the
+preceding journal entry belongs to another turn. Opening a format-18 store
+does not rewrite its messages. Back up before upgrading: older releases
+cannot open a store after the new logical format is published.
+
 `runtime.ThreadFinishConfirmer` confirms the original completed-turn request for an exact thread, turn and run. Hosts may offer this operation when `RunProgress.Phase` is `awaiting_confirmation`. It does not repeat user input, model calls or tools. An ordinary save point is not proof of completion. See [interrupted turns](okf/workflows/recover-interrupted-turn.md).
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed

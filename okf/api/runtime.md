@@ -396,13 +396,18 @@ no duplicate user input is appended. A completed-turn retry still regenerates
 from its original admitted input. Unknown effects remain non-retryable. The
 provider prefix boundary is the last model message projected at the checkpoint,
 which can itself follow non-message context observations.
+New retries name the savepoint marker, not its parent, which may belong to a
+different turn. Released same-turn parent references remain readable. Logical
+format 19 fences older writers; this upgrade does not rewrite existing retries.
+Retry reports admission errors before publishing an active execution.
 
 Queue operations append thread-level facts. Canonical turn readers verify their
 ancestry while permitting those facts between entries of a waiting turn. An
 answer after restart continues that turn, then normal completion drains its queue.
 These fixes use existing journal facts and preserve schema v12.
 
-See the [checkpoint retry test](../../runtime/thread_retry_checkpoint_test.go)
+See the [checkpoint retry test](../../runtime/thread_retry_checkpoint_test.go),
+the [released late-receipt fixture test](../../runtime/historical_late_retry_test.go),
 and [queued question restart test](../../runtime/thread_ask_restart_test.go).
 
 ## Effects and shutdown

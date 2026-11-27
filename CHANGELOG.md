@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.131.1
+
+- Resume failed turns from the savepoint's own identity even when a previous turn's work settles immediately before it. Preserve old retry references and tool results. Reject failed admission before acknowledging Retry. Logical fence 19 prevents incompatible older runtimes from opening the store; no journal rewrite is required.
+
 ## v7.131.0
 
 - Preserve the executing and completing run when earlier host work settles. Validate final replies against the terminal marker. Expose `ThreadTurnFailureFinalResponseOwnership` for current and released diagnostics without rewriting history.

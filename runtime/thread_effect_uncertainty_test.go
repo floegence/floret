@@ -133,7 +133,7 @@ func TestRetryContinuationNeverSelectsSavepointBeforeUncertainty(t *testing.T) {
 		entries    []sessiontree.CanonicalTurnPathEntry
 	}{
 		{"before-savepoint", "terminal", []sessiontree.CanonicalTurnPathEntry{user, save("old", "user"), result("uncertain"), terminal}},
-		{"after-savepoint", "uncertain", []sessiontree.CanonicalTurnPathEntry{user, save("old", "user"), result("uncertain"), save("new", "uncertain"), terminal}},
+		{"after-savepoint", "new", []sessiontree.CanonicalTurnPathEntry{user, save("old", "user"), result("uncertain"), save("new", "uncertain"), terminal}},
 		{"later-uncertainty", "terminal", []sessiontree.CanonicalTurnPathEntry{user, result("first"), save("first-save", "first"), result("second"), terminal}},
 		{"ordinary-completed", "user", []sessiontree.CanonicalTurnPathEntry{user, save("ordinary", "answer")}},
 	} {

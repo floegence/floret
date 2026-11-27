@@ -27,6 +27,13 @@ go mod verify
 [[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.129.3 ]]
 [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
 go run . "${root}/history.sqlite"
+# Upgrade a released logical-18 store, not just a domain-41 store.
+go get "github.com/floegence/floret/v7@v7.131.0"
+go mod tidy
+go mod verify
+[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.131.0 ]]
+[[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
+go run . "${root}/history.sqlite"
 go get "github.com/floegence/floret/v7@${version}"
 go mod tidy
 go mod verify
@@ -36,7 +43,7 @@ go run . "${root}/history.sqlite"
 cd "${root}/reader"
 go mod init example.com/logical-fence-reader
 cp "${repository_root}/scripts/testdata/logical-storage-fence/reader.go" main.go
-for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0 v7.119.1 v7.120.7 v7.129.3; do
+for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0 v7.119.1 v7.120.7 v7.129.3 v7.131.0; do
   go get "github.com/floegence/floret/v7@${reader_version}"
   go mod tidy
   go mod verify

@@ -271,7 +271,7 @@ Rules:
   not reconstruct, patch, or migrate Floret domain records themselves.
 - SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 use transactional metadata/layout
   changes only and must not copy or clear canonical records. Logical storage
-  7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 17 -> 18 migrates through Host-owned transactions and the permanent
+  7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 17 -> 18 -> 19 migrates through Host-owned transactions and the permanent
   session-tree lineage; version 16 retains its explicit migration classification. A logical format marker identifies the migration owner;
   it does not assert that every historical thread is already prepared. An
   incompatible domain envelope must advance this logical fence so released older

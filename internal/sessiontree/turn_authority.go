@@ -334,16 +334,26 @@ func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceE
 	if isCanonicalUserEntry(entry) || entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
 		return nil
 	}
-	if uncertainResultTerminalBoundary(path, index) {
+	if retryCheckpointBoundary(path, index, sourceTurnID) {
 		return nil
 	}
-	if index+1 < len(path) {
-		savePoint := path[index+1]
-		if savePoint.Type == EntryTurnMarker && savePoint.TurnStatus == TurnSavePoint && savePoint.ParentID == entry.ID && strings.TrimSpace(savePoint.TurnID) == sourceTurnID {
-			return nil
-		}
-	}
 	return ErrInvalidThreadAuthority
+}
+
+func retryCheckpointBoundary(entries []Entry, index int, turnID string) bool {
+	e := entries[index]
+	if e.TurnID != turnID {
+		return false
+	}
+	if e.Type == EntryTurnMarker && e.TurnStatus == TurnSavePoint || uncertainResultTerminalBoundary(entries, index) {
+		return true
+	}
+	// Released histories can name the same-turn parent of a savepoint.
+	if index+1 == len(entries) {
+		return false
+	}
+	next := entries[index+1]
+	return next.Type == EntryTurnMarker && next.TurnStatus == TurnSavePoint && next.ParentID == e.ID && next.TurnID == turnID
 }
 
 // A settled terminal is a retry boundary only when it retains a returned

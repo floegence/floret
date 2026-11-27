@@ -660,14 +660,8 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		}
 		return session.HasRetryEligibleDurableInput(sourceEntry.Message), nil, started.ID, runID, nil
 	}
-	if !uncertainResultTerminalBoundary(entries, sourceIndex) {
-		if sourceIndex+1 >= len(entries) {
-			return false, nil, "", "", ErrAuthorityCorrupt
-		}
-		savePoint := entries[sourceIndex+1]
-		if savePoint.Type != EntryTurnMarker || savePoint.TurnStatus != TurnSavePoint || savePoint.ParentID != sourceEntry.ID || savePoint.TurnID != turnID {
-			return false, nil, "", "", ErrAuthorityCorrupt
-		}
+	if !retryCheckpointBoundary(entries, sourceIndex, turnID) {
+		return false, nil, "", "", ErrAuthorityCorrupt
 	}
 	if userIndex >= 0 {
 		if userIndex > sourceIndex || retrySource != nil {

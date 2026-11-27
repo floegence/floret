@@ -1,0 +1,318 @@
+package latework_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/provider"
+	r "github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
+	"github.com/floegence/floret/v7/tools"
+)
+
+const original = "ANSWER_FROM_RUN_B_7319"
+const recovered = "RETRY_COMPLETED_7319"
+const notice = "TERMINAL_RECEIPT_7319"
+const ownership = "floret authority state is corrupt: final response is outside its canonical turn"
+const thread identity.ThreadID = "ab-thread"
+const askArgs = `{"evidence_refs":[],"questions":[{"id":"answer","header":"Choice","question":"Continue?","response_mode":"write"}]}`
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+func text(s string) florettest.Step {
+	return florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: s}, {Type: provider.EventDone, Reason: "stop"}}}
+}
+func call(id, name, args string) florettest.Step {
+	return florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: id, Name: name, Args: args}}}, {Type: provider.EventDone, Reason: "tool_calls"}}}
+}
+
+type fixture struct {
+	closed  bool
+	host    *r.Host
+	svc     r.ThreadService
+	gateway *florettest.ScriptedGateway
+	calls   atomic.Int32
+}
+
+func open(t *testing.T, path string, ids florettest.IDSourceOptions, steps ...florettest.Step) *fixture {
+	t.Helper()
+	f := &fixture{}
+	var err error
+	f.gateway = florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "late", StateCompatibilityKey: "ab:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, steps...)
+	f.host, err = r.Open(t.Context(), r.Options{Storage: storage.SQLite(path), IDSource: florettest.NewIDSource(ids)})
+	must(t, err)
+	t.Cleanup(func() {
+		if !f.closed {
+			must(t, f.host.Shutdown(context.Background()))
+		}
+	})
+	type bindingKey struct{}
+	tool := tools.Define[struct{}](tools.Definition{Name: "start_work", InputSchema: tools.StrictObject(nil, nil), Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[struct{}]) (tools.Result, error) {
+		f.calls.Add(1)
+		req := ctx.Value(bindingKey{}).(r.EffectAuthorizationRequest)
+		err := f.svc.(r.ThreadHostWorkService).BindHostWork(ctx, r.BindHostWorkInput{WorkID: "job", EffectAttemptID: req.EffectAttemptID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID})
+		return tools.Result{Text: "JOB_STARTED_7319"}, err
+	})
+	agent, err := r.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "fixture", Name: "Fixture"}, SystemPrompt: "Follow the scripted exchange.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, f.gateway, r.WithAgentTools(tool), r.WithAgentProviderRetryPolicy(r.ProviderRetryPolicy{Disabled: true}), r.WithAgentEffectAuthorization(r.EffectAuthorizationGateFunc(func(ctx context.Context, req r.EffectAuthorizationRequest, effect r.AuthorizedEffect) (r.EffectDispatchResult, error) {
+		return effect(context.WithValue(ctx, bindingKey{}, req), r.EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
+	})))
+	must(t, err)
+	f.svc, err = f.host.ThreadService(r.AgentFactoryFunc(func(context.Context, r.AgentRequest) (*r.Agent, error) { return agent, nil }))
+	must(t, err)
+	return f
+}
+func (f *fixture) wait(t *testing.T, pred func(r.ThreadView) bool) r.ThreadView {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	var v r.ThreadView
+	for ctx.Err() == nil {
+		var err error
+		v, err = f.svc.View(ctx, thread)
+		must(t, err)
+		if pred(v) {
+			return v
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+	t.Fatalf("view timeout: activity=%s failure=%+v turns=%+v", v.Activity, v.Failure, v.Turns)
+	return v
+}
+func complete(n int) func(r.ThreadView) bool {
+	return func(v r.ThreadView) bool {
+		return v.Activity == r.ThreadActivityIdle && len(v.Turns) == n && v.LastOutcome != nil && *v.LastOutcome == r.TurnOutcomeCompleted
+	}
+}
+func final(t *testing.T, v r.ThreadView, idx int, turn identity.TurnID, run identity.RunID, body string) string {
+	t.Helper()
+	if len(v.Turns) <= idx {
+		t.Fatal("missing turn", idx)
+	}
+	u := v.Turns[idx]
+	if u.TurnID != turn || u.RunID != run || u.Outcome == nil || *u.Outcome != r.TurnOutcomeCompleted || !u.FinalBoundaryComplete || len(u.FinalItemIDs) != 1 {
+		t.Fatalf("wrong completed turn: %+v", u)
+	}
+	for _, it := range v.Items {
+		if it.ID == u.FinalItemIDs[0] && it.TurnID == turn && it.RunID == run && it.Kind == r.ThreadItemAssistant && it.Text == body {
+			return it.ID
+		}
+	}
+	t.Fatalf("final body/identity mismatch: %s", u.FinalItemIDs[0])
+	return ""
+}
+func work(t *testing.T, f *fixture, state string) {
+	t.Helper()
+	s := f.svc.(r.ThreadHostWorkService)
+	w, err := s.ListHostWork(t.Context(), thread)
+	must(t, err)
+	if len(w) != 1 || w[0].RunID != "run-A" || w[0].TurnID != "turn-two" || w[0].ToolCallID != "launch" || w[0].WorkID != "job" || w[0].State != state {
+		t.Fatalf("work=%+v", w)
+	}
+	if state == "completed" {
+		out, err := s.ReadHostWorkOutput(t.Context(), thread, "job")
+		must(t, err)
+		if out != notice || w[0].Notice != notice {
+			t.Fatal("receipt or output lost")
+		}
+	}
+}
+
+type manifest struct {
+	FinalID   string
+	ToolCalls int32
+	Failure   string
+}
+
+// Produce the immutable input through the released writer, never through SQL.
+func TestWriteHistory(t *testing.T) {
+	dir := os.Getenv("AB_SEED")
+	if dir == "" {
+		t.Fatal("AB_SEED must be a new directory")
+	}
+	must(t, os.Mkdir(dir, 0700))
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	gate := make(chan struct{})
+	third := florettest.Step{BlockUntil: gate, Events: []provider.Event{{Type: provider.EventError, Err: errors.New("SYNTHETIC_RETRY_ANCHOR")}}}
+	f := open(t, filepath.Join(dir, "history.sqlite"), florettest.IDSourceOptions{ThreadIDs: []identity.ThreadID{thread}, TurnIDs: []identity.TurnID{"turn-one", "turn-two", "turn-three"}, RunIDs: []identity.RunID{"run-first", "run-A", "run-B", "run-C"}}, text("SETUP"), call("launch", "start_work", "{}"), call("ask", "ask_user", askArgs), text(original), third)
+	_, err := f.svc.Create(ctx, r.CreateThreadInput{RequestKey: "create"})
+	must(t, err)
+	send := func(key string) {
+		t.Helper()
+		_, err := f.svc.Send(ctx, r.SendInput{ThreadID: thread, RequestKey: r.RequestKey(key), Input: r.UserInput{Text: key}})
+		must(t, err)
+	}
+	send("setup")
+	f.wait(t, complete(1))
+	send("start")
+	waiting := f.wait(t, func(v r.ThreadView) bool { return len(v.Interactions) == 1 && !v.Interactions[0].Resolved })
+	if waiting.RunID != "run-A" {
+		t.Fatal(waiting.RunID)
+	}
+	work(t, f, "bound")
+	settle := func() {
+		t.Helper()
+		out := notice
+		must(t, f.svc.(r.ThreadHostWorkService).CompleteHostWork(ctx, r.CompleteHostWorkInput{ThreadID: thread, WorkID: "job", Notice: notice, Output: &out, Notify: false}))
+	}
+	early := os.Getenv("AB_EARLY") == "1"
+	if early {
+		settle()
+	}
+	_, err = f.svc.Respond(ctx, r.RespondInput{ThreadID: thread, InteractionID: waiting.Interactions[0].ID, RequestKey: "answer", Answers: []r.InteractionAnswer{{Input: map[string]string{"answer": "Continue"}}}})
+	must(t, err)
+	id := final(t, f.wait(t, complete(2)), 1, "turn-two", "run-B", original)
+	send("third")
+	must(t, f.gateway.WaitForRequests(ctx, 5))
+	v, err := f.svc.View(ctx, thread)
+	must(t, err)
+	if v.Activity != r.ThreadActivityActive || v.TurnID != "turn-three" || v.RunID != "run-C" {
+		t.Fatalf("third turn not active: %s/%s/%s", v.Activity, v.TurnID, v.RunID)
+	}
+	if !early {
+		settle()
+	}
+	close(gate)
+	reader := f.svc.(r.ThreadTurnFailureReader)
+	var failure *r.ThreadTurnFailure
+	for ctx.Err() == nil {
+		failure, err = reader.ReadTurnFailure(ctx, threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{thread}}, r.ThreadTurnFailureInput{ThreadID: thread, TurnID: "turn-three", RunID: "run-C"})
+		must(t, err)
+		if failure != nil {
+			break
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+	if failure == nil || failure.Code != "provider" || failure.Message != "SYNTHETIC_RETRY_ANCHOR" || f.calls.Load() != 1 || len(f.gateway.Requests()) != 5 {
+		t.Fatalf("fixture failure=%+v dispatches=%d", failure, f.calls.Load())
+	}
+	t.Logf("durable failure=%s/%s early=%v", failure.Code, failure.Message, early)
+	if early {
+		f.wait(t, func(v r.ThreadView) bool { return v.Activity == r.ThreadActivityIdle && v.Failure != nil })
+	} else {
+		_, viewErr := f.svc.View(ctx, thread)
+		if viewErr == nil || viewErr.Error() != ownership {
+			t.Fatalf("old writer late View: %v", viewErr)
+		}
+		t.Logf("old writer live View: %s", viewErr)
+	}
+	err = f.host.Shutdown(context.Background())
+	f.closed = true
+	if err != nil {
+		// Old Host joins asynchronous publication diagnostics with close errors.
+		// Do not mistake these for a positive reader test or accept any I/O error.
+		if early {
+			t.Fatalf("control writer shutdown: %v", err)
+		}
+		for _, line := range strings.Split(err.Error(), "\n") {
+			if line != ownership && line != "floret authority proof is stale: session tree authority proof is stale" {
+				t.Fatalf("unexpected writer close error: %v", err)
+			}
+		}
+		t.Logf("old writer shutdown diagnostics: %v", err)
+	}
+	m := manifest{id, f.calls.Load(), string(failure.Code)}
+	raw, err := json.Marshal(m)
+	must(t, err)
+	must(t, os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0600))
+	t.Logf("early=%v owner=run-B final=%s invocation=run-A third=run-C failure=%s/%s tool_dispatches=%d", early, id, failure.Code, failure.Message, m.ToolCalls)
+}
+
+// Both readers run this identical positive contract on fresh byte copies.
+func TestRecoveredHistory(t *testing.T) {
+	src := os.Getenv("AB_SEED")
+	if src == "" {
+		t.Fatal("missing AB_SEED")
+	}
+	p := filepath.Join(t.TempDir(), "copy.sqlite")
+	raw, err := os.ReadFile(filepath.Join(src, "history.sqlite"))
+	must(t, err)
+	must(t, os.WriteFile(p, raw, 0600))
+	raw, err = os.ReadFile(filepath.Join(src, "manifest.json"))
+	must(t, err)
+	var m manifest
+	must(t, json.Unmarshal(raw, &m))
+	if m.ToolCalls != 1 || m.FinalID == "" {
+		t.Fatal("invalid producer observations")
+	}
+	ids := florettest.IDSourceOptions{TurnIDs: []identity.TurnID{"retry-turn"}, RunIDs: []identity.RunID{"retry-run"}}
+	f := open(t, p, ids, text(recovered))
+	ctx := t.Context()
+	v, err := f.svc.View(ctx, thread)
+	if err != nil {
+		t.Fatalf("RETRY_PREFLIGHT View: %s; provider=%d tool=%d", err, len(f.gateway.Requests()), f.calls.Load())
+	}
+	if len(v.Turns) != 3 || v.TurnID != "turn-three" || v.RunID != "run-C" || v.Failure == nil || string(v.Failure.Code) != m.Failure || v.Failure.Message != "SYNTHETIC_RETRY_ANCHOR" || len(f.gateway.Requests()) != 0 || f.calls.Load() != 0 {
+		t.Fatalf("invalid restart: current=%s turns=%d failure=%+v", v.TurnID, len(v.Turns), v.Failure)
+	}
+	if final(t, v, 1, "turn-two", "run-B", original) != m.FinalID {
+		t.Fatal("original answer changed on restart")
+	}
+	work(t, f, "completed")
+	t.Logf("preflight passed: turns=3 B_final=%s work=run-A/completed failure=%s/%s provider=0 tool=0", m.FinalID, v.Failure.Code, v.Failure.Message)
+	admitted, err := f.svc.Retry(ctx, r.RetryInput{ThreadID: thread, SourceTurnID: v.TurnID, RequestKey: "explicit-retry"})
+	must(t, err)
+	if admitted.TurnID == "" || admitted.TurnID == v.TurnID || admitted.RunID == "" || admitted.RunID == v.RunID {
+		t.Fatal("no distinct retry execution")
+	}
+	t.Logf("explicit Retry returned: activity=%s turn=%s run=%s", admitted.Activity, admitted.TurnID, admitted.RunID)
+	v = f.wait(t, func(v r.ThreadView) bool {
+		return complete(4)(v) || v.Activity == r.ThreadActivityIdle && len(v.Turns) == 3 && v.TurnID == "" && v.RunID == ""
+	})
+	if !complete(4)(v) {
+		t.Logf("provisional Retry cleared: idle turns=%d provider=%d tool=%d", len(v.Turns), len(f.gateway.Requests()), f.calls.Load())
+		must(t, f.host.Shutdown(ctx))
+		f.closed = true
+		after := open(t, p, florettest.IDSourceOptions{})
+		v, err = after.svc.View(ctx, thread)
+		must(t, err)
+		id := final(t, v, 1, "turn-two", "run-B", original)
+		work(t, after, "completed")
+		t.Fatalf("RETRY_NOT_COMPLETED second restart: turns=%d current=%s/%s failure=%+v B_final=%s provider=%d+%d tool=%d+%d+%d", len(v.Turns), v.TurnID, v.RunID, v.Failure, id, len(f.gateway.Requests()), len(after.gateway.Requests()), m.ToolCalls, f.calls.Load(), after.calls.Load())
+	}
+	retryID := final(t, v, 3, admitted.TurnID, admitted.RunID, recovered)
+	if final(t, v, 1, "turn-two", "run-B", original) != m.FinalID {
+		t.Fatal("retry rewrote the original answer")
+	}
+	reqs := f.gateway.Requests()
+	if len(reqs) != 1 || f.calls.Load() != 0 {
+		t.Fatalf("retry provider=%d tool=%d", len(reqs), f.calls.Load())
+	}
+	var results, answers int
+	for _, msg := range reqs[0].Messages {
+		if msg.ToolResult != nil && msg.ToolResult.CallID == "launch" && strings.Contains(msg.ToolResult.Text, "JOB_STARTED_7319") {
+			results++
+		}
+		if msg.Text == original {
+			answers++
+		}
+	}
+	if results != 1 || answers != 1 {
+		t.Fatalf("retry model context: tool results=%d answers=%d", results, answers)
+	}
+	must(t, f.host.Shutdown(ctx))
+	after := open(t, p, florettest.IDSourceOptions{})
+	v, err = after.svc.View(ctx, thread)
+	must(t, err)
+	if len(v.Turns) != 4 || final(t, v, 1, "turn-two", "run-B", original) != m.FinalID || final(t, v, 3, admitted.TurnID, admitted.RunID, recovered) != retryID || !v.Turns[2].HasFailure || after.calls.Load() != 0 || len(after.gateway.Requests()) != 0 {
+		t.Fatal("second restart lost history or caused replay")
+	}
+	work(t, after, "completed")
+	t.Log(fmt.Sprintf("owner=run-B final=%s work_owner=run-A retry=%s provider=1 tool_dispatches=1+0+0 history_failure_retained=true", m.FinalID, retryID))
+}
