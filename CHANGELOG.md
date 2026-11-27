@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.133.2
+
+- Traverse indexed range pages in one directed walk, resolving canonical endpoints only after coalescing adjacent subtree summaries.
+
 ## v7.133.1
 
 - Index direct child membership with canonical creation, fork, publication and deletion. Prepared stores read only the selected parent or subtree, including archived descendants for stop inventory. Schema 43 backfills published thread metadata in bounded transactions; retained migration sources remain authoritative. Logical format 20 excludes incompatible writers. Journal content and the physical SQLite layout are unchanged.

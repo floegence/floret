@@ -144,13 +144,8 @@ func (repo *BackendRepo) ItemRangePage(ctx context.Context, input ItemRangePageO
 	var spans []ItemRangeSpan
 	err = repo.withActivitySummaryPreparation(ctx, input.ThreadID, func() error {
 		return repo.canonicalThreadView(ctx, input.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-			tx = newProjectionSourceTx(tx)
 			var err error
-			spans, err = collectRangePage(ctx, input, func(anchor string) (ItemMembershipWindow, error) {
-				return readItemMembershipWindow(ctx, tx, meta, ItemMembershipWindowOptions{ThreadID: meta.ID, LeafID: input.LeafID, AnchorID: anchor, Direction: input.Direction, Limit: 1})
-			}, func(query ItemMembershipRangeOptions) (ItemMembershipRange, error) {
-				return readItemMembershipRange(ctx, tx, meta, query, kinds)
-			})
+			spans, err = readRangePageTree(ctx, newProjectionSourceTx(tx), meta, input, kinds)
 			return err
 		}, func(memory *MemoryRepo) error {
 			var err error
