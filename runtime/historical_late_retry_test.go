@@ -12,9 +12,11 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/provider"
 	r "github.com/floegence/floret/v7/runtime"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 )
 
 func TestReleasedLateReceiptRetry(t *testing.T) {
@@ -98,6 +100,33 @@ func TestReleasedLateReceiptRetry(t *testing.T) {
 		if v.Turns[1].RunID != "run-B" || len(v.Turns[1].FinalItemIDs) != 1 || v.Turns[1].FinalItemIDs[0] != answerID || !v.Turns[2].HasFailure || len(v.Turns[3].FinalItemIDs) != 1 || v.Turns[3].FinalItemIDs[0] != retryID {
 			t.Fatal("lost original or retry boundary")
 		}
+		scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{"ab-thread"}}
+		sub, err := svc.(r.ThreadWindowSource).SubscribeWindowUpdates(t.Context(), scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sub.SetWindow(t.Context(), scope, r.ThreadWindowInput{ThreadID: "ab-thread", Limit: 80, IncludeSummary: true}); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			u, err := sub.Next(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.Window == nil {
+				continue
+			}
+			if u.Turns == nil || len(u.Turns.Value) != 4 {
+				t.Fatal("missing window turns")
+			}
+			for i, got := range u.Turns.Value {
+				if got.TurnID != v.Turns[i].TurnID || got.HasFailure != v.Turns[i].HasFailure {
+					t.Fatalf("window failure flag differs from View: %s has_failure=%t", got.TurnID, got.HasFailure)
+				}
+			}
+			break
+		}
+		sub.Close()
 		var answers, recovered int
 		for _, item := range v.Items {
 			if item.ID == answerID && item.Text == original && item.RunID == "run-B" {

@@ -107,10 +107,10 @@ func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemFor
 		}
 		facts.terminal = &terminal
 	}
-	return facts.refresh(itemForEntry)
+	return facts.refresh(projection.lifecycle.turns[entry.TurnID], itemForEntry)
 }
 
-func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, bool)) error {
+func (facts *threadTurnFacts) refresh(lifecycle *threadLifecycleFacts, itemForEntry func(string) (ThreadItem, bool)) error {
 	turn := &facts.turn
 	turn.EndedAt, turn.Outcome = nil, nil
 	turn.ElapsedMS, turn.WaitingMS, turn.WorkDurationMS = 0, 0, 0
@@ -132,6 +132,7 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 		value := TurnOutcomeCancelled
 		turn.Outcome = &value
 	}
+	turn.HasFailure = lifecycle.hasFailure(turn.Outcome)
 	if facts.terminal != nil && turn.Outcome != nil {
 		end, err := sessiontree.EntryOccurrenceTime(*facts.terminal)
 		if err != nil {
@@ -185,7 +186,6 @@ func (projection *threadTurnProjection) turnValue(id string) (ThreadTurn, bool, 
 		return ThreadTurn{}, true, facts.finalErr
 	}
 	turn := facts.turn
-	turn.HasFailure = projection.lifecycle.turns[id].hasFailure(turn.Outcome)
 	if turn.segmented {
 		if facts.intermediateErr != nil {
 			return ThreadTurn{}, true, facts.intermediateErr

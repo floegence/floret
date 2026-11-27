@@ -520,7 +520,7 @@ Forks derive positions from their own Path and preserve all copied occurrence
 timestamps; inherited event recipient identities remain unchanged.
 
 `ThreadTurn.HasFailure` reports retained canonical errors for failed/interrupted
-turns across continuation, selected windows, pagination and restart. It is false
+turns across continuation, selected windows, pagination and restart. Selecting a window after a successful Retry retains the original failed turn's diagnostic indicator. It is false
 for running/completed/cancelled turns. `ThreadTurnFailureReader.ReadTurnFailure`
 requires fresh authorized scope and exact ThreadID/TurnID/RunID; it returns detached
 complete evidence on demand. Unbounded errors never enter display turn metadata.

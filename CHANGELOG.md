@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.131.2
+
+- Preserve the historical failure detail indicator in selected reading windows after an explicit Retry, matching the full thread view without loading extra records.
+
 ## v7.131.1
 
 - Resume failed turns from the savepoint's own identity even when a previous turn's work settles immediately before it. Preserve old retry references and tool results. Reject failed admission before acknowledging Retry. Logical fence 19 prevents incompatible older runtimes from opening the store; no journal rewrite is required.
