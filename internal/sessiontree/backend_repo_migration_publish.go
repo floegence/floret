@@ -316,6 +316,9 @@ func (repo *BackendRepo) publishSourceThreadFrom(ctx context.Context, threadID s
 			return err
 		}
 		for id, meta := range unpublished {
+			if err := updateChildMembership(tx, id, "", meta.ParentThreadID); err != nil {
+				return err
+			}
 			if meta.ParentThreadID == "" {
 				if err := putBackendDomainRecordContext(ctx, tx, target, backendDomainKey(backendDomainRecordRootThread, id), backendDomainRecordRootThread, id, "", 0, backendDomainRootThread{ThreadID: id}); err != nil {
 					return err

@@ -444,6 +444,13 @@ child must be owned by the named parent and that execution must still be active
 and uncanceled when admitting new input. Ordinary user input omits the field.
 See the [exact tree test](../../runtime/thread_subtree_stop_test.go).
 
+Once hierarchy preparation is complete, direct child lists and subtree stop
+inventory seek the parent's canonical membership. A subtree read captures one
+metadata snapshot, includes archived descendants, and does not follow independent
+fork origins. The stop contract and replacement-execution checks are unchanged.
+During historical migration, unindexed or retained children must not be reported
+as absent. See [storage preparation](../workflows/history-performance.md).
+
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
 After that commit, the actor releases its view, draft buffers, item indexes,

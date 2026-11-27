@@ -186,7 +186,10 @@ func PrepareHistoricalSnapshot(ctx context.Context, backend spi.Backend, now fun
 		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 			return err
 		}
-		return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV42Version, Sequence: sequence, SourceVersion: checkpoint.Version, MigrationTime: preparation.MigrationTime})
+		if err := initChildMembership(tx, "ready"); err != nil {
+			return err
+		}
+		return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV43Version, Sequence: sequence, SourceVersion: checkpoint.Version, MigrationTime: preparation.MigrationTime})
 	})
 }
 

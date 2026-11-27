@@ -36,6 +36,10 @@ func migrateBackendDomainV33ToV34(ctx context.Context, tx spi.WriteTx, source ba
 
 // Upgrade each released manifest edge inside the owning storage transaction.
 func migrateCurrentManifest(ctx context.Context, tx spi.WriteTx, source backendDomainManifest) error {
+	actual, err := readV32Manifest(tx)
+	if err != nil || !reflect.DeepEqual(actual, source) {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
 	if source.Version == backendDomainV32Version {
 		if err := migrateBackendDomainV32ToV33(ctx, tx, source); err != nil {
 			return err
@@ -127,9 +131,19 @@ func migrateCurrentManifest(ctx context.Context, tx spi.WriteTx, source backendD
 		}
 	}
 	if source.Version == backendDomainV41Version {
-		return advanceUnchangedDomainRecords(ctx, tx, source, backendDomainV41Version, backendDomainV42Version)
+		if err := advanceUnchangedDomainRecords(ctx, tx, source, backendDomainV41Version, backendDomainV42Version); err != nil {
+			return err
+		}
+		var err error
+		source, err = readV32Manifest(tx)
+		if err != nil {
+			return err
+		}
 	}
-	if source.Version != backendDomainV42Version {
+	if source.Version == backendDomainV42Version {
+		return migrateBackendDomainV42ToV43(ctx, tx, source)
+	}
+	if source.Version != backendDomainV43Version {
 		return ErrAuthorityCorrupt
 	}
 	return ctx.Err()

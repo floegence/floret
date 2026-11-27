@@ -1064,24 +1064,9 @@ type threadRuntimeDrain struct {
 }
 
 func (service *threadRuntimeService) subtreeThreadIDs(ctx context.Context, rootThreadID identity.ThreadID) ([]identity.ThreadID, error) {
-	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	ids, err := sessiontree.SubtreeThreadIDs(ctx, service.host.store.repo, rootThreadID.String())
 	if err != nil {
 		return nil, runtimeHostError(err)
-	}
-	children := make(map[string][]string)
-	found := false
-	for _, meta := range metas {
-		if meta.ID == rootThreadID.String() {
-			found = true
-		}
-		children[meta.ParentThreadID] = append(children[meta.ParentThreadID], meta.ID)
-	}
-	if !found {
-		return nil, ErrThreadNotFound
-	}
-	ids := []string{rootThreadID.String()}
-	for index := 0; index < len(ids); index++ {
-		ids = append(ids, children[ids[index]]...)
 	}
 	out := make([]identity.ThreadID, len(ids))
 	for index, threadID := range ids {

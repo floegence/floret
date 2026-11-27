@@ -128,7 +128,7 @@ func (repo *BackendRepo) HasPendingMigration() bool {
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return repo.migrationSource != nil && repo.domainFormat().version >= backendDomainV32Version
+	return repo.childMembershipPending || repo.migrationSource != nil && repo.domainFormat().version >= backendDomainV32Version
 }
 
 // MigrateNextThread publishes one source thread or deletes one bounded cleanup
@@ -159,6 +159,17 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 	err = func() error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
+		if repo.childMembershipPending {
+			var more bool
+			err := repo.backend.Update(ctx, func(tx spi.WriteTx) (err error) {
+				more, err = repo.advanceChildMembership(ctx, tx)
+				return err
+			})
+			if err == nil {
+				repo.childMembershipPending, migrated = more, true
+			}
+			return err
+		}
 		if repo.migrationSource == nil {
 			currentIndexes = true
 			return nil
@@ -1103,44 +1114,32 @@ func (repo *BackendRepo) visitListedThreads(ctx context.Context, tx spi.ReadTx, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if parent != "" && repo.childrenByParent != nil && repo.migrationSource == nil {
-		for _, id := range repo.childrenByParent[parent] {
-			meta, err := readPublishedThreadMeta(tx, repo.domainFormat(), id)
-			if err != nil || meta.ParentThreadID != parent {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			if err := repo.validateListedParents(ctx, tx, repo.domainFormat(), meta); err != nil {
+	if parent != "" && repo.migrationSource == nil && !repo.childMembershipPending {
+		manifest, err := readV32Manifest(tx)
+		if err != nil {
+			return err
+		}
+		if manifest.Version >= backendDomainV43Version {
+			state, err := readChildMembershipState(tx)
+			if err != nil {
 				return err
 			}
-			if err := visit(meta); err != nil {
-				return err
+			if state.Phase == "ready" {
+				return visitIndexedChildren(ctx, tx, parent, func(meta ThreadMeta) error {
+					if err := repo.validateListedParents(ctx, tx, repo.domainFormat(), meta); err != nil {
+						return err
+					}
+					return visit(meta)
+				})
 			}
 		}
-		return nil
 	}
-	var children map[string][]string
-	if repo.childrenByParent == nil && repo.migrationSource == nil {
-		children = make(map[string][]string)
-	}
-	bytes := 0
-	err := repo.visitThreadMetadata(ctx, tx, func(meta ThreadMeta) error {
-		if children != nil && meta.ParentThreadID != "" {
-			bytes += 96 + len(meta.ID) + len(meta.ParentThreadID)
-			if bytes > 1<<20 {
-				children = nil
-			} else {
-				children[meta.ParentThreadID] = append(children[meta.ParentThreadID], meta.ID)
-			}
-		}
+	return repo.visitThreadMetadata(ctx, tx, func(meta ThreadMeta) error {
 		if parent == "" || meta.ParentThreadID == parent {
 			return visit(meta)
 		}
 		return nil
 	})
-	if err == nil && children != nil {
-		repo.childrenByParent = children
-	}
-	return err
 }
 
 func (repo *BackendRepo) validateListedParents(ctx context.Context, tx spi.ReadTx, format backendDomainFormat, meta ThreadMeta) error {
@@ -1229,9 +1228,9 @@ func (repo *BackendRepo) visitThreadMetadata(ctx context.Context, tx spi.ReadTx,
 				return err
 			}
 			for _, row := range page.Records {
-				record, err := decodeBackendDomainRecord(format, row.Value)
-				if err != nil || record.Kind != backendDomainRecordThread || record.ID == "" || record.ThreadID != "" || record.Ordinal != 0 || !bytes.Equal(row.Key, backendDomainKey(backendDomainRecordThread, record.ID)) {
-					return errors.Join(ErrAuthorityCorrupt, err)
+				record, err := listedThreadRecord(format, row)
+				if err != nil {
+					return err
 				}
 				if index > 0 {
 					shadowed := false
@@ -1246,19 +1245,14 @@ func (repo *BackendRepo) visitThreadMetadata(ctx context.Context, tx spi.ReadTx,
 						continue
 					}
 				}
-				var meta ThreadMeta
-				if err := decodeBackendDomainValue(format, record, &meta); err != nil || meta.ID != record.ID || ValidateThreadMetaAuthority(meta) != nil {
-					return errors.Join(ErrAuthorityCorrupt, err)
+				meta, err := listedThreadMeta(format, record)
+				if err != nil {
+					return err
 				}
 				if index == 0 {
 					if meta.ParentThreadID == "" {
-						root, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordRootThread, meta.ID), backendDomainRecordRootThread, meta.ID, "", 0)
-						if err != nil || !found {
-							return errors.Join(ErrAuthorityCorrupt, err)
-						}
-						var value backendDomainRootThread
-						if err := decodeBackendDomainValue(format, root, &value); err != nil || value.ThreadID != meta.ID {
-							return errors.Join(ErrAuthorityCorrupt, err)
+						if err := validateListedRoot(tx, format, meta.ID); err != nil {
+							return err
 						}
 					}
 					if err := repo.validateListedParents(ctx, tx, format, meta); err != nil {
@@ -1277,6 +1271,34 @@ func (repo *BackendRepo) visitThreadMetadata(ctx context.Context, tx spi.ReadTx,
 			}
 			after = bytes.Clone(page.Next)
 		}
+	}
+	return nil
+}
+
+func listedThreadRecord(format backendDomainFormat, row spi.Record) (backendDomainRecord, error) {
+	record, err := decodeBackendDomainRecord(format, row.Value)
+	if err != nil || record.Kind != backendDomainRecordThread || record.ID == "" || record.ThreadID != "" || record.Ordinal != 0 || !bytes.Equal(row.Key, backendDomainKey(backendDomainRecordThread, record.ID)) {
+		return backendDomainRecord{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return record, nil
+}
+
+func listedThreadMeta(format backendDomainFormat, record backendDomainRecord) (ThreadMeta, error) {
+	var meta ThreadMeta
+	if err := decodeBackendDomainValue(format, record, &meta); err != nil || meta.ID != record.ID || ValidateThreadMetaAuthority(meta) != nil {
+		return ThreadMeta{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return meta, nil
+}
+
+func validateListedRoot(tx spi.ReadTx, format backendDomainFormat, id string) error {
+	root, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordRootThread, id), backendDomainRecordRootThread, id, "", 0)
+	if err != nil || !found {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	var value backendDomainRootThread
+	if err := decodeBackendDomainValue(format, root, &value); err != nil || value.ThreadID != id {
+		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return nil
 }

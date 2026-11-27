@@ -549,6 +549,9 @@ func (mutation *backendDomainMutation) persist(ctx context.Context, tx spi.Write
 	}
 	if format.version >= backendDomainV32Version {
 		for id, previous := range mutation.threads {
+			if err := updateChildMembership(tx, id, previous.value.ParentThreadID, memory.threads[id].ParentThreadID); err != nil {
+				return err
+			}
 			if _, found := memory.threads[id]; found && !previous.found {
 				if err := putJournalCount(tx, id, 0); err != nil {
 					return err

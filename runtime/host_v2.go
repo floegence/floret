@@ -30,8 +30,10 @@ import (
 const (
 	logicalSchemaNamespace            = "floret.system"
 	logicalSchemaKey                  = "logical-schema"
-	logicalSchemaVersion              = "19"
-	logicalSchemaFingerprint          = "sha256:bd2b7b78f449e2518aa3c459c956401d9a35e4d404df51a9cb4c9109d726f25e"
+	logicalSchemaVersion              = "20"
+	logicalSchemaFingerprint          = "sha256:c2bdbb7f92ba0c6a2383c373c8aace03828c002cc4335cc94a396776872fcab0"
+	legacyV19LogicalSchemaVersion     = "19"
+	legacyV19LogicalSchemaFingerprint = "sha256:bd2b7b78f449e2518aa3c459c956401d9a35e4d404df51a9cb4c9109d726f25e"
 	legacyV18LogicalSchemaVersion     = "18"
 	legacyV18LogicalSchemaFingerprint = "sha256:ce00957914f56291e2124364ddd0f5038a2e4303d0f0f8627bddcaa329db5861"
 	legacyV17LogicalSchemaVersion     = "17"
@@ -303,7 +305,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		if inspectErr != nil {
 			return inspectErr
 		}
-		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV18 || logicalState == logicalSchemaV17 || logicalState == logicalSchemaV15 || logicalState == logicalSchemaV14 || logicalState == logicalSchemaV13 || logicalState == logicalSchemaV12 || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
+		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV19 || logicalState == logicalSchemaV18 || logicalState == logicalSchemaV17 || logicalState == logicalSchemaV15 || logicalState == logicalSchemaV14 || logicalState == logicalSchemaV13 || logicalState == logicalSchemaV12 || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
 			var current bool
 			currentKernel, current, inspectErr = internalstorage.NewCurrentBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents)
 			if !current {
@@ -796,6 +798,7 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV19     logicalSchemaState = "v19"
 	logicalSchemaV18     logicalSchemaState = "v18"
 	logicalSchemaV17     logicalSchemaState = "v17"
 	logicalSchemaV15     logicalSchemaState = "v15"
@@ -845,6 +848,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV19LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV19LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 19 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV19, nil
 	}
 	if envelope.Version == legacyV18LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV18LogicalSchemaFingerprint {

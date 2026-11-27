@@ -39,6 +39,7 @@ func outputMigrationFixture(t *testing.T, version int) *migrationTestBackend {
 func TestOutputSchemaMigrationPreservesHistoryAndBoundedRestart(t *testing.T) {
 	t.Run("domain38", func(t *testing.T) { testManifestUpgradeRestart(t, backendDomainV38Version) })
 	t.Run("domain41", func(t *testing.T) { testManifestUpgradeRestart(t, backendDomainV41Version) })
+	t.Run("domain42", func(t *testing.T) { testManifestUpgradeRestart(t, backendDomainV42Version) })
 }
 
 func testManifestUpgradeRestart(t *testing.T, version int) {
@@ -56,6 +57,7 @@ func testManifestUpgradeRestart(t *testing.T, version int) {
 	after := cloneMigrationRecords(backend.records)
 	key := string(backendDomainKey(backendDomainRecordManifest))
 	before[backendDomainV32Namespace][key] = after[backendDomainV32Namespace][key]
+	expectChildBackfillCheckpoint(before)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("migration rewrote history")
 	}
@@ -64,7 +66,7 @@ func testManifestUpgradeRestart(t *testing.T, version int) {
 		if err != nil {
 			return err
 		}
-		if manifest.Version != backendDomainV42Version {
+		if manifest.Version != backendDomainV43Version {
 			t.Fatal("not upgraded")
 		}
 		_, current, err := NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)
@@ -84,6 +86,9 @@ func TestOutputSchemaMigrationAtomicFailure(t *testing.T) {
 		testManifestUpgradeFailure(t, backendDomainV38Version, migrateBackendDomainV38ToV39)
 	})
 	t.Run("domain41", func(t *testing.T) { testManifestUpgradeFailure(t, backendDomainV41Version, migrateCurrentManifest) })
+	t.Run("domain42", func(t *testing.T) {
+		testManifestUpgradeFailure(t, backendDomainV42Version, migrateBackendDomainV42ToV43)
+	})
 }
 
 func testManifestUpgradeFailure(t *testing.T, version int, migrate func(context.Context, spi.WriteTx, backendDomainManifest) error) {

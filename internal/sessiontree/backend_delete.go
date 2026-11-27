@@ -97,7 +97,6 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 	if err != nil {
 		return DeleteRootTreeResult{}, err
 	}
-	repo.childrenByParent = nil
 	for _, id := range result.ThreadIDs {
 		delete(repo.workAdmissions, id)
 		delete(repo.queryThreads, id)
@@ -142,6 +141,9 @@ func visitCanonicalTombstones(ctx context.Context, tx spi.ReadTx, visit func(Thr
 }
 
 func deleteCanonicalThreadRecords(ctx context.Context, tx spi.WriteTx, meta ThreadMeta) error {
+	if err := updateChildMembership(tx, meta.ID, meta.ParentThreadID, ""); err != nil {
+		return err
+	}
 	if err := deleteItemMembership(ctx, tx, meta.ID); err != nil {
 		return err
 	}

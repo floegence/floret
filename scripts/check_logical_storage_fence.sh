@@ -13,42 +13,23 @@ mkdir -p "${root}/writer" "${root}/reader"
 cd "${root}/writer"
 go mod init example.com/logical-fence-writer
 cp "${repository_root}/scripts/testdata/logical-storage-fence/writer.go" main.go
-# Qualify the released logical-13/domain-38 writer before upgrading its records.
-go get "github.com/floegence/floret/v7@v7.110.0"
-go mod tidy
-go mod verify
-[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.110.0 ]]
-[[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
-go run . "${root}/history.sqlite"
-# Verify the last released domain-41 writer can continue the same records.
-go get "github.com/floegence/floret/v7@v7.129.3"
-go mod tidy
-go mod verify
-[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.129.3 ]]
-[[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
-go run . "${root}/history.sqlite"
-# Upgrade a released logical-18 store, not just a domain-41 store.
-go get "github.com/floegence/floret/v7@v7.131.0"
-go mod tidy
-go mod verify
-[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == v7.131.0 ]]
-[[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
-go run . "${root}/history.sqlite"
-go get "github.com/floegence/floret/v7@${version}"
-go mod tidy
-go mod verify
-[[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == "${version}" ]]
-[[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
-go run . "${root}/history.sqlite"
+# Continue the same database across released writers and the proposed upgrade.
+use_floret() {
+  go get "github.com/floegence/floret/v7@$1"
+  go mod tidy
+  go mod verify
+  [[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == "$1" ]]
+  [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
+}
+for writer_version in v7.110.0 v7.129.3 v7.131.0 v7.132.2 v7.133.0 "${version}"; do
+  use_floret "${writer_version}"
+  go run . "${root}/history.sqlite"
+done
 cd "${root}/reader"
 go mod init example.com/logical-fence-reader
 cp "${repository_root}/scripts/testdata/logical-storage-fence/reader.go" main.go
-for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0 v7.119.1 v7.120.7 v7.129.3 v7.131.0; do
-  go get "github.com/floegence/floret/v7@${reader_version}"
-  go mod tidy
-  go mod verify
-  [[ $(go list -m -f '{{.Version}}' github.com/floegence/floret/v7) == "${reader_version}" ]]
-  [[ -z $(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all) ]]
+for reader_version in v7.107.9 v7.109.0 v7.110.0 v7.111.0 v7.119.1 v7.120.7 v7.129.3 v7.131.0 v7.132.2 v7.133.0; do
+  use_floret "${reader_version}"
   go run . "${root}/history.sqlite"
 done
 cd "${root}/writer"

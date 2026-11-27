@@ -57,6 +57,7 @@ func TestHostWorkSchemaMigrationPreservesRecordsAndRestarts(t *testing.T) {
 		t.Fatal("old writer accepted new manifest")
 	}
 	before[backendDomainV32Namespace][key] = bytes.Clone(manifest)
+	expectChildBackfillCheckpoint(before)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("metadata migration rewrote historical records")
 	}

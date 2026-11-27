@@ -106,6 +106,8 @@ func encodeBackendDomainRecord(format backendDomainFormat, kind, id, threadID st
 				envelope = "sessiontree-v41-manifest"
 			case backendDomainV42Version:
 				envelope = "sessiontree-v42-manifest"
+			case backendDomainV43Version:
+				envelope = "sessiontree-v43-manifest"
 			}
 		}
 	}
@@ -173,6 +175,12 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v42-manifest")
 		if err == nil {
 			manifestVersion = backendDomainV42Version
+		}
+	}
+	if err != nil && format.version == backendDomainV32Version {
+		payload, err = storagecodec.DecodeEnvelope(encoded, "sessiontree-v43-manifest")
+		if err == nil {
+			manifestVersion = backendDomainV43Version
 		}
 	}
 	if err != nil {
@@ -467,7 +475,7 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 		}
 	}
 	validate := format.validate
-	if manifest.Version >= backendDomainV35Version && manifest.Version <= backendDomainV42Version {
+	if manifest.Version >= backendDomainV35Version && manifest.Version <= backendDomainV43Version {
 		validate = validateBackendDomainV35Memory
 	}
 	if err := validate(memory); err != nil {
@@ -756,12 +764,22 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 		return false, err
 	}
 	if format.version >= backendDomainV32Version {
-		for id := range after.threads {
+		for id, next := range after.threads {
+			if err := updateChildMembership(tx, id, before.threads[id].ParentThreadID, next.ParentThreadID); err != nil {
+				return false, err
+			}
 			if _, existed := before.threads[id]; !existed {
 				if err := putJournalCount(tx, id, 0); err != nil {
 					return false, err
 				}
 				changed = true
+			}
+		}
+		for id, previous := range before.threads {
+			if _, exists := after.threads[id]; !exists {
+				if err := updateChildMembership(tx, id, previous.ParentThreadID, ""); err != nil {
+					return false, err
+				}
 			}
 		}
 	}

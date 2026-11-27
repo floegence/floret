@@ -28,6 +28,7 @@ type BackendRepo struct {
 	// migrationSource identifies an older canonical format retained as the
 	// authoritative source while v32 records are published per thread.
 	migrationSource                      *backendDomainFormat
+	childMembershipPending               bool                     // guarded by mu after admission
 	snapshotSource                       *snapshotEffectiveSource // guarded by migrationGate
 	waitForReady                         func(context.Context) error
 	delegate                             atomic.Pointer[BackendRepo]
@@ -38,7 +39,6 @@ type BackendRepo struct {
 	parentEvents                         bool
 	threadMemoryID                       string
 	threadMemory                         *MemoryRepo
-	childrenByParent                     map[string][]string
 	verifiedThreadLeaves                 map[string]string
 	queryPreparationCursor               []byte
 	threadQuerySnapshots                 *querySnapshots
@@ -102,12 +102,13 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 	}
 	format := backendDomainV32Format
 	var migrationSource *backendDomainFormat
+	pending := false
 	if source == backendDomainSourceV32 {
 		manifest, err := readV32Manifest(tx)
 		if err != nil {
 			return nil, false, err
 		}
-		if manifest.Version < backendDomainV42Version {
+		if manifest.Version < backendDomainV43Version {
 			writable, ok := tx.(spi.WriteTx)
 			if !ok {
 				return nil, false, nil
@@ -116,6 +117,11 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 				return nil, false, err
 			}
 		}
+		membership, err := readChildMembershipState(tx)
+		if err != nil {
+			return nil, false, err
+		}
+		pending = membership.Phase == "backfill"
 		if manifest.SourceVersion != 0 {
 			retained, err := migrationSourceFormat(manifest.SourceVersion)
 			if err != nil {
@@ -153,7 +159,10 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 		if retained.version < 27 {
 			migrationTime = now().UTC().UnixNano()
 		}
-		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV42Version, Sequence: manifest.Sequence, SourceVersion: retained.version, MigrationTime: migrationTime}); err != nil {
+		if err := initChildMembership(writable, "ready"); err != nil {
+			return nil, false, err
+		}
+		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV43Version, Sequence: manifest.Sequence, SourceVersion: retained.version, MigrationTime: migrationTime}); err != nil {
 			return nil, false, err
 		}
 		migrationSource = &retained
@@ -161,6 +170,7 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 	repo, err := NewBackendRepoForFormat(backend, now, parentEvents, format)
 	if repo != nil {
 		repo.migrationSource = migrationSource
+		repo.childMembershipPending = pending
 	}
 	return repo, err == nil, err
 }

@@ -134,9 +134,6 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 		return ThreadMeta{}, Entry{}, err
 	}
 	repo.installJournalMutation(mutation)
-	if mutation.meta.ParentThreadID != "" {
-		repo.childrenByParent = nil
-	}
 	return mutation.meta, saved, nil
 }
 
@@ -165,6 +162,9 @@ func (repo *BackendRepo) canonicalThreadIDAvailable(tx spi.ReadTx, threadID stri
 }
 
 func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadMeta) (*queryThread, error) {
+	if err := updateChildMembership(tx, meta.ID, "", meta.ParentThreadID); err != nil {
+		return nil, err
+	}
 	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordThread, meta.ID), backendDomainRecordThread, meta.ID, "", 0, meta); err != nil {
 		return nil, err
 	}

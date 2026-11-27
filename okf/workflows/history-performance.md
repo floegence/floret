@@ -177,6 +177,16 @@ A complete SQLite Host restart, including its background worker, reads 16
 records (about 4.2 KiB) for both 8 and 128 roughly 52 KiB messages. These are
 source-access regression budgets, not a production wall-clock or RSS claim.
 
+Schema 43 keeps a count and child locators keyed by exact parent. Parents
+without children have no edges. Logical format 20 fences old writers before
+admitting the new manifest; this does not certify complete hierarchy coverage.
+The 42-to-43 worker checkpoints at most 128 published thread metadata rows per
+transaction. Concurrent writes maintain the covered prefix in their own
+transaction; later keys are picked up by the worker. No journal or body is
+rewritten. While a backfill or retained source is outstanding, hierarchy reads
+can still enumerate metadata to avoid omitting a child. Qualify first reads on
+an upgrading store separately from cold reads after completed migration.
+
 Missing/stale indexes and migration still require complete validation. The
 existing query manifest retains a journal-wide checked prefix for parent-event
 recovery, including inactive branches. Enabled canonical writes advance it with

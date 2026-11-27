@@ -37,9 +37,20 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err != nil {
 				return nil, err
 			}
-			if manifest.Version < backendDomainV42Version {
+			if manifest.Version < backendDomainV43Version {
 				if err := migrateCurrentManifest(ctx, tx, manifest); err != nil {
 					return nil, err
+				}
+			}
+			// This explicit full-store inspection already loads complete authority.
+			// Finish private metadata preparation before inspecting the result.
+			for {
+				more, err := (&BackendRepo{}).advanceChildMembership(ctx, tx)
+				if err != nil {
+					return nil, err
+				}
+				if !more {
+					break
 				}
 			}
 		}

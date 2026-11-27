@@ -73,14 +73,81 @@ func TestWarmChildInventoryReadsOnlyMatchingThreadMetadata(t *testing.T) {
 	create(ThreadMeta{ID: "root"})
 	create(ThreadMeta{ID: "other"})
 	list("root", 0)
-	repo.backend = noScanCanonicalBackend{backend}
+	repo.backend = hierarchyReadGuard{backend, []string{"other"}}
 	list("other", 0)
 	repo.backend = backend
 	create(ThreadMeta{ID: "child", ParentThreadID: "root", TaskName: "worker", HostProfileRef: "test"})
 	list("root", 1)
-	repo.backend = noScanCanonicalBackend{backend}
+	repo.backend = hierarchyReadGuard{backend, []string{"root", "child", "other"}}
 	if rows := list("root", 1); rows[0].ID != "child" {
 		t.Fatal(rows)
 	}
 	list("other", 0)
+}
+
+func TestScopedSubtreeKeepsSiblingOrderWithoutReadingUnrelatedRoots(t *testing.T) {
+	ctx := t.Context()
+	backend := newMigrationTestBackend()
+	var repo *BackendRepo
+	if err := backend.Update(ctx, func(tx spi.WriteTx) (err error) {
+		repo, err = NewFreshCurrentBackendRepoInTransaction(ctx, backend, tx, time.Now, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range []struct{ id, parent string }{{"root", ""}, {"other", ""}, {"older", "root"}, {"newer", "root"}, {"leaf", "older"}, {"foreign", "other"}} {
+		meta := ThreadMeta{ID: row.id, ParentThreadID: row.parent, CreatedAt: time.Unix(int64(i+1), 0)}
+		if row.parent != "" {
+			meta.TaskName, meta.HostProfileRef = row.id, "test"
+		}
+		if _, err := repo.CreateThread(ctx, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.View(ctx, func(tx spi.ReadTx) (err error) {
+		repo, _, err = NewCurrentBackendRepoInTransaction(ctx, backend, tx, time.Now, false)
+		return err
+	}); err != nil || repo == nil {
+		t.Fatalf("cold subtree: %v", err)
+	}
+	repo.backend = hierarchyReadGuard{backend, []string{"root", "newer", "older", "leaf", "missing"}}
+	for root, want := range map[string][]string{"root": {"root", "newer", "older", "leaf"}, "older": {"older", "leaf"}, "leaf": {"leaf"}} {
+		got, err := SubtreeThreadIDs(ctx, repo, root)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("subtree %s: %v %v", root, got, err)
+		}
+	}
+	if _, err := SubtreeThreadIDs(ctx, repo, "missing"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("missing subtree: %v", err)
+	}
+}
+
+// Only the lookup itself is guarded: opening a historically older format can
+// legitimately need a one-time migration before the current owner is ready.
+func TestColdEmptyChildLookupDoesNotEnumerateThreads(t *testing.T) {
+	ctx := t.Context()
+	backend := newMigrationTestBackend()
+	var repo *BackendRepo
+	if err := backend.Update(ctx, func(tx spi.WriteTx) (err error) {
+		repo, err = NewFreshCurrentBackendRepoInTransaction(ctx, backend, tx, time.Now, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"oldest", "unrelated"} {
+		if _, err := repo.CreateThread(ctx, ThreadMeta{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.View(ctx, func(tx spi.ReadTx) (err error) {
+		repo, _, err = NewCurrentBackendRepoInTransaction(ctx, backend, tx, time.Now, false)
+		return err
+	}); err != nil || repo == nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	repo.backend = hierarchyReadGuard{backend, []string{"oldest"}}
+	rows, err := repo.ListThreads(ctx, ListThreadsOptions{ParentThreadID: "oldest"})
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("cold child lookup: %v %v", rows, err)
+	}
 }
