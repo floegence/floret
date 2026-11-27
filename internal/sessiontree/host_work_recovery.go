@@ -216,11 +216,17 @@ func (repo *BackendRepo) rebuildPendingWorkSources(ctx context.Context, thread s
 		if err != nil {
 			return nil, reader.validationError(err)
 		}
-		works, _, err := hostWorksFromPath(path)
+		works, admitted, err := hostWorksFromPath(path)
 		if err != nil {
 			return nil, reader.validationError(err)
 		}
-		return pendingHostWorks(works), repo.backend.View(ctx, reader.verify)
+		repo.mu.Lock()
+		defer repo.mu.Unlock()
+		if err := repo.backend.View(ctx, reader.verify); err != nil {
+			return nil, err
+		}
+		repo.rememberWorkWindow(thread, admissionWindowFromWorks(meta.LeafID, works, admitted))
+		return pendingHostWorks(works), nil
 	}
 	works, last, err := linearPendingWorkSources(ctx, reader, thread)
 	if err != nil {
@@ -254,59 +260,31 @@ func (repo *BackendRepo) rebuildPendingWorkSources(ctx context.Context, thread s
 // On a linear journal depth proves membership for every ordinal. Read only
 // sparse canonical metadata; never materialize notice, Activity or output bodies.
 func linearPendingWorkSources(ctx context.Context, tx spi.ReadTx, thread string) ([]HostWork, Entry, error) {
-	prefix := backendDomainKey(thread, "host_work")
 	pending := map[string]Entry{}
 	var last Entry
-	err := visitSparseSourcePages(ctx, tx, thread, "host_work", func(rows []spi.Record, count int) error {
-		keys := make([][]byte, len(rows))
-		ordinals := make([]int, len(rows))
-		for index, row := range rows {
-			if !bytes.HasPrefix(row.Key, prefix) {
-				return ErrAuthorityCorrupt
-			}
-			ordinal, err := historicalEntryOrdinal(row.Key, prefix)
-			if err != nil || ordinal >= count || int64(ordinal) < last.PathDepth || index > 0 && ordinal <= ordinals[index-1] {
-				return ErrAuthorityCorrupt
-			}
-			ordinals[index], keys[index] = ordinal, backendDomainEntryKey(thread, ordinal)
+	err := visitHostWorkSourceRecords(ctx, tx, thread, nil, false, func(entry Entry) error {
+		last = entry
+		if entry.Type != EntryHostWork {
+			return nil
 		}
-		records, err := storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: backendDomainV32Namespace, Keys: keys})
+		work, err := decodeHostWork(entry)
 		if err != nil {
-			return requiredRecordError(err)
+			return err
 		}
-		for index, raw := range records {
-			if err := ctx.Err(); err != nil {
+		if work.State == "bound" {
+			if _, exists := pending[work.ID]; exists {
+				return ErrAuthorityCorrupt
+			}
+			pending[work.ID] = entry
+		} else {
+			binding, found := pending[work.ID]
+			if !found {
+				return ErrAuthorityCorrupt
+			}
+			if _, _, err := hostWorksFromPath([]Entry{binding, entry}); err != nil {
 				return err
 			}
-			record, stored, err := decodeCanonicalEntryRecord(backendDomainV32Format, raw)
-			entry := stored.Entry
-			entry.bodyFields = stored.Fields
-			if err != nil || record.Ordinal != ordinals[index] || record.ThreadID != thread || record.ID != string(rows[index].Value) || entry.PathDepth != int64(record.Ordinal)+1 || sparseSourceCategory(entry) != "host_work" {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			last = entry
-			if entry.Type != EntryHostWork {
-				continue
-			}
-			work, err := decodeHostWork(entry)
-			if err != nil {
-				return err
-			}
-			if work.State == "bound" {
-				if _, exists := pending[work.ID]; exists {
-					return ErrAuthorityCorrupt
-				}
-				pending[work.ID] = entry
-			} else {
-				binding, found := pending[work.ID]
-				if !found {
-					return ErrAuthorityCorrupt
-				}
-				if _, _, err := hostWorksFromPath([]Entry{binding, entry}); err != nil {
-					return err
-				}
-				delete(pending, work.ID)
-			}
+			delete(pending, work.ID)
 		}
 		return nil
 	})
@@ -320,4 +298,93 @@ func linearPendingWorkSources(ctx context.Context, tx spi.ReadTx, thread string)
 	slices.SortFunc(bindings, func(first, second Entry) int { return int(first.PathDepth - second.PathDepth) })
 	works, _, err := hostWorksFromPath(bindings)
 	return pendingHostWorks(works), last, err
+}
+
+func visitHostWorkSourceRecords(ctx context.Context, tx spi.ReadTx, thread string, leaf *entryLocator, checkLocators bool, visit func(Entry) error) error {
+	prefix := backendDomainKey(thread, "host_work")
+	var lastDepth int64
+	lastOrdinal := -1
+	return visitSparseSourcePages(ctx, tx, thread, "host_work", func(rows []spi.Record, count int) error {
+		keys := make([][]byte, len(rows))
+		ordinals := make([]int, len(rows))
+		for index, row := range rows {
+			if !bytes.HasPrefix(row.Key, prefix) {
+				return ErrAuthorityCorrupt
+			}
+			ordinal, err := historicalEntryOrdinal(row.Key, prefix)
+			if err != nil || ordinal >= count || ordinal <= lastOrdinal {
+				return ErrAuthorityCorrupt
+			}
+			lastOrdinal = ordinal
+			ordinals[index], keys[index] = ordinal, backendDomainEntryKey(thread, ordinal)
+		}
+		records, err := storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: backendDomainV32Namespace, Keys: keys})
+		if err != nil {
+			return requiredRecordError(err)
+		}
+		var locators [][]byte
+		if checkLocators {
+			for index, row := range rows {
+				keys[index] = entryLocatorKey(thread, string(row.Value))
+			}
+			locators, err = storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: backendEntryIndexNamespace, Keys: keys})
+			if err != nil {
+				return requiredRecordError(err)
+			}
+		}
+		var first, last entryLocator
+		for index, raw := range records {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			record, stored, err := decodeCanonicalEntryRecord(backendDomainV32Format, raw)
+			entry := stored.Entry
+			entry.bodyFields = stored.Fields
+			if err != nil || record.Ordinal != ordinals[index] || record.ThreadID != thread || record.ID != string(rows[index].Value) || entry.PathDepth <= 0 || entry.PathDepth > int64(record.Ordinal)+1 || sparseSourceCategory(entry) != "host_work" {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if checkLocators {
+				located, err := decodeEntryLocator(locators[index], entry.ID)
+				if err != nil || located.Depth != entry.PathDepth || located.Parent != entry.ParentID || located.Ordinal != record.Ordinal {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+			}
+			if leaf == nil {
+				if entry.PathDepth != int64(record.Ordinal)+1 {
+					return ErrAuthorityCorrupt
+				}
+			} else {
+				if entry.PathDepth > leaf.Depth || record.Ordinal > leaf.Ordinal {
+					continue
+				}
+				if entry.PathDepth < first.Depth || entry.PathDepth > last.Depth {
+					first, err = entryAncestor(ctx, tx, thread, *leaf, entry.PathDepth)
+					if err != nil {
+						return err
+					}
+					last, err = entryAncestor(ctx, tx, thread, *leaf, min(leaf.Depth, entry.PathDepth+int64(ordinals[len(rows)-1]-record.Ordinal)))
+					if err != nil {
+						return err
+					}
+					if int64(last.Ordinal-first.Ordinal) != last.Depth-first.Depth {
+						last = first
+					}
+				}
+				if int64(record.Ordinal-first.Ordinal) != entry.PathDepth-first.Depth {
+					continue
+				}
+				if entry.PathDepth == first.Depth && entry.ID != first.ID || entry.PathDepth == last.Depth && entry.ID != last.ID {
+					return ErrAuthorityCorrupt
+				}
+			}
+			if entry.PathDepth <= lastDepth {
+				return ErrAuthorityCorrupt
+			}
+			lastDepth = entry.PathDepth
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

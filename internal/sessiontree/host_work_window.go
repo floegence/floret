@@ -1,8 +1,12 @@
 package sessiontree
 
 import (
+	"cmp"
 	"encoding/json"
+	"slices"
 	"sort"
+
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // A window contains only unobserved work identities in binding order. The
@@ -10,8 +14,66 @@ import (
 type workAdmissionWindow struct {
 	leaf     string
 	sequence int
-	bound    map[string]int
+	bound    map[string]windowWorkBinding
 	ready    []string
+}
+
+type windowWorkBinding struct {
+	order int
+	stop  HostWorkExecution
+}
+
+func stopWorkExecution(work HostWork) HostWorkExecution {
+	if !work.Inherited && (work.State == "bound" || work.State == "completed" && work.Notify) {
+		return HostWorkExecution{work.Invocation.TurnID, work.Invocation.RunID}
+	}
+	return HostWorkExecution{}
+}
+
+func (window *workAdmissionWindow) stopSources(tx spi.ReadTx, thread string) ([]HostWorkExecution, error) {
+	var bindings []windowWorkBinding
+	for _, binding := range window.bound {
+		if binding.stop.TurnID != "" {
+			bindings = append(bindings, binding)
+		}
+	}
+	slices.SortFunc(bindings, func(first, second windowWorkBinding) int { return cmp.Compare(first.order, second.order) })
+	var sources []HostWorkExecution
+	seen := map[HostWorkExecution]bool{}
+	for _, binding := range bindings {
+		if seen[binding.stop] {
+			continue
+		}
+		seen[binding.stop] = true
+		turn, err := readTurnEntryLocator(tx, thread, binding.stop.TurnID)
+		if err != nil {
+			return nil, err
+		}
+		if turn.Cancellation == "" {
+			sources = append(sources, binding.stop)
+		} else if entry, err := readCanonicalEntryMetadata(tx, thread, turn.Cancellation); err != nil || entry.Type != EntryCancelRequested || entry.TurnID != binding.stop.TurnID {
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrAuthorityCorrupt
+		}
+	}
+	return sources, nil
+}
+
+func admissionWindowFromWorks(leaf string, works []HostWork, admitted map[string]bool) *workAdmissionWindow {
+	window := &workAdmissionWindow{leaf: leaf, bound: make(map[string]windowWorkBinding)}
+	for _, work := range works {
+		if admitted[work.ID] {
+			continue
+		}
+		window.sequence++
+		window.bound[work.ID] = windowWorkBinding{window.sequence, stopWorkExecution(work)}
+		if work.State != "bound" {
+			window.ready = append(window.ready, work.ID)
+		}
+	}
+	return window
 }
 
 func (window *workAdmissionWindow) settle(id string) {
@@ -19,7 +81,7 @@ func (window *workAdmissionWindow) settle(id string) {
 	if !found {
 		return
 	}
-	position := sort.Search(len(window.ready), func(index int) bool { return window.bound[window.ready[index]] >= order })
+	position := sort.Search(len(window.ready), func(index int) bool { return window.bound[window.ready[index]].order >= order.order })
 	window.ready = append(window.ready, "")
 	copy(window.ready[position+1:], window.ready[position:])
 	window.ready[position] = id
@@ -30,7 +92,7 @@ func (window *workAdmissionWindow) remove(id string) {
 	if !exists {
 		return
 	}
-	index := sort.Search(len(window.ready), func(index int) bool { return window.bound[window.ready[index]] >= order })
+	index := sort.Search(len(window.ready), func(index int) bool { return window.bound[window.ready[index]].order >= order.order })
 	if index < len(window.ready) && window.ready[index] == id {
 		copy(window.ready[index:], window.ready[index+1:])
 		window.ready[len(window.ready)-1] = ""
@@ -51,17 +113,7 @@ func (mutation *canonicalJournalMutation) nextHostWorkNotice(turn, run string) (
 		if err != nil {
 			return Entry{}, err
 		}
-		window = &workAdmissionWindow{leaf: mutation.meta.LeafID, bound: make(map[string]int)}
-		for _, work := range works {
-			if admitted[work.ID] {
-				continue
-			}
-			window.sequence++
-			window.bound[work.ID] = window.sequence
-			if work.State != "bound" {
-				window.ready = append(window.ready, work.ID)
-			}
-		}
+		window = admissionWindowFromWorks(mutation.meta.LeafID, works, admitted)
 		mutation.workWindow = window
 		mutation.validatedWork = true
 		return hostWorkAdmissionForWorks(works, admitted, thread, turn, run)
@@ -111,8 +163,12 @@ func (repo *BackendRepo) advanceWorkAdmission(mutation *canonicalJournalMutation
 			}
 			if work.State == "bound" {
 				window.sequence++
-				window.bound[work.ID] = window.sequence
+				window.bound[work.ID] = windowWorkBinding{window.sequence, stopWorkExecution(work)}
 			} else {
+				if binding, found := window.bound[work.ID]; found {
+					binding.stop = stopWorkExecution(work)
+					window.bound[work.ID] = binding
+				}
 				window.settle(work.ID)
 			}
 		case EntryToolResult:
@@ -140,6 +196,13 @@ func (repo *BackendRepo) advanceWorkAdmission(mutation *canonicalJournalMutation
 		return
 	}
 	if mutation.workWindow == nil {
+		return
+	}
+	repo.rememberWorkWindow(thread, window)
+}
+
+func (repo *BackendRepo) rememberWorkWindow(thread string, window *workAdmissionWindow) {
+	if len(window.bound) > 8192 {
 		return
 	}
 	if repo.workAdmissions == nil {

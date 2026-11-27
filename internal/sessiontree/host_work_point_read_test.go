@@ -83,10 +83,15 @@ func TestColdHostWorkRecoveryReadBudget(t *testing.T) {
 		t.Fatalf("recovery works=%d gets=%d scans=%d err=%v", len(works), counted.gets, counted.scans, err)
 	}
 	t.Logf("recovery: %d pending, %d gets, %d scans", len(works), counted.gets, counted.scans)
-	repo.backend = backend
+	counted.gets, counted.scans = 0, 0
 	all, err := repo.HostWorks(t.Context(), "thread")
-	if err != nil || len(all) != 48 {
-		t.Fatalf("full inventory=%d: %v", len(all), err)
+	if err != nil || len(all) != 48 || counted.gets > 2*(2*48-1)+48 {
+		t.Fatalf("full inventory=%d gets=%d: %v", len(all), counted.gets, err)
+	}
+	repo.backend = backend
+	sources, err := repo.HostWorkStopSources(t.Context(), "thread")
+	if err != nil || len(sources) != 1 || sources[0].TurnID != attempt.Invocation.TurnID || sources[0].RunID != attempt.Invocation.RunID {
+		t.Fatalf("stop sources=%v err=%v", sources, err)
 	}
 }
 
@@ -151,6 +156,79 @@ func TestColdHostWorkRecoveryRebuildAndBranch(t *testing.T) {
 	}
 	if _, err := repo.PendingHostWorks(ctx, "thread"); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatalf("damaged locator: %v", err)
+	}
+}
+
+func TestStopWorkWindowTracksOnlyCommittedUnobservedContinuations(t *testing.T) {
+	for _, notify := range []bool{true, false} {
+		backend, repo, attempt := canonicalSettlementFixture(t, true)
+		ctx := t.Context()
+		check := func(want bool) {
+			t.Helper()
+			sources, err := repo.HostWorkStopSources(ctx, "thread")
+			if err != nil || len(sources) != 0 && (len(sources) != 1 || sources[0] != (HostWorkExecution{"turn", "run"})) || (len(sources) != 0) != want {
+				t.Fatalf("notify=%v want=%v sources=%v err=%v", notify, want, sources, err)
+			}
+		}
+		check(false)
+		work := HostWork{ID: "test", ExecutorID: "executor", Invocation: attempt.Invocation, State: "bound"}
+		if _, err := repo.BindHostWork(ctx, work); err != nil {
+			t.Fatal(err)
+		}
+		check(true)
+		settlement := HostWorkSettlement{ThreadID: "thread", ID: work.ID, ExecutorID: work.ExecutorID, State: "completed", Notice: "done", Notify: notify}
+		rollback := errors.New("rollback")
+		repo.backend = &domainCommitBoundaryBackend{Backend: backend, afterCallback: func() error { return rollback }}
+		if _, err := repo.SettleHostWork(ctx, settlement); !errors.Is(err, rollback) {
+			t.Fatal(err)
+		}
+		repo.backend = backend
+		check(true)
+		if _, err := repo.SettleHostWork(ctx, settlement); err != nil {
+			t.Fatal(err)
+		}
+		check(notify)
+		repo = reopenCurrentStartupRepo(t, backend, false)
+		check(notify)
+		counted := &sparseReadBackend{Backend: backend}
+		repo.backend = counted
+		check(notify)
+		if counted.scans != 0 {
+			t.Fatalf("repeated stop query scanned %d pages", counted.scans)
+		}
+		repo.backend = backend
+		if _, err := repo.CancelTurn(ctx, testCancelTurnRequest(time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		check(false)
+	}
+}
+
+func TestHostWorkSourcesExcludeAbandonedSettlement(t *testing.T) {
+	backend, repo, attempt := canonicalSettlementFixture(t, true)
+	ctx := t.Context()
+	work := HostWork{ID: "branched", ExecutorID: "executor", Invocation: attempt.Invocation, State: "bound"}
+	if _, err := repo.BindHostWork(ctx, work); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SettleHostWork(ctx, HostWorkSettlement{ThreadID: "thread", ID: work.ID, ExecutorID: work.ExecutorID, State: "completed", Notice: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if sources, err := repo.HostWorkStopSources(ctx, "thread"); err != nil || len(sources) != 0 {
+		t.Fatalf("settled=%v err=%v", sources, err)
+	}
+	if _, err := repo.Append(ctx, Entry{Type: EntryCustom, ThreadID: "thread", ID: "branch"}, AppendOptions{ParentID: hostWorkEntryID(work.ID, false)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range []*BackendRepo{repo, reopenCurrentStartupRepo(t, backend, false)} {
+		works, err := reader.PendingHostWorks(ctx, "thread")
+		if err != nil || len(works) != 1 || works[0].ID != work.ID {
+			t.Fatalf("pending=%v err=%v", works, err)
+		}
+		sources, err := reader.HostWorkStopSources(ctx, "thread")
+		if err != nil || len(sources) != 1 || sources[0] != (HostWorkExecution{"turn", "run"}) {
+			t.Fatalf("sources=%v err=%v", sources, err)
+		}
 	}
 }
 

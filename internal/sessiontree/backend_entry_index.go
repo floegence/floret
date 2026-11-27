@@ -68,12 +68,20 @@ func readEntryLocator(tx spi.ReadTx, threadID, entryID string) (entryLocator, er
 	if err != nil {
 		return entryLocator{}, err
 	}
-	var locator entryLocator
-	if err := decodeCanonicalBodyJSON(raw, &locator); err != nil || locator.ID != entryID || locator.Ordinal < 0 || locator.Depth < 1 || (locator.Depth == 1) != (locator.Parent == "") {
-		return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
+	locator, err := decodeEntryLocator(raw, entryID)
+	if err != nil {
+		return entryLocator{}, err
 	}
 	if memo != nil {
 		memo.rememberLocator(identity, locator, len(raw))
+	}
+	return locator, nil
+}
+
+func decodeEntryLocator(raw []byte, id string) (entryLocator, error) {
+	var locator entryLocator
+	if err := decodeCanonicalBodyJSON(raw, &locator); err != nil || locator.ID != id || locator.Ordinal < 0 || locator.Depth < 1 || (locator.Depth == 1) != (locator.Parent == "") {
+		return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return locator, nil
 }

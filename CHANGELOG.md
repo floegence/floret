@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.132.1
+
+- Batch canonical host-work reads across proven active-path intervals. Reuse the bounded, in-process admission window for stop inventory; fresh cancellation checks and recovery of observed but unsettled work are preserved.
+
 ## v7.132.0
 
 - Recheck an uncalibrated, threshold-crossing ordinary request once when its prepared provider can count the complete input. Preserve conservative compaction when counting is unavailable.

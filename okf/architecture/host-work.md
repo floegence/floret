@@ -76,6 +76,13 @@ against a verified snapshot. Branches and large outstanding sets retain the
 canonical recovery path. Explicit inventory reads still return settled work;
 an observed tool result suppresses duplicate notices, not crash recovery.
 
+Stop inventory reuses the in-process admission window at the exact active leaf.
+It checks current cancellations for eligible, unobserved executions; observed
+bindings remain eligible for crash recovery independently. A cold scan batches
+sparse canonical records. Equal ordinal and depth distances between proven
+ancestors establish a contiguous path interval; a branch requires fresh
+ancestry proof. No new persistent inventory or authorization cache is written.
+
 Schema 38 to 39 adds optional streaming capture, with bounded append/read/search
 APIs and pinned Fork watermarks. It does not replace the original 8 MiB snapshot
 API or create another execution lifecycle. See [tool output retention](tool-output-retention.md).

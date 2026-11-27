@@ -42,13 +42,26 @@ func (r *BackendRepo) HostWorkStopSources(ctx context.Context, id string) ([]Hos
 	if err := r.prepareSparseSources(ctx, id); err != nil {
 		return nil, err
 	}
+	if delegate := r.delegate.Load(); delegate != nil {
+		return delegate.HostWorkStopSources(ctx, id)
+	}
 	var sources []HostWorkExecution
 	err := r.canonicalThreadView(ctx, id, func(tx spi.ReadTx, meta ThreadMeta) error {
-		path, err := canonicalHostWorkPath(ctx, tx, meta)
-		if err != nil {
-			return err
+		window := r.workAdmissions[id]
+		if window == nil || window.leaf != meta.LeafID {
+			path, err := canonicalHostWorkEntries(ctx, tx, meta)
+			if err != nil {
+				return err
+			}
+			works, admitted, err := hostWorksFromPath(path)
+			if err != nil {
+				return err
+			}
+			window = admissionWindowFromWorks(meta.LeafID, works, admitted)
+			r.rememberWorkWindow(id, window)
 		}
-		sources, err = hostWorkSources(path, true)
+		var err error
+		sources, err = window.stopSources(tx, id)
 		return err
 	}, func(memory *MemoryRepo) error {
 		var err error
@@ -225,34 +238,30 @@ func canonicalHostWorkEntries(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 	if err != nil {
 		return nil, err
 	}
-	err = visitSparseSources(ctx, tx, meta.ID, "host_work", func(e Entry) error {
-		loc, err := readEntryLocator(tx, meta.ID, e.ID)
-		if err != nil {
-			return err
-		}
-		if loc.Depth > leaf.Depth {
-			return nil
-		}
-		ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, loc.Depth)
-		if err != nil {
-			return err
-		}
-		if ancestor.ID == e.ID {
-			if e.Type == EntryHostWorkAdmitted || e.Type == EntryHostWork {
-				e, err = materializeCanonicalEntry(canonicalStoredEntry{Entry: e, Fields: e.bodyFields}, func(ref canonicalBodyRef) (string, error) {
-					if ref.Bytes > HostWorkOutputMaxBytes {
-						return "", ErrAuthorityCorrupt
-					}
-					return materializeCanonicalBody(ctx, tx, ref)
-				})
-				if err != nil {
-					return err
+	appendEntry := func(e Entry) error {
+		if e.Type == EntryHostWorkAdmitted || e.Type == EntryHostWork {
+			e, err = materializeCanonicalEntry(canonicalStoredEntry{Entry: e, Fields: e.bodyFields}, func(ref canonicalBodyRef) (string, error) {
+				if ref.Bytes > HostWorkOutputMaxBytes {
+					return "", ErrAuthorityCorrupt
 				}
+				return materializeCanonicalBody(ctx, tx, ref)
+			})
+			if err != nil {
+				return err
 			}
-			path = append(path, e)
 		}
+		path = append(path, e)
 		return nil
-	})
+	}
+	count, err := readJournalCount(tx, meta.ID)
+	if err != nil {
+		return nil, err
+	}
+	if leaf.Depth == int64(count) && leaf.Ordinal+1 == count {
+		err = visitHostWorkSourceRecords(ctx, tx, meta.ID, nil, true, appendEntry)
+		return path, err
+	}
+	err = visitHostWorkSourceRecords(ctx, newProjectionSourceTx(tx), meta.ID, &leaf, true, appendEntry)
 	return path, err
 }
 
