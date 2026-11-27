@@ -10,9 +10,10 @@ import (
 // admitted. An empty SourceEntryID denotes an empty source path. RequestKey is
 // the host's opaque Fork key, not an authorization grant or model input.
 type ThreadForkOrigin struct {
-	SourceThreadID identity.ThreadID `json:"source_thread_id"`
-	SourceEntryID  string            `json:"source_entry_id,omitempty"`
-	RequestKey     RequestKey        `json:"request_key,omitempty"`
+	ReferenceHistory bool              `json:"reference_history,omitempty"`
+	SourceThreadID   identity.ThreadID `json:"source_thread_id"`
+	SourceEntryID    string            `json:"source_entry_id,omitempty"`
+	RequestKey       RequestKey        `json:"request_key,omitempty"`
 }
 
 // ThreadForkOriginReader lets a host distinguish a fork it has not yet
@@ -35,5 +36,5 @@ func (service *threadRuntimeService) ReadForkOrigin(ctx context.Context, destina
 	if meta.ForkedFromThreadID == "" {
 		return ThreadForkOrigin{}, false, nil
 	}
-	return ThreadForkOrigin{SourceThreadID: identity.ThreadID(meta.ForkedFromThreadID), SourceEntryID: meta.ForkedFromEntryID, RequestKey: RequestKey(meta.OriginRequestKey)}, true, nil
+	return ThreadForkOrigin{SourceThreadID: identity.ThreadID(meta.ForkedFromThreadID), SourceEntryID: meta.ForkedFromEntryID, RequestKey: RequestKey(meta.OriginRequestKey), ReferenceHistory: meta.ReferenceHistory}, true, nil
 }

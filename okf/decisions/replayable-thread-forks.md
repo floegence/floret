@@ -49,6 +49,15 @@ transaction as the journal. Empty boundaries retain an unset title. A source
 title's provider task, token, generation, and request identity are never copied.
 Hosts can assign a product-specific branch name through public `SetTitle`.
 
+An opt-in independent `ReferenceHistory` fork archives the canonical model
+evidence at that same boundary as typed historical records. The provider reads
+historical roles, text and tool outcomes as evidence, not active tool exchanges.
+Direct views, cursors, title generation and execution see only new turns. No
+source Goal, todo, interaction, queue, or delegated ownership is installed.
+The mode is immutable origin metadata and participates in request identity.
+Domain 42 and logical fence 18 protect these records from older writers;
+upgrading a domain-41 store does not rewrite its conversation entries.
+
 # Related
 
 * [Runtime API](../api/runtime.md)

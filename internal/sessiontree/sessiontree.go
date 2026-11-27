@@ -265,6 +265,7 @@ type ThreadMeta struct {
 	ParentTurnID            string            `json:"parent_turn_id,omitempty"`
 	ForkedFromThreadID      string            `json:"forked_from_thread_id,omitempty"`
 	ForkedFromEntryID       string            `json:"forked_from_entry_id,omitempty"`
+	ReferenceHistory        bool              `json:"reference_history,omitempty"`
 	LegacyForkRequestID     string            `json:"fork_operation_id,omitempty"`
 	LegacyForkNodeID        string            `json:"fork_operation_node_id,omitempty"`
 	TaskName                string            `json:"task_name,omitempty"`
@@ -291,6 +292,9 @@ type ThreadMeta struct {
 // ValidateThreadMetaAuthority enforces the durable distinction between
 // independent root threads and parent-owned SubAgent threads.
 func ValidateThreadMetaAuthority(meta ThreadMeta) error {
+	if meta.ReferenceHistory && (meta.ForkedFromThreadID == "" || meta.ParentThreadID != "") {
+		return fmt.Errorf("%w: reference history requires an independent fork origin", ErrInvalidThreadAuthority)
+	}
 	id := strings.TrimSpace(meta.ID)
 	parentID := strings.TrimSpace(meta.ParentThreadID)
 	if id == "" {
@@ -335,6 +339,7 @@ func SameThreadAuthority(left, right ThreadMeta) bool {
 		left.ParentTurnID == right.ParentTurnID &&
 		left.ForkedFromThreadID == right.ForkedFromThreadID &&
 		left.ForkedFromEntryID == right.ForkedFromEntryID &&
+		left.ReferenceHistory == right.ReferenceHistory &&
 		left.TaskName == right.TaskName &&
 		left.TaskDescription == right.TaskDescription &&
 		left.AgentPath == right.AgentPath &&
@@ -478,6 +483,7 @@ const (
 )
 
 type ForkOptions struct {
+	ReferenceHistory     bool
 	SourceThreadID       string
 	EntryID              string
 	EntryIDPinned        bool
@@ -1602,6 +1608,12 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	if err != nil {
 		return ThreadMeta{}, err
 	}
+	if opts.ReferenceHistory {
+		path, err = referenceForkPath(ctx, opts.SourceThreadID, path, now)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+	}
 	if newID == "" {
 		for {
 			r.seq++
@@ -1629,6 +1641,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	}
 	meta := ThreadMeta{
 		ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID,
+		ReferenceHistory: opts.ReferenceHistory,
 		OriginRequestKey: strings.TrimSpace(opts.OriginRequestKey), OriginFingerprint: strings.TrimSpace(opts.OriginFingerprint),
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -1674,7 +1687,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		break
 	}
 	hasForkedTodo := false
-	if todo, ok := r.todos[opts.SourceThreadID]; ok {
+	if todo, ok := r.todos[opts.SourceThreadID]; ok && !opts.ReferenceHistory {
 		todo.ThreadID = newID
 		forkedTodo = cloneAgentTodoState(todo)
 		hasForkedTodo = true
@@ -1738,6 +1751,7 @@ func forkDestinationMatches(meta ThreadMeta, opts ForkOptions, targetID string) 
 		meta.OriginFingerprint == strings.TrimSpace(opts.OriginFingerprint) &&
 		meta.ForkedFromThreadID == opts.SourceThreadID &&
 		meta.ForkedFromEntryID == targetID &&
+		meta.ReferenceHistory == opts.ReferenceHistory &&
 		MatchesForkDestinationMeta(meta, opts.DestinationMeta)
 }
 
@@ -2532,6 +2546,12 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
+	case EntryReferenceHistory:
+		message, err := referenceProviderMessage(entry)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
 	case EntryTurnMarker:
 		if entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] == TurnKindResume {
 			messages = append(messages, session.Message{Role: session.User, Kind: session.MessageKindTurnResume, Content: `{"type":"turn_resume","message":"The user explicitly resumed the stopped task. Continue from the recorded history and confirmed tool results. Do not assume partial output is complete or replay uncertain effects."}`, EntryID: entry.ID, ParentEntryID: entry.ParentID})
@@ -2979,6 +2999,11 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 	if len(entry.Message.Attachments) == 0 {
 		return nil
 	}
+	// Archived attachments are opaque host-owned references, not new user input.
+	if entry.Type == EntryReferenceHistory {
+		_, err := decodeReferenceHistory(entry)
+		return err
+	}
 	if (entry.Type != EntryUserMessage && entry.Type != EntrySteeringRequested) || entry.Message.Role != session.User {
 		return errors.New("message attachments are only valid on canonical user input entries")
 	}
@@ -2986,6 +3011,11 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 }
 
 func ValidateEntryIntegrity(entry Entry) error {
+	if entry.Type == EntryReferenceHistory {
+		if _, err := decodeReferenceHistory(entry); err != nil {
+			return err
+		}
+	}
 	if entry.Type == EntryMessageRevision {
 		if _, err := DecodeMessageRevision(entry); err != nil {
 			return err

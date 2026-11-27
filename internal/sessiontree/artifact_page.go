@@ -83,7 +83,7 @@ func (repo *BackendRepo) ReadArtifactPage(ctx context.Context, req ArtifactPageR
 		if err != nil {
 			return err
 		}
-		if !ok || entry.ThreadID != record.ThreadID || (entry.Type != EntryToolResult && entry.Type != EntryHostWork) || entry.Message.ToolResult == nil || !reflect.DeepEqual(entry.Message.ToolResult.FullOutput, &record.Ref) {
+		if !ok || entry.ThreadID != record.ThreadID || (entry.Type != EntryToolResult && entry.Type != EntryHostWork && entry.Type != EntryReferenceHistory) || entry.Message.ToolResult == nil || !reflect.DeepEqual(entry.Message.ToolResult.FullOutput, &record.Ref) {
 			return ErrAuthorityCorrupt
 		}
 		if record.OutputSourceID == "" {

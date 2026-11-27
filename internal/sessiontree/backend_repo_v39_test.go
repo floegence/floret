@@ -11,7 +11,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func outputMigrationFixture(t *testing.T) *migrationTestBackend {
+func outputMigrationFixture(t *testing.T, version int) *migrationTestBackend {
 	t.Helper()
 	backend := newMigrationTestBackend()
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
@@ -29,7 +29,7 @@ func outputMigrationFixture(t *testing.T) *migrationTestBackend {
 		if err != nil {
 			return err
 		}
-		source.Version = backendDomainV38Version
+		source.Version = version
 		return putBackendDomainRecordContext(t.Context(), tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, source)
 	}); err != nil {
 		t.Fatal(err)
@@ -37,7 +37,12 @@ func outputMigrationFixture(t *testing.T) *migrationTestBackend {
 	return backend
 }
 func TestOutputSchemaMigrationPreservesHistoryAndBoundedRestart(t *testing.T) {
-	backend := outputMigrationFixture(t)
+	t.Run("domain38", func(t *testing.T) { testManifestUpgradeRestart(t, backendDomainV38Version) })
+	t.Run("domain41", func(t *testing.T) { testManifestUpgradeRestart(t, backendDomainV41Version) })
+}
+
+func testManifestUpgradeRestart(t *testing.T, version int) {
+	backend := outputMigrationFixture(t, version)
 	before := cloneMigrationRecords(backend.records)
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
 		_, current, err := NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)
@@ -59,7 +64,7 @@ func TestOutputSchemaMigrationPreservesHistoryAndBoundedRestart(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if manifest.Version != backendDomainV41Version {
+		if manifest.Version != backendDomainV42Version {
 			t.Fatal("not upgraded")
 		}
 		_, current, err := NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)
@@ -75,9 +80,16 @@ func TestOutputSchemaMigrationPreservesHistoryAndBoundedRestart(t *testing.T) {
 	}
 }
 func TestOutputSchemaMigrationAtomicFailure(t *testing.T) {
+	t.Run("domain38", func(t *testing.T) {
+		testManifestUpgradeFailure(t, backendDomainV38Version, migrateBackendDomainV38ToV39)
+	})
+	t.Run("domain41", func(t *testing.T) { testManifestUpgradeFailure(t, backendDomainV41Version, migrateCurrentManifest) })
+}
+
+func testManifestUpgradeFailure(t *testing.T, version int, migrate func(context.Context, spi.WriteTx, backendDomainManifest) error) {
 	for _, mode := range []string{"write", "cancel", "panic", "drift", "future"} {
 		t.Run(mode, func(t *testing.T) {
-			backend := outputMigrationFixture(t)
+			backend := outputMigrationFixture(t, version)
 			before := cloneMigrationRecords(backend.records)
 			failed := false
 			func() {
@@ -99,12 +111,12 @@ func TestOutputSchemaMigrationAtomicFailure(t *testing.T) {
 					case "drift":
 						source.Sequence++
 					case "future":
-						source.Version = 40
+						source.Version = version + 2
 					}
 					if mode == "write" || mode == "panic" {
 						tx = capacityMigrationFaultTx{tx, mode}
 					}
-					return migrateBackendDomainV38ToV39(ctx, tx, source)
+					return migrate(ctx, tx, source)
 				})
 				failed = err != nil
 			}()

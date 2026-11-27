@@ -16,6 +16,11 @@ import (
 )
 
 func TestActiveToolForkAcceptsFirstChildTurn(t *testing.T) {
+	t.Run("owned", func(t *testing.T) { testActiveToolFork(t, false) })
+	t.Run("reference", func(t *testing.T) { testActiveToolFork(t, true) })
+}
+
+func testActiveToolFork(t *testing.T, reference bool) {
 	rootGateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "delegate", Name: "delegate", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "parent done"}, {Type: provider.EventDone, Reason: "stop"}}})
@@ -30,7 +35,11 @@ func TestActiveToolForkAcceptsFirstChildTurn(t *testing.T) {
 	var rootID identity.ThreadID
 	childIDs := make(chan identity.ThreadID, 1)
 	delegate := tools.Define[map[string]any](tools.Definition{Name: "delegate", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
-		child, err := svc.Fork(ctx, ForkThreadInput{SourceThreadID: rootID, ParentThreadID: rootID, TaskName: "Child", HostProfileRef: "worker", ForkMode: "full_history", RequestKey: "fork"})
+		in := ForkThreadInput{SourceThreadID: rootID, ParentThreadID: rootID, TaskName: "Child", HostProfileRef: "worker", ForkMode: "full_history", RequestKey: "fork"}
+		if reference {
+			in = ForkThreadInput{SourceThreadID: rootID, ReferenceHistory: true, RequestKey: "reference"}
+		}
+		child, err := svc.Fork(ctx, in)
 		if err != nil {
 			return tools.Result{}, err
 		}
@@ -84,7 +93,20 @@ func TestActiveToolForkAcceptsFirstChildTurn(t *testing.T) {
 			paired = true
 		}
 	}
-	if !paired {
+	if reference {
+		observed := false
+		for _, msg := range childGateway.Requests()[0].Messages {
+			if msg.ToolResult != nil || len(msg.ToolCalls) != 0 {
+				t.Fatal("source call is executable in reference history")
+			}
+			if msg.Role == provider.RoleUser && strings.Contains(msg.Text, `"call_id":"delegate"`) {
+				observed = true
+			}
+		}
+		if !observed || len(child.Turns) != 1 {
+			t.Fatal("missing historical call or inherited source turn")
+		}
+	} else if !paired {
 		t.Fatal("child history did not close the inherited tool call")
 	}
 	parent := waitThreadView(t, svc, rootID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })

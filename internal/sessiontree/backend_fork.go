@@ -151,6 +151,16 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	if err != nil {
 		return err
 	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if opts.ReferenceHistory {
+		path, err = referenceForkPath(ctx, source.ID, path, now)
+		if err != nil {
+			return err
+		}
+	}
 	reader := canonicalArtifactReader(ctx, tx)
 	actual, err := reader.artifactClosureLocked(source.ID, newID, path)
 	if err != nil {
@@ -163,11 +173,8 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	if artifact.ValidateClosure(closure) != nil || !artifact.EqualClosure(closure, actual) {
 		return ErrStaleAuthority
 	}
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
 	meta := ThreadMeta{ID: newID, ForkedFromThreadID: source.ID, ForkedFromEntryID: targetID, OriginRequestKey: strings.TrimSpace(opts.OriginRequestKey), OriginFingerprint: strings.TrimSpace(opts.OriginFingerprint), CreatedAt: now, UpdatedAt: now}
+	meta.ReferenceHistory = opts.ReferenceHistory
 	applyForkDestinationMeta(&meta, opts.DestinationMeta)
 	if err := ValidateThreadMetaAuthority(meta); err != nil {
 		return err
@@ -240,7 +247,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	}
 	if record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, source.ID), backendDomainRecordTodo, source.ID, "", 0); err != nil {
 		return err
-	} else if found {
+	} else if found && !opts.ReferenceHistory {
 		var todo AgentTodoState
 		if err := decodeBackendDomainValue(backendDomainV32Format, record, &todo); err != nil || todo.ThreadID != source.ID || ValidateAgentTodoItems(todo.Items) != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)

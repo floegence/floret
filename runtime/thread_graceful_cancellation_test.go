@@ -307,6 +307,21 @@ func TestGracefulStopCancelsPendingApprovalWithoutDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.ApprovalCount == 1 })
+	child, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "reference", ReferenceHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Activity != ThreadActivityIdle || child.Attention.ApprovalCount != 0 || len(child.Interactions) != 0 {
+		t.Fatalf("source approval entered reference fork: %+v", child)
+	}
+	approve := true
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: child.ThreadID, RequestKey: "foreign-answer", InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Approved: &approve}}}); err == nil {
+		t.Fatal("reference fork accepted the source approval")
+	}
+	parent, err := service.View(t.Context(), created.ThreadID)
+	if err != nil || parent.Attention.ApprovalCount != 1 {
+		t.Fatalf("source approval changed: %+v, %v", parent.Attention, err)
+	}
 	if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: CancelModeGraceful}); err != nil {
 		t.Fatal(err)
 	}

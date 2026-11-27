@@ -305,7 +305,7 @@ func (r artifactAuthorityReader) validateArtifactRecordLocked(record artifact.Re
 	if err != nil {
 		return err
 	}
-	if !ok || entry.ThreadID != record.ThreadID || (entry.Type != EntryToolResult && entry.Type != EntryHostWork) || entry.Message.ToolResult == nil || entry.Message.ToolResult.FullOutput == nil ||
+	if !ok || entry.ThreadID != record.ThreadID || (entry.Type != EntryToolResult && entry.Type != EntryHostWork && entry.Type != EntryReferenceHistory) || entry.Message.ToolResult == nil || entry.Message.ToolResult.FullOutput == nil ||
 		!reflect.DeepEqual(*entry.Message.ToolResult.FullOutput, record.Ref) {
 		return ErrAuthorityCorrupt
 	}

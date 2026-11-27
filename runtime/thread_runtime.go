@@ -112,6 +112,9 @@ type CreateThreadInput struct {
 }
 
 type ForkThreadInput struct {
+	// ReferenceHistory creates an independent thread whose model context includes
+	// archived source evidence but whose direct conversation and controls start empty.
+	ReferenceHistory bool `json:"reference_history,omitempty"`
 	// SourceItemID pins a committed assistant item on the active path.
 	// It is mutually exclusive with SourceEntryID; unknown items are rejected.
 	SourceItemID    string            `json:"source_item_id,omitempty"`
@@ -837,6 +840,9 @@ type ThreadForkReader interface {
 }
 
 func forkRequestIdentity(in ForkThreadInput) (string, string, error) {
+	if in.ReferenceHistory && (in.ParentThreadID != "" || in.ParentTurnID != "" || in.TaskName != "" || in.TaskDescription != "" || in.HostProfileRef != "" || in.ForkMode != "") {
+		return "", "", fmt.Errorf("reference history requires an independent fork")
+	}
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return "", "", err
@@ -845,16 +851,17 @@ func forkRequestIdentity(in ForkThreadInput) (string, string, error) {
 		return "", "", err
 	}
 	fingerprint, err := stableFingerprint(struct {
-		Source          identity.ThreadID `json:"source"`
-		Entry           string            `json:"entry,omitempty"`
-		Item            string            `json:"item,omitempty"`
-		ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
-		ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
-		TaskName        string            `json:"task_name,omitempty"`
-		TaskDescription string            `json:"task_description,omitempty"`
-		HostProfileRef  string            `json:"host_profile_ref,omitempty"`
-		ForkMode        string            `json:"fork_mode,omitempty"`
-	}{in.SourceThreadID, strings.TrimSpace(in.SourceEntryID), strings.TrimSpace(in.SourceItemID), in.ParentThreadID, in.ParentTurnID, strings.TrimSpace(in.TaskName), strings.TrimSpace(in.TaskDescription), strings.TrimSpace(in.HostProfileRef), strings.TrimSpace(in.ForkMode)})
+		Source           identity.ThreadID `json:"source"`
+		Entry            string            `json:"entry,omitempty"`
+		Item             string            `json:"item,omitempty"`
+		ParentThreadID   identity.ThreadID `json:"parent_thread_id,omitempty"`
+		ParentTurnID     identity.TurnID   `json:"parent_turn_id,omitempty"`
+		TaskName         string            `json:"task_name,omitempty"`
+		TaskDescription  string            `json:"task_description,omitempty"`
+		HostProfileRef   string            `json:"host_profile_ref,omitempty"`
+		ForkMode         string            `json:"fork_mode,omitempty"`
+		ReferenceHistory bool              `json:"reference_history,omitempty"`
+	}{in.SourceThreadID, strings.TrimSpace(in.SourceEntryID), strings.TrimSpace(in.SourceItemID), in.ParentThreadID, in.ParentTurnID, strings.TrimSpace(in.TaskName), strings.TrimSpace(in.TaskDescription), strings.TrimSpace(in.HostProfileRef), strings.TrimSpace(in.ForkMode), in.ReferenceHistory})
 	return key, fingerprint, err
 }
 
@@ -957,7 +964,8 @@ func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThr
 		return ThreadView{}, err
 	}
 	_, err = service.host.store.repo.Fork(ctx, sessiontree.ForkOptions{
-		SourceThreadID: in.SourceThreadID.String(), EntryID: entryID, EntryIDPinned: true,
+		ReferenceHistory: in.ReferenceHistory,
+		SourceThreadID:   in.SourceThreadID.String(), EntryID: entryID, EntryIDPinned: true,
 		NewThreadID: threadID.String(), OriginRequestKey: key, OriginFingerprint: fingerprint,
 		DestinationMeta: &sessiontree.ForkDestinationMeta{
 			ParentThreadID: in.ParentThreadID.String(), ParentTurnID: in.ParentTurnID.String(),

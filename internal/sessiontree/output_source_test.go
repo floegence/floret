@@ -112,6 +112,15 @@ func TestOutputSourceQuotaRetainsPrefixWithoutEviction(t *testing.T) {
 }
 
 func TestLargeArtifactRangesForkAndDelete(t *testing.T) {
+	for _, mode := range []struct {
+		name      string
+		reference bool
+	}{{"ordinary", false}, {"reference-history", true}} {
+		t.Run(mode.name, func(t *testing.T) { testLargeArtifactFork(t, mode.reference) })
+	}
+}
+
+func testLargeArtifactFork(t *testing.T, reference bool) {
 	backend, repo, attempt := canonicalSettlementFixture(t, true)
 	req := canonicalEffectRequest(attempt)
 	text := "BEGIN\n" + strings.Repeat("middle 世界🙂\n", 12000) + "END"
@@ -135,7 +144,7 @@ func TestLargeArtifactRangesForkAndDelete(t *testing.T) {
 	if body.String() != text {
 		t.Fatal("range reads lost source")
 	}
-	if _, err := repo.Fork(t.Context(), ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"}); err != nil {
+	if _, err := repo.Fork(t.Context(), ForkOptions{SourceThreadID: "thread", NewThreadID: "fork", ReferenceHistory: reference}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.ReadArtifact(t.Context(), ArtifactReadRequest{ThreadID: "fork", ArtifactID: result.Artifact.ID})

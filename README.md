@@ -1216,6 +1216,8 @@ abandons only the read, never the Agent run; source hashes prevent mixed results
 
 For a known, authorized destination, `runtime.ThreadForkOriginReader.ReadForkOrigin` returns the original source thread, pinned entry (empty for an empty source), and opaque request key. An ordinary non-fork returns `found=false` without an error. Reading an origin neither enumerates destinations nor grants access to its source. Do not expose the key to the user or model.
 
+Set `ForkThreadInput.ReferenceHistory` to create an independent fork with source evidence in model context but no inherited direct turns, active Goal, todo, approval or queued input. The archived prefix is fixed on admission and persists after restart. `ReadForkOrigin` identifies the mode even when the source was empty. The zero value preserves ordinary Fork semantics and request fingerprints. This option does not implement a product visibility policy; hosts must authorize every destination and resource independently.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the

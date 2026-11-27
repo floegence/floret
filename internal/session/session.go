@@ -26,6 +26,7 @@ const (
 	MessageKindModelContext        MessageKind = "model_context"
 	MessageKindToolValidationError MessageKind = "tool_validation_error"
 	MessageKindCompactionSummary   MessageKind = "compaction_summary"
+	MessageKindReferenceHistory    MessageKind = "reference_history"
 	MessageKindControlSignal       MessageKind = "control_signal"
 	// MessageKindTurnInterruption is derived from a canonical terminal, never stored as a message.
 	MessageKindTurnInterruption MessageKind = "turn_interruption"
