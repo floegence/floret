@@ -17,6 +17,39 @@ import (
 
 var ErrContextWouldOverflow = errors.New("provider request would exceed context window")
 
+// Recheck only the ordinary threshold decision. Never replace the estimate in
+// the request ledger: a later calibrated delta needs comparable estimates.
+func verifyCompactionPressure(ctx context.Context, req *provider.Request) error {
+	p := req.ContextPressure
+	if p.Source != contextpolicy.PressureSourceFullRequestEstimate || p.Confidence == contextpolicy.EstimateExact || req.EphemeralUser != nil || req.Reasoning.BudgetTokens == math.MaxInt64 {
+		return nil
+	}
+	budget := contextpolicy.ResolveRequestBudget(req.ContextPolicy, p.ProjectedInputTokens, max(1, req.Reasoning.BudgetTokens+1))
+	if budget.Invalid || !budget.CompactionNeeded {
+		return nil
+	}
+	c, ok := req.Prepared.(interface {
+		CountPreparedInput(context.Context) (int64, bool)
+	})
+	if !ok {
+		return nil
+	}
+	check, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	n, available := c.CountPreparedInput(check)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if check.Err() != nil || !available || n < 0 {
+		return nil
+	}
+	budget = contextpolicy.ResolveRequestBudget(req.ContextPolicy, n, max(1, req.Reasoning.BudgetTokens+1))
+	p.ProjectedInputTokens, p.CompactionNeeded, p.HardLimitExceeded = n, budget.CompactionNeeded, budget.HardLimitExceeded
+	p.EstimateMethod, p.Confidence = contextpolicy.EstimateMethodOfficialPreflightCount, contextpolicy.EstimateExact
+	req.ContextPressure = p
+	return nil
+}
+
 type RequestShapeHashes = cache.RequestShapeHashes
 type PressureAnchorState = cache.PressureAnchorState
 

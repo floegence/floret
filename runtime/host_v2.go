@@ -1234,6 +1234,12 @@ func (request agentPreparedRequest) InputMeasurementPrefix() requestmeasure.Pref
 	}
 	return requestmeasure.Prefix{}
 }
+func (request agentPreparedRequest) CountPreparedInput(ctx context.Context) (int64, bool) {
+	if p, ok := request.prepared.(provider.PreparedInputCounter); ok {
+		return p.CountPreparedInput(ctx)
+	}
+	return 0, false
+}
 func (request agentPreparedRequest) MeasurementSuffix(prefix requestmeasure.Prefix) ([]byte, bool) {
 	if p, ok := request.prepared.(provider.PreparedRequestMeasurement); ok {
 		return p.MeasurementSuffix(provider.MeasurementPrefix(prefix))

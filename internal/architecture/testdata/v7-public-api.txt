@@ -472,6 +472,7 @@ field PreparedImage.Height int
 field PreparedImage.SourceBytes int64
 field PreparedImage.SourceSHA256 string
 field PreparedImage.SHA256 string
+type PreparedInputCounter interface interface{CountPreparedInput(context.Context) (tokens int64, available bool)}
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
 type PreparedRequestMeasurement interface interface{InputMeasurementPrefix() github.com/floegence/floret/v7/provider.MeasurementPrefix; MeasurementSuffix(github.com/floegence/floret/v7/provider.MeasurementPrefix) ([]byte, bool)}
 type PreparedRequestOutputLimiter interface interface{WithMaxOutputTokens(context.Context, int64) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}

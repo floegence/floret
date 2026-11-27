@@ -477,6 +477,12 @@ func (request *modelGatewayPreparedRequest) InputMeasurementPrefix() requestmeas
 	}
 	return requestmeasure.Prefix{}
 }
+func (request *modelGatewayPreparedRequest) CountPreparedInput(ctx context.Context) (int64, bool) {
+	if p, ok := request.prepared.(publicprovider.PreparedInputCounter); ok {
+		return p.CountPreparedInput(ctx)
+	}
+	return 0, false
+}
 func (request *modelGatewayPreparedRequest) MeasurementSuffix(prefix requestmeasure.Prefix) ([]byte, bool) {
 	if p, ok := request.prepared.(requestmeasure.Prepared); ok {
 		return p.MeasurementSuffix(prefix)

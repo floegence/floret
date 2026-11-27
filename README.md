@@ -109,6 +109,10 @@ current occupancy, because some generated tokens may not be replayed.
 
 Automatic pressure is evaluated only after context collection and freezing.
 Responses update measurements without scheduling a second compaction path.
+When a full estimate alone triggers automatic compaction, a prepared provider
+may implement `provider.PreparedInputCounter` to count its complete input once
+before dispatch. Unsupported counts retain the estimate; cancellation stops the
+request. This check neither establishes native usage nor changes retry behavior.
 Manual and overflow compaction retain the same bounded generate/validate/install
 lifecycle. A safe soft-threshold no-op permits sending and is suppressed only for
 the same frozen input and budget; hard-limit failures never dispatch. Successful

@@ -3014,7 +3014,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		}
 	}
 
-	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
+	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false, true)
 	if err != nil {
 		if provider.IsCapacityOverflow(err) {
 			pressure, reason, capacity := compactionOverflowCause(err, tracker, opts.ContextPolicy, "prepare")
@@ -3090,7 +3090,7 @@ func (e *Engine) emitManualCompactionPollDebug(ctx context.Context, opts Options
 	}, err, time.Time{})
 }
 
-func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool) (provider.Request, error) {
+func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried, verifyThreshold bool) (provider.Request, error) {
 	promptStore := cache.NewPreparedStore(e.prompt)
 	req, err := e.providerRequest(ctx, promptStore, opts, step, history)
 	if err != nil {
@@ -3124,6 +3124,11 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	providerHistory, _, _ := session.ProjectProviderHistory(history, "")
 	req.ContextPressure = tracker.Project(req, providerHistory)
 	req.PressureAnchorReason = tracker.anchorReason
+	if verifyThreshold {
+		if err := verifyCompactionPressure(ctx, &req); err != nil {
+			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
+		}
+	}
 	req, err = e.finalizeRequestOutput(ctx, req)
 	if err != nil {
 		return provider.Request{}, errors.Join(err, closePreparedRequest(req))
@@ -3158,7 +3163,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 		// This is a new logical preparation, never a mutation of frozen replay.
 		// The provider rejected references before admitting a response or tools.
 		e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "image_reference_refresh", Metadata: providerAttemptMetadata(req)})
-		next, prepareErr := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, req.Attempt+1, false)
+		next, prepareErr := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, req.Attempt+1, false, false)
 		if prepareErr != nil {
 			return req, history, StepOutput{}, latency, false, errors.Join(err, prepareErr)
 		}
@@ -3533,7 +3538,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		}, nil, time.Time{})
 		candidateOptions := opts
 		candidateOptions.PreviousProviderState, candidateOptions.providerState = nil, nil
-		req, err = e.buildProjectedProviderRequest(ctx, candidateOptions, step, active, tracker, attempt, overflowRetried)
+		req, err = e.buildProjectedProviderRequest(ctx, candidateOptions, step, active, tracker, attempt, overflowRetried, false)
 		if err != nil {
 			status := ContextCompactDebugStatusFailed
 			if isExecutionCancellation(ctx, err) {

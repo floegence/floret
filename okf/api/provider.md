@@ -193,6 +193,10 @@ history prefix, model, prompt scope, execution envelope, rendering revision,
 compaction lineage, and estimator identity. It uses the complete estimate delta,
 including overhead, independently of transient message IDs. Missing evidence,
 changed history, ephemeral input, and negative deltas invalidate calibration.
+For an ordinary request crossing the threshold only on a full estimate,
+`provider.PreparedInputCounter` may verify complete frozen input at the selected
+provider. The bounded check cannot generate output, replace native usage or
+change the estimate used for later deltas. Missing evidence preserves pressure.
 The tokenizer source and estimation limitations are documented in the
 [regeneration guide](../../scripts/deepseek-tokenizer/README.md).
 

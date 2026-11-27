@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.132.0
+
+- Recheck an uncalibrated, threshold-crossing ordinary request once when its prepared provider can count the complete input. Preserve conservative compaction when counting is unavailable.
+
 ## v7.131.2
 
 - Preserve the historical failure detail indicator in selected reading windows after an explicit Retry, matching the full thread view without loading extra records.
