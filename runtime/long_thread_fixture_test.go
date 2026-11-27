@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,7 +49,7 @@ func writeLongThreadFixture(t *testing.T, directory string, scale int, singleTur
 		t.Fatalf("fixture requires a fresh empty directory: %v", err)
 	}
 	path := filepath.Join(directory, "floret_threads.sqlite")
-	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path), DeferExecution: true})
+	host, err := Open(t.Context(), Options{Storage: storage.ThreadSQLite(path), DeferExecution: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,17 +174,7 @@ func writeLongThreadFixture(t *testing.T, directory string, scale int, singleTur
 	if err := host.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest.Reset()
-	_, err = io.Copy(digest, file)
-	_ = file.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.DatabaseSHA256 = hex.EncodeToString(digest.Sum(nil))
+	manifest.DatabaseSHA256 = fixtureStoreDigest(t, path)
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +223,7 @@ func TestWriteLongThreadQualificationFixture(t *testing.T) {
 func TestLongThreadQualificationFixtureRestartsAndContinues(t *testing.T) {
 	directory := t.TempDir()
 	manifest := writeLongThreadFixture(t, directory, 1, false)
-	host, err := Open(t.Context(), Options{Storage: storage.SQLite(filepath.Join(directory, "floret_threads.sqlite"))})
+	host, err := Open(t.Context(), Options{Storage: storage.ThreadSQLite(filepath.Join(directory, "floret_threads.sqlite"))})
 	if err != nil {
 		t.Fatal(err)
 	}

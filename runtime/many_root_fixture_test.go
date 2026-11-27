@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,6 +48,27 @@ func fixtureFileDigest(t *testing.T, path string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+func fixtureStoreDigest(t *testing.T, fence string) string {
+	t.Helper()
+	digest := sha256.New()
+	fmt.Fprintln(digest, fixtureFileDigest(t, fence))
+	root := os.DirFS(fence + ".d")
+	err := fs.WalkDir(root, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unexpected fixture file %q", name)
+		}
+		_, err = fmt.Fprintf(digest, "%q %s\n", name, fixtureFileDigest(t, filepath.Join(fence+".d", name)))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil))
+}
+
 func writeManyRootFixture(t *testing.T, directory string, count int) {
 	t.Helper()
 	if entries, err := os.ReadDir(directory); err != nil || len(entries) != 0 || count < 1 || count > 100000 {
@@ -54,7 +76,7 @@ func writeManyRootFixture(t *testing.T, directory string, count int) {
 	}
 	ctx := t.Context()
 	database := filepath.Join(directory, "floret_threads.sqlite")
-	host, err := Open(ctx, Options{Storage: storage.SQLite(database), DeferExecution: true})
+	host, err := Open(ctx, Options{Storage: storage.ThreadSQLite(database), DeferExecution: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +139,7 @@ func writeManyRootFixture(t *testing.T, directory string, count int) {
 	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m.IDsSHA256, m.DatabaseSHA256 = fixtureFileDigest(t, idsPath), fixtureFileDigest(t, database)
+	m.IDsSHA256, m.DatabaseSHA256 = fixtureFileDigest(t, idsPath), fixtureStoreDigest(t, database)
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +173,7 @@ func TestManyRootQualificationFixtureRestartsAndContinues(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Profile != "short-root-pairs-v1" || m.Roots != 3 || fixtureFileDigest(t, database) != m.DatabaseSHA256 {
+	if m.Profile != "short-root-pairs-v1" || m.Roots != 3 || fixtureStoreDigest(t, database) != m.DatabaseSHA256 {
 		t.Fatal("invalid fixture manifest")
 	}
 	ids, err := os.ReadFile(filepath.Join(dir, "root_ids.txt"))
@@ -162,7 +184,7 @@ func TestManyRootQualificationFixtureRestartsAndContinues(t *testing.T) {
 	if fmt.Sprintf("%x", sha256.Sum256(ids)) != m.IDsSHA256 || len(ordered) != 3 || ordered[0] != m.OldestID || ordered[2] != m.NewestID {
 		t.Fatal("incorrect ordered roots")
 	}
-	host, err := Open(t.Context(), Options{Storage: storage.SQLite(database)})
+	host, err := Open(t.Context(), Options{Storage: storage.ThreadSQLite(database)})
 	if err != nil {
 		t.Fatal(err)
 	}
