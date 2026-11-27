@@ -1870,6 +1870,8 @@ publishes selected changes and all pending controls. Failed selections preserve
 the prior interest, and explicit selections do not implicitly follow the tail.
 
 
+`runtime.ThreadItemRangePageReader` pages an exact leaf before or after an exclusive item ID. Each response contains up to 32 chronological spans: adjacent matching members from a single turn/run, or a single nonmatching item. Counts and endpoints are canonical; details require a separate authorized read. No observer or execution is installed.
+
 The optional runtime `ThreadItemRangeReader` reads source-bound counts and fixed
 safety facts for a maximal canonical same-turn/run range. It returns a frozen
 `LeafID`, never an actor version or live subscription. It does not materialize

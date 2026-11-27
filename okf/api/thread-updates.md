@@ -673,6 +673,8 @@ caches without retaining unbounded preceding chunk maps. Canonical, in-memory
 resident and spilled resident paths share these semantics; source-version mixing
 is still forbidden.
 
+The optional [ThreadItemRangePageReader](../../runtime/thread_item_range_page.go) traverses multiple spans at an exact leaf. Both directions exclude the anchor and return ascending order. Nonmatching members occupy singleton spans, so presentation policy cannot erase exceptions. A reader supplies fresh authorization on each request; endpoint IDs are not credentials.
+
 The optional public `ThreadItemRangeReader` resolves one maximal same-turn/run
 range around an authorized canonical item. Callers specify allowed item kinds and
 excluded fixed domain facts; Floret does not accept UI predicates or persist

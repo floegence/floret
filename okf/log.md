@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-11-27: Document bounded bidirectional reads of canonical item ranges and exceptions.
+
 - 2026-11-24: Document target-scoped wait notifications and committed parent-event observation.
 
 - 2026-11-20: Document execution-scoped reuse of immutable prompt segments.

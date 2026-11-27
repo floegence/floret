@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/tools"
 	"math/bits"
+	"slices"
 	"strings"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -321,6 +322,7 @@ func storeItemRanges(ctx context.Context, tx spi.WriteTx, thread string, members
 }
 
 type ItemMembershipRangeOptions struct {
+	minSlot, endSlot      int
 	SettledActivities     bool
 	LeafID                string
 	IntermediateAssistant bool
@@ -328,6 +330,9 @@ type ItemMembershipRangeOptions struct {
 	ThreadID, AnchorID    string
 	Kinds                 []string
 }
+
+var errItemRangePredicate = fmt.Errorf("anchor outside item range predicate: %w", spi.ErrInvalidArgument)
+
 type ItemMembershipRange struct {
 	Facts                     ItemRangeFacts
 	Activity                  ItemActivityCounts
@@ -396,13 +401,21 @@ func (repo *MemoryRepo) ItemMembershipRange(ctx context.Context, input ItemMembe
 }
 
 func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []Entry, input ItemMembershipRangeOptions, kinds map[string]bool) (ItemMembershipRange, error) {
+	members, err := memoryRangeMembers(ctx, entries)
+	if err != nil {
+		return ItemMembershipRange{}, err
+	}
+	return memoryMemberRange(meta, entries, input, kinds, members)
+}
+
+func memoryRangeMembers(ctx context.Context, entries []Entry) ([]ItemMember, error) {
 	var projection ItemMembership
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
-			return ItemMembershipRange{}, err
+			return nil, err
 		}
 		if _, err := projection.Observe(entry, uint64(entry.PathDepth)); err != nil {
-			return ItemMembershipRange{}, err
+			return nil, err
 		}
 	}
 	// Memory repositories already own full entries. Use the same presentation
@@ -429,23 +442,24 @@ func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []E
 		if value != nil {
 			fields, err := effectiveActivityFields(ctx, nil, []Entry{{ID: "memory", Message: session.Message{Activity: value}}}, nil)
 			if err != nil {
-				return ItemMembershipRange{}, err
+				return nil, err
 			}
 			facts = activityFactsFromFields(fields)
 		}
 		member.RangeFacts = activityRangeFacts(facts, member.ActivityStatus) | member.RangeFacts&(ItemRangeApproval|ItemRangeInput)
 	}
 	var members []ItemMember
-	anchor := -1
 	for _, member := range projection.Members {
 		if member.Hidden {
 			continue
 		}
-		if member.ID == input.AnchorID {
-			anchor = len(members)
-		}
 		members = append(members, member)
 	}
+	return members, nil
+}
+
+func memoryMemberRange(meta ThreadMeta, entries []Entry, input ItemMembershipRangeOptions, kinds map[string]bool, members []ItemMember) (ItemMembershipRange, error) {
+	anchor := slices.IndexFunc(members, func(member ItemMember) bool { return member.ID == input.AnchorID })
 	if anchor < 0 {
 		return ItemMembershipRange{}, ErrEntryNotFound
 	}
@@ -472,16 +486,16 @@ func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []E
 		return !input.IntermediateAssistant || m.Kind != "assistant" || segmented && m.AssistantResponse && m.CanonicalOrdinal < boundary
 	}
 	if !settled(selected) || !assistantAllowed(selected) || !kinds[selected.Kind] || selected.RangeFacts&input.Exclude != 0 {
-		return ItemMembershipRange{}, spi.ErrInvalidArgument
+		return ItemMembershipRange{}, errItemRangePredicate
 	}
 	matches := func(m ItemMember) bool {
 		return settled(m) && assistantAllowed(m) && kinds[m.Kind] && m.TurnID == selected.TurnID && m.RunID == selected.RunID && m.RangeFacts&input.Exclude == 0
 	}
 	first, last := anchor, anchor+1
-	for first > 0 && matches(members[first-1]) {
+	for first > 0 && members[first-1].Slot >= input.minSlot && matches(members[first-1]) {
 		first--
 	}
-	for last < len(members) && matches(members[last]) {
+	for last < len(members) && (input.endSlot == 0 || members[last].Slot < input.endSlot) && matches(members[last]) {
 		last++
 	}
 	counts := ItemKindCounts{}
@@ -632,7 +646,7 @@ func readItemMembershipRange(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 			}
 		}
 		if input.SettledActivities && member.Kind == "tool" && member.ActivityStatus != "success" && member.ActivityStatus != "error" && member.ActivityStatus != "declined" && member.ActivityStatus != "canceled" && member.ActivityStatus != "unknown" || !kinds[member.Kind] || member.RangeFacts&input.Exclude != 0 || input.IntermediateAssistant && member.Kind == "assistant" && (!member.AssistantResponse || slot >= assistantEnd) {
-			return spi.ErrInvalidArgument
+			return errItemRangePredicate
 		}
 		matches := func(s itemRangeSummary) bool {
 			return s.Counts.total() == 0 || s.Pending == 0 && !s.Mixed && s.Turn == member.TurnID && s.Run == member.RunID && s.Counts.selected(kinds) == s.Counts.total() && s.Facts&input.Exclude == 0 && (!input.SettledActivities || s.Activity.Pending+s.Activity.Running+s.Activity.Waiting+s.Activity.Unknown == 0)
@@ -675,16 +689,23 @@ func readItemMembershipRange(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 			return boundary(level-1, second, start, end, reverse)
 		}
 		level := bits.Len(uint(m.Slots - 1))
-		before, err := boundary(level, 0, 0, slot, true)
+		before, err := boundary(level, 0, input.minSlot, slot, true)
 		if err != nil {
 			return err
 		}
-		after, err := boundary(level, 0, slot+1, m.Slots, false)
+		end := m.Slots
+		if input.endSlot > 0 {
+			end = input.endSlot
+		}
+		after, err := boundary(level, 0, slot+1, end, false)
 		if err != nil {
 			return err
 		}
 		if after < 0 {
-			after = m.Slots
+			after = end
+		}
+		if before < 0 {
+			before = input.minSlot - 1
 		}
 		var aggregate func(int, int) error
 		var total itemRangeSummary

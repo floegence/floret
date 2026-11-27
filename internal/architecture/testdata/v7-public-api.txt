@@ -1845,11 +1845,22 @@ field ThreadItemRangeInput.AnchorID string tag="json:\"anchor_id\""
 field ThreadItemRangeInput.Kinds []github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kinds\""
 field ThreadItemRangeInput.Exclude github.com/floegence/floret/v7/runtime.ThreadItemRangeFact tag="json:\"exclude,omitempty\""
 const ThreadItemRangeInputRequired github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 128
+type ThreadItemRangePageInput struct
+field ThreadItemRangePageInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemRangePageInput.LeafID string tag="json:\"leaf_id\""
+field ThreadItemRangePageInput.AnchorID string tag="json:\"anchor_id\""
+field ThreadItemRangePageInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction\""
+field ThreadItemRangePageInput.Limit int tag="json:\"limit\""
+field ThreadItemRangePageInput.Predicate github.com/floegence/floret/v7/runtime.ThreadWindowRange tag="json:\"predicate\""
+type ThreadItemRangePageReader interface interface{ItemRangePage(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadItemRangePageInput) ([]github.com/floegence/floret/v7/runtime.ThreadItemSpan, error)}
 type ThreadItemRangeReader interface interface{ItemRange(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadItemRangeInput) (github.com/floegence/floret/v7/runtime.ThreadItemRange, error)}
 const ThreadItemRangeUncertainEffect github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 1
 const ThreadItemRangeUnknownActivity github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 8
 const ThreadItemRemoved github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "remove"
 const ThreadItemReplaced github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "replace"
+type ThreadItemSpan struct
+field ThreadItemSpan.<embedded> github.com/floegence/floret/v7/runtime.ThreadItemRange
+field ThreadItemSpan.Matched bool tag="json:\"matched\""
 const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
 type ThreadItemTextChunk struct
 field ThreadItemTextChunk.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""

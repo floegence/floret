@@ -60,6 +60,15 @@ func TestThreadItemRangeAuthorizesCanonicalCountsWithoutExecution(t *testing.T) 
 		}
 	}
 	check(0)
+	pageInput := ThreadItemRangePageInput{ThreadID: id, LeafID: "tail", AnchorID: input.AnchorID, Direction: ThreadWindowBefore, Limit: 1, Predicate: ThreadWindowRange{Kinds: input.Kinds}}
+	if _, err := service.ItemRangePage(t.Context(), threadquery.Scope{Authority: "revoked"}, pageInput); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+		t.Fatalf("revoked range page: %v", err)
+	}
+	invalidPage := pageInput
+	invalidPage.Limit = 33
+	if _, err := service.ItemRangePage(t.Context(), scope, invalidPage); !errors.Is(err, threadquery.ErrInvalidQuery) {
+		t.Fatalf("oversized range page: %v", err)
+	}
 	appendEntry(sessiontree.Entry{ID: "late-result", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "inspect", ToolCallID: "2", ToolResult: &session.ToolResultView{Status: "error"}}})
 	check(1)
 	if _, err := service.ItemRange(t.Context(), threadquery.Scope{Authority: "revoked"}, input); !errors.Is(err, threadquery.ErrRecordUnavailable) {

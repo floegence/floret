@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.133.0
+
+- Add an optional authorized range-page reader for body-free chronological traversal of canonical spans and nonmatching items without changing observation, storage format or execution.
+
 ## v7.132.2
 
 - Add a test-only SQLite fixture writer for 1,000 to 100,000 independent roots with short completed conversations. No runtime API, storage format or command behavior change.
