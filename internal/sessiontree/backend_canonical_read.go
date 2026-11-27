@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -74,7 +76,7 @@ func (repo *BackendRepo) canonicalThreadView(ctx context.Context, threadID strin
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+	return repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)
 		if err != nil {
 			return err
@@ -108,6 +110,25 @@ func (repo *BackendRepo) canonicalThreadView(ctx context.Context, threadID strin
 		}
 		return direct(tx, meta)
 	})
+}
+
+func (repo *BackendRepo) viewThreadRecords(ctx context.Context, thread string, read func(spi.ReadTx) error) error {
+	return threadRouteError(storagebridge.ViewThread(ctx, repo.backend, storagebridge.ThreadRead{Thread: identity.ThreadID(thread)}, read))
+}
+
+func (repo *BackendRepo) updateThreadRecords(ctx context.Context, thread string, write func(spi.WriteTx) error) error {
+	return threadRouteError(storagebridge.UpdateThread(ctx, repo.backend, identity.ThreadID(thread), write))
+}
+
+func threadRouteError(err error) error {
+	switch {
+	case errors.Is(err, storagebridge.ErrRouteMissing):
+		return ErrThreadNotFound
+	case errors.Is(err, storagebridge.ErrRouteDeleted):
+		return ErrThreadDeleted
+	default:
+		return err
+	}
 }
 
 func (repo *BackendRepo) ReadAgentTodoState(ctx context.Context, threadID string) (AgentTodoState, error) {

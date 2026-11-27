@@ -55,10 +55,17 @@ func (repo *BackendRepo) DeleteRootTree(ctx context.Context, rootThreadID string
 }
 
 func (repo *BackendRepo) DeleteRootTreeWithRequest(ctx context.Context, rootThreadID, requestKey, fingerprint string) (DeleteRootTreeResult, error) {
-	if strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" {
-		return DeleteRootTreeResult{}, errors.New("delete request key and fingerprint are required")
+	if err := ValidateDeleteRequest(requestKey, fingerprint); err != nil {
+		return DeleteRootTreeResult{}, err
 	}
 	return repo.deleteRootTree(ctx, rootThreadID, requestKey, fingerprint)
+}
+
+func ValidateDeleteRequest(requestKey, fingerprint string) error {
+	if strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" {
+		return errors.New("delete request key and fingerprint are required")
+	}
+	return nil
 }
 
 func (repo *BackendRepo) deleteRootTree(ctx context.Context, rootThreadID, requestKey, fingerprint string) (DeleteRootTreeResult, error) {

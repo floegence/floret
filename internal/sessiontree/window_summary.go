@@ -52,7 +52,7 @@ func (repo *BackendRepo) prepareWindowSummarySource(ctx context.Context, reader 
 	stored.SummaryVersion = 1
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	return repo.updateThreadRecords(ctx, meta.ID, func(tx spi.WriteTx) error {
 		current, err := verifyWindowPreparationOwner(ctx, tx, meta)
 		if err != nil {
 			return err

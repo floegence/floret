@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -23,6 +24,7 @@ func storedChildCount(raw []byte) (uint64, error) {
 }
 
 func changeChildMembership(tx spi.WriteTx, parent, child string, insert bool) error {
+	tx = storagebridge.CatalogWriter(tx)
 	if parent == "" || child == "" || child == parent {
 		return ErrAuthorityCorrupt
 	}

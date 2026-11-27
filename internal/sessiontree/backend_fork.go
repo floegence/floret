@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -59,9 +61,13 @@ func (repo *BackendRepo) forkCanonicalThread(ctx context.Context, opts ForkOptio
 	defer repo.mu.Unlock()
 	mutation := &canonicalJournalMutation{ctx: ctx, repo: repo}
 	var saved Entry
-	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err := storagebridge.ForkThread(ctx, repo.backend, identity.ThreadID(opts.SourceThreadID), identity.ThreadID(opts.NewThreadID), func(source spi.ReadTx, tx spi.WriteTx, independent bool) error {
 		mutation.tx = tx
-		if err := mutation.forkThread(opts); err != nil {
+		var copyOutput func(OutputSource, OutputSnapshot) error
+		if independent {
+			copyOutput = func(origin OutputSource, pin OutputSnapshot) error { return retainDetachedOutput(ctx, source, tx, origin, pin) }
+		}
+		if err := mutation.forkThread(opts, source, copyOutput); err != nil {
 			return err
 		}
 		if initial != nil {
@@ -79,15 +85,15 @@ func (repo *BackendRepo) forkCanonicalThread(ctx context.Context, opts ForkOptio
 		return ctx.Err()
 	})
 	if err != nil {
-		return ThreadMeta{}, Entry{}, err
+		return ThreadMeta{}, Entry{}, threadRouteError(err)
 	}
 	repo.installJournalMutation(mutation)
 	return mutation.meta, saved, nil
 }
 
-func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
+func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions, sourceTx spi.ReadTx, copyOutput func(OutputSource, OutputSnapshot) error) error {
 	ctx, tx, repo := mutation.ctx, mutation.tx, mutation.repo
-	source, err := readPublishedThreadMeta(tx, backendDomainV32Format, opts.SourceThreadID)
+	source, err := readPublishedThreadMeta(sourceTx, backendDomainV32Format, opts.SourceThreadID)
 	if err != nil {
 		return err
 	}
@@ -99,7 +105,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 		targetID = source.LeafID
 	}
 	if opts.Position == ForkBefore {
-		entry, err := readCanonicalEntryMetadata(tx, source.ID, targetID)
+		entry, err := readCanonicalEntryMetadata(sourceTx, source.ID, targetID)
 		if err != nil {
 			return err
 		}
@@ -144,7 +150,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	} else if err := repo.canonicalThreadIDAvailable(tx, newID); err != nil {
 		return err
 	}
-	path, err := canonicalCompletePath(ctx, tx, source.ID, targetID)
+	path, err := canonicalCompletePath(ctx, sourceTx, source.ID, targetID)
 	if err != nil {
 		return err
 	}
@@ -158,7 +164,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 			return err
 		}
 	}
-	reader := canonicalArtifactReader(ctx, tx)
+	reader := canonicalArtifactReader(ctx, sourceTx)
 	actual, err := reader.artifactClosureLocked(source.ID, newID, path)
 	if err != nil {
 		return err
@@ -177,7 +183,7 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 		return err
 	}
 	if meta.ParentThreadID != "" {
-		parent, err := readPublishedThreadMeta(tx, backendDomainV32Format, meta.ParentThreadID)
+		parent, err := readPublishedThreadMeta(storagebridge.CatalogReader(tx), backendDomainV32Format, meta.ParentThreadID)
 		if err != nil {
 			return errors.Join(ErrInvalidThreadAuthority, err)
 		}
@@ -201,7 +207,12 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := pinForkOutputStreams(ctx, tx, entries); err != nil {
+	if err := pinForkOutputStreams(ctx, sourceTx, entries, func(source OutputSource, pin OutputSnapshot) error {
+		if copyOutput != nil {
+			return copyOutput(source, pin)
+		}
+		return retainOutputSource(tx, source.ID)
+	}); err != nil {
 		return err
 	}
 	for _, entry := range entries {
@@ -229,20 +240,32 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions) error {
 			return err
 		}
 	}
+	destinationReader := reader
+	if copyOutput != nil {
+		destinationReader = canonicalArtifactReader(ctx, tx)
+	}
 	for _, record := range artifacts {
-		if err := reader.validateArtifactRecordLocked(record); err != nil {
-			return err
-		}
 		if record.OutputSourceID != "" {
-			if err := retainOutputSource(tx, record.OutputSourceID); err != nil {
+			if copyOutput != nil {
+				source, err := readOutputSource(sourceTx, record.OutputSourceID)
+				if err != nil {
+					return err
+				}
+				if err = copyOutput(source, snapshotOutput(source)); err != nil {
+					return err
+				}
+			} else if err := retainOutputSource(tx, record.OutputSourceID); err != nil {
 				return err
 			}
+		}
+		if err := destinationReader.validateArtifactRecordLocked(record); err != nil {
+			return err
 		}
 		if err := storeCanonicalArtifact(ctx, tx, record); err != nil {
 			return err
 		}
 	}
-	if record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, source.ID), backendDomainRecordTodo, source.ID, "", 0); err != nil {
+	if record, found, err := readBackendDomainRecord(sourceTx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, source.ID), backendDomainRecordTodo, source.ID, "", 0); err != nil {
 		return err
 	} else if found && !opts.ReferenceHistory {
 		var todo AgentTodoState

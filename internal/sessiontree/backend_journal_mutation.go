@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -65,7 +67,11 @@ func (repo *BackendRepo) canonicalJournalUpdateWithRecords(ctx context.Context, 
 			defer repo.mu.Unlock()
 			mutation := &canonicalJournalMutation{ctx: ctx, repo: repo, query: continuation.state}
 			stale := false
-			err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			var parent identity.ThreadID
+			if repo.parentEventsEnabled() {
+				parent = identity.ThreadID(continuation.parentID)
+			}
+			err := storagebridge.UpdateRelatedThread(ctx, repo.backend, identity.ThreadID(threadID), parent, func(tx spi.WriteTx) error {
 				if err := continuation.verify(tx); err != nil {
 					stale = errors.Is(err, spi.ErrConflict)
 					return err
@@ -89,7 +95,7 @@ func (repo *BackendRepo) canonicalJournalUpdateWithRecords(ctx context.Context, 
 				return ctx.Err()
 			})
 			if err != nil {
-				return stale, err
+				return stale, threadRouteError(err)
 			}
 			repo.installJournalMutation(mutation)
 			return false, nil
@@ -157,7 +163,11 @@ func (mutation *canonicalJournalMutation) publishParentEvents() error {
 		if err != nil || !found {
 			return err
 		}
-		appended, err := appendCanonicalParentEvent(mutation.ctx, mutation.tx, event)
+		target, err := storagebridge.RelatedWriter(mutation.tx, identity.ThreadID(event.ParentThreadID))
+		if err != nil {
+			return err
+		}
+		appended, err := appendCanonicalParentEvent(mutation.ctx, target, event)
 		if err == nil && appended {
 			mutation.parentID = event.ParentThreadID
 		}

@@ -41,11 +41,7 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 			return nil, true, err
 		}
 	}
-	source := repo.backend
-	if threadID == "" {
-		source = &retentionReadBudget{Backend: source, started: time.Now()}
-	}
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: source}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+	budget := retentionReadBudget{started: time.Now()}
 	// Inventory enumeration uses the repository owner only for short metadata
 	// transactions; journal scans release both locks between bounded pages.
 	inventoryView := func(read func(spi.ReadTx) error) error {
@@ -74,8 +70,20 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 	}
 	sort.Strings(ids)
 	counts := make(map[string]int, len(ids))
+	readers := make(map[string]*canonicalSnapshotReader, len(ids))
 	var result []Entry
 	for _, id := range ids {
+		reader := repo.threadSnapshot(ctx, id)
+		readers[id] = reader
+		if threadID == "" {
+			view := reader.backend.View
+			reader.backend = snapshotView(func(ctx context.Context, read func(spi.ReadTx) error) error {
+				if err := budget.wait(ctx); err != nil {
+					return err
+				}
+				return view(ctx, read)
+			})
+		}
 		if _, err := readPublishedThreadMeta(reader, repo.domainFormat(), id); err != nil {
 			return nil, true, err
 		}
@@ -110,11 +118,13 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 			return nil, true, reader.validationError(ErrAuthorityCorrupt)
 		}
 	}
-	err := inventoryView(func(tx spi.ReadTx) error {
-		if err := reader.verify(tx); err != nil {
-			return err
-		}
-		for id, count := range counts {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	for id, count := range counts {
+		err := repo.viewThreadRecords(ctx, id, func(tx spi.ReadTx) error {
+			if err := readers[id].verify(tx); err != nil {
+				return err
+			}
 			current, err := readJournalCount(tx, id)
 			if err != nil {
 				return err
@@ -122,7 +132,16 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 			if current != count {
 				return spi.ErrConflict
 			}
+			return nil
+		})
+		if errors.Is(err, ErrThreadDeleted) || errors.Is(err, ErrThreadNotFound) {
+			return nil, true, spi.ErrConflict
 		}
+		if err != nil {
+			return nil, true, err
+		}
+	}
+	err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
 		if threadID == "" {
 			manifest, err := readV32Manifest(tx)
 			if err != nil {
@@ -154,11 +173,10 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 }
 
 type retentionReadBudget struct {
-	spi.Backend
 	started time.Time
 }
 
-func (budget *retentionReadBudget) View(ctx context.Context, read func(spi.ReadTx) error) error {
+func (budget *retentionReadBudget) wait(ctx context.Context) error {
 	if elapsed := time.Since(budget.started); elapsed >= 3*time.Millisecond {
 		timer := time.NewTimer(min(100*time.Millisecond, 5*elapsed))
 		defer timer.Stop()
@@ -169,5 +187,5 @@ func (budget *retentionReadBudget) View(ctx context.Context, read func(spi.ReadT
 		}
 		budget.started = time.Now()
 	}
-	return budget.Backend.View(ctx, read)
+	return ctx.Err()
 }

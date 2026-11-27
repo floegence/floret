@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -54,7 +56,7 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 	defer repo.mu.Unlock()
 	mutation := &canonicalJournalMutation{ctx: ctx, repo: repo}
 	var saved Entry
-	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err := storagebridge.CreateThread(ctx, repo.backend, storagebridge.ThreadCreation{Thread: identity.ThreadID(input.ID)}, func(tx spi.WriteTx) error {
 		meta := input
 		if meta.ID == "" {
 			manifest, err := readV32Manifest(tx)
@@ -101,7 +103,7 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 				return ErrInvalidThreadAuthority
 			}
 			seen[parentID] = true
-			parent, err := readPublishedThreadMeta(tx, backendDomainV32Format, parentID)
+			parent, err := readPublishedThreadMeta(storagebridge.CatalogReader(tx), backendDomainV32Format, parentID)
 			if err != nil {
 				return errors.Join(ErrInvalidThreadAuthority, err)
 			}
@@ -131,7 +133,7 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 		return ctx.Err()
 	})
 	if err != nil {
-		return ThreadMeta{}, Entry{}, err
+		return ThreadMeta{}, Entry{}, threadRouteError(err)
 	}
 	repo.installJournalMutation(mutation)
 	return mutation.meta, saved, nil
@@ -140,6 +142,7 @@ func (repo *BackendRepo) createCanonicalThread(ctx context.Context, input Thread
 // The retained namespace is consulted only to reserve source identities during
 // migration. A new thread never takes ownership of an unpublished old thread.
 func (repo *BackendRepo) canonicalThreadIDAvailable(tx spi.ReadTx, threadID string) error {
+	tx = storagebridge.CatalogReader(tx)
 	formats := []backendDomainFormat{backendDomainV32Format}
 	if repo.migrationSource != nil {
 		formats = append(formats, *repo.migrationSource)

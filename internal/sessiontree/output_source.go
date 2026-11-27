@@ -169,6 +169,14 @@ func appendOutputSource(ctx context.Context, tx spi.WriteTx, source OutputSource
 	}
 	if int64(len(text)) > OutputSourceMaxBytes-source.Bytes {
 		source.Reason = "output_limit"
+	} else if scoped, ok := tx.(scopedOutputWriter); ok {
+		allowed, err := changeOutputCharge(scoped.CatalogWriter(), outputCharge{scoped.ThreadOwner().String(), source.ID, source.Bytes + int64(len(text))}, source.Bytes)
+		if err != nil {
+			return source, err
+		}
+		if !allowed {
+			source.Reason = "storage_limit"
+		}
 	} else if int64(len(text)) > outputStoreMaxBytes-used {
 		source.Reason = "storage_limit"
 	}
@@ -404,6 +412,12 @@ func releaseOutputSource(ctx context.Context, tx spi.WriteTx, id string) error {
 	}
 	if used < source.Bytes {
 		return ErrAuthorityCorrupt
+	}
+	if scoped, ok := tx.(scopedOutputWriter); ok && source.Bytes > 0 {
+		allowed, err := changeOutputCharge(scoped.CatalogWriter(), outputCharge{scoped.ThreadOwner().String(), source.ID, 0}, source.Bytes)
+		if err != nil || !allowed {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
 	}
 	if err := putOutputRecord(tx, outputUsageKey(), used-source.Bytes); err != nil {
 		return err

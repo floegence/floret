@@ -341,7 +341,7 @@ func (repo *BackendRepo) prepareProjectionSources(ctx context.Context, thread st
 		err := func() error {
 			repo.mu.Lock()
 			defer repo.mu.Unlock()
-			return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			return repo.updateThreadRecords(ctx, thread, func(tx spi.WriteTx) error {
 				if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread); err != nil {
 					return err
 				}

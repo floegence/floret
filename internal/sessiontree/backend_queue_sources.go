@@ -247,7 +247,7 @@ func (repo *BackendRepo) prepareCurrentQueueSources(ctx context.Context, thread 
 // Missing metadata is scanned outside a writer transaction. The current source
 // anchor publishes only after verifying the frozen canonical journal owner.
 func (repo *BackendRepo) rebuildCurrentQueueSources(ctx context.Context, thread string) error {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(ctx, thread)
 	if _, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread); err != nil {
 		return err
 	}
@@ -271,7 +271,7 @@ func (repo *BackendRepo) rebuildCurrentQueueSources(ctx context.Context, thread 
 	update := func(write func(spi.WriteTx) error) error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
-		return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+		return repo.updateThreadRecords(ctx, thread, func(tx spi.WriteTx) error {
 			if err := reader.verify(tx); err != nil {
 				return err
 			}

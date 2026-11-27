@@ -1401,6 +1401,12 @@ runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
 runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("agent.db")})
 ```
 
+For a local environment with one history database per thread, use
+`storage.ThreadSQLite(absolutePath)`. The parent directory must exist. The
+fixed file and its sibling `.d` directory form one environment; do not copy
+the fixed file alone to back it up. This constructor does not adopt or convert
+an existing single-file store.
+
 Hosts may observe Floret's product-neutral startup phases without reading
 physical records:
 

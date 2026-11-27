@@ -7,11 +7,24 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const backendDomainV43Version = 43
+
+func ValidateThreadCatalogBaseline(tx spi.ReadTx) error {
+	manifest, err := readV32Manifest(tx)
+	if err != nil || manifest.SourceVersion != 0 || manifest.Version != backendDomainV43Version {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	membership, err := readChildMembershipState(tx)
+	if err != nil || membership.Phase != "ready" {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return nil
+}
 
 // Parent keys start with a tuple string; this ordinal cannot alias a thread.
 var childMembershipStateKey = storagecodec.Tuple(storagecodec.TupleOrdinal(0))
@@ -22,6 +35,7 @@ type childMembershipState struct {
 }
 
 func readChildMembershipState(tx spi.ReadTx) (childMembershipState, error) {
+	tx = storagebridge.CatalogReader(tx)
 	raw, err := tx.Get(childMembershipNamespace, childMembershipStateKey)
 	if errors.Is(err, spi.ErrNotFound) {
 		return childMembershipState{}, ErrAuthorityCorrupt
@@ -41,7 +55,7 @@ func putChildMembershipState(tx spi.WriteTx, s childMembershipState) error {
 	if err != nil {
 		return err
 	}
-	return tx.Put(childMembershipNamespace, childMembershipStateKey, raw)
+	return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: childMembershipNamespace, Key: childMembershipStateKey}, raw)
 }
 
 func initChildMembership(tx spi.WriteTx, phase string) error {

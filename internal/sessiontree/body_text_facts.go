@@ -115,7 +115,7 @@ func (repo *BackendRepo) prepareWindowTextFacts(ctx context.Context, thread stri
 	return nil
 }
 func (repo *BackendRepo) prepareBodyTextFactsOwned(work context.Context, thread string, missing missingBodyTextFacts, activeOnly bool) error {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: work, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(work, thread)
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return err
@@ -141,7 +141,7 @@ func (repo *BackendRepo) prepareBodyTextFactsOwned(work context.Context, thread 
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return repo.backend.Update(work, func(tx spi.WriteTx) error {
+	return repo.updateThreadRecords(work, thread, func(tx spi.WriteTx) error {
 		current, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread)
 		if err != nil {
 			return err

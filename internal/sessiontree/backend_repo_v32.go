@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -23,6 +24,7 @@ var backendDomainV32Format = backendDomainFormat{
 }
 
 func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
+	tx = storagebridge.CatalogReader(tx)
 	record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0)
 	if err != nil || !found {
 		return backendDomainManifest{}, errors.Join(ErrAuthorityCorrupt, err)
@@ -63,20 +65,24 @@ func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
 // NewFreshCurrentBackendRepoInTransaction installs the current owner directly;
 // fresh runtime stores never create a historical format to migrate on restart.
 func NewFreshCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, parentEvents bool) (*BackendRepo, error) {
-	fresh, err := IsFreshBackendRepoInTransaction(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	if !fresh {
-		return nil, errors.Join(ErrAuthorityCorrupt, errors.New("fresh initialization encountered existing domain state"))
-	}
-	if err := initChildMembership(tx, "ready"); err != nil {
-		return nil, err
-	}
-	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV43Version}); err != nil {
+	if err := InitializeFreshCurrentRecords(ctx, tx); err != nil {
 		return nil, err
 	}
 	return NewBackendRepoForFormat(backend, now, parentEvents, backendDomainV32Format)
+}
+
+func InitializeFreshCurrentRecords(ctx context.Context, tx spi.WriteTx) error {
+	fresh, err := IsFreshBackendRepoInTransaction(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !fresh {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("fresh initialization encountered existing domain state"))
+	}
+	if err := initChildMembership(tx, "ready"); err != nil {
+		return err
+	}
+	return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV43Version})
 }
 
 func backendKeyRangeEnd(prefix []byte) []byte {

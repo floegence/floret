@@ -119,7 +119,7 @@ func (repo *BackendRepo) prepareItemActivitySummaryOwned(ctx context.Context, th
 	if len(entries) == 0 || entries[0].ID != source || entries[len(entries)-1].ID != member.ActivitySource.ID {
 		return ErrAuthorityCorrupt
 	}
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(ctx, thread)
 	if err := repo.prepareActivitySummariesOwned(ctx, reader, frozen, entries); err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func (repo *BackendRepo) prepareItemActivitySummaryOwned(ctx context.Context, th
 		err := func() error {
 			repo.mu.Lock()
 			defer repo.mu.Unlock()
-			return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			return repo.updateThreadRecords(ctx, thread, func(tx spi.WriteTx) error {
 				current, err := verifyWindowPreparationOwner(ctx, tx, frozen)
 				if err != nil {
 					return err

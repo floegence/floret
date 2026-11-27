@@ -7,7 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 	"sort"
@@ -608,12 +611,38 @@ func (repo *BackendRepo) queryView(ctx context.Context, scope threadquery.Scope,
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
+	if _, routed := repo.backend.(interface {
+		ViewThreadRecords(context.Context, storagebridge.ThreadRead, func(spi.ReadTx) error) error
+	}); routed {
+		authorized, err := ValidateQueryScope(scope)
+		if err != nil {
+			return err
+		}
+		view := func(thread string, read func(spi.ReadTx) error) error {
+			if !authorized[thread] {
+				return threadquery.ErrInvalidQuery
+			}
+			return repo.viewThreadRecords(ctx, thread, read)
+		}
+		for thread := range authorized {
+			selected := scope
+			selected.ThreadIDs = []identity.ThreadID{identity.ThreadID(thread)}
+			err := view(thread, func(tx spi.ReadTx) error { return ensureThreadQueryIndexReady(ctx, tx, selected, repo.domainFormat()) })
+			if errors.Is(err, ErrThreadNotFound) || errors.Is(err, ErrThreadDeleted) {
+				return threadquery.ErrThreadQueryIndexNotReady
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return callback(repo.canonicalQuerySession(ctx, view))
+	}
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
 		if err := ensureThreadQueryIndexReady(ctx, tx, scope, repo.domainFormat()); err != nil {
 			return err
 		}
 		if repo.domainFormat().version >= backendDomainV32Version {
-			return callback(repo.canonicalQuerySession(ctx, tx))
+			return callback(repo.canonicalQuerySession(ctx, func(_ string, read func(spi.ReadTx) error) error { return read(tx) }))
 		}
 		memory := repo.domainMemory
 		if memory == nil {

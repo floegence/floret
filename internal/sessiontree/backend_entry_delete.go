@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -49,13 +50,13 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 		if err != nil {
 			return err
 		}
-		key := backendDomainKey("effect_owner", attempt.EffectAttemptID)
+		key := storagebridge.CatalogRecord{Namespace: backendEntryIndexNamespace, Key: backendDomainKey("effect_owner", attempt.EffectAttemptID)}
 		owner, err := readEffectSourceLocator(tx, attempt.EffectAttemptID)
 		if err != nil || owner.ThreadID != threadID || owner.EntryID != entry.ID {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		if locator.EffectPrevious == "" {
-			if err := tx.Delete(backendEntryIndexNamespace, key); err != nil {
+			if err := storagebridge.DeleteIndexedThreadRecord(tx, key); err != nil {
 				return err
 			}
 		} else {
@@ -71,7 +72,7 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 			if err != nil {
 				return err
 			}
-			if err := tx.Put(backendEntryIndexNamespace, key, raw); err != nil {
+			if err := storagebridge.PutIndexedThreadRecord(tx, key, raw); err != nil {
 				return err
 			}
 		}

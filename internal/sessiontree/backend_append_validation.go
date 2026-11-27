@@ -227,11 +227,12 @@ func validateCanonicalParentEvent(ctx context.Context, tx spi.ReadTx, meta Threa
 			return ErrAuthorityCorrupt
 		}
 		seen[meta.ID] = true
-		meta, err = readPublishedThreadMeta(tx, backendDomainV32Format, meta.ForkedFromThreadID)
+		meta, err = readPublishedThreadMeta(threadSnapshotRecords(tx, meta.ForkedFromThreadID), backendDomainV32Format, meta.ForkedFromThreadID)
 		if err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 	}
+	tx = threadSnapshotRecords(tx, event.SourceThreadID)
 	child, err := readPublishedThreadMeta(tx, backendDomainV32Format, event.SourceThreadID)
 	if errors.Is(err, ErrThreadDeleted) {
 		return nil

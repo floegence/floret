@@ -119,7 +119,7 @@ func (kernel *BackendKernel) LatestModelContextRequest(ctx context.Context, scop
 	for {
 		var result cache.ProviderRequestRecord
 		var found, complete bool
-		err := kernel.promptBackend.View(ctx, func(tx spi.ReadTx) error {
+		err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
 			counters, err := readPromptCounters(tx, scope)
 			if err != nil {
 				return err
@@ -179,7 +179,7 @@ func (kernel *BackendKernel) LatestModelContextRequest(ctx context.Context, scop
 // appended by an older writer starts a new suffix; old locators are ignored
 // until their ordinals are covered again.
 func (kernel *BackendKernel) prepareContextRequestPage(ctx context.Context, scope string) error {
-	return kernel.promptBackend.Update(ctx, func(tx spi.WriteTx) error {
+	return kernel.updatePrompt(ctx, scope, func(tx spi.WriteTx) error {
 		counters, err := readPromptCounters(tx, scope)
 		if err != nil {
 			return err

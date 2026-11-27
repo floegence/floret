@@ -34,6 +34,14 @@ func readCanonicalEntryOrdinal(tx spi.ReadTx, threadID string, ordinal int) (Ent
 // Readers used by preparation release the backend between page/record reads.
 // Validation keeps authority identities, never a second repository or journal.
 func visitCanonicalJournal(ctx context.Context, tx spi.ReadTx, threadID string, visit func(Entry) error) (int, error) {
+	return visitStoredJournal(ctx, tx, threadID, func(_ spi.Record, stored canonicalStoredEntry) error {
+		entry := stored.Entry
+		entry.bodyFields = stored.Fields
+		return visit(entry)
+	})
+}
+
+func visitStoredJournal(ctx context.Context, tx spi.ReadTx, threadID string, visit func(spi.Record, canonicalStoredEntry) error) (int, error) {
 	prefix := backendDomainKey(backendDomainRecordEntry, threadID)
 	var after []byte
 	ordinal := 0
@@ -54,9 +62,7 @@ func visitCanonicalJournal(ctx context.Context, tx spi.ReadTx, threadID string, 
 			if err != nil {
 				return 0, err
 			}
-			entry := stored.Entry
-			entry.bodyFields = stored.Fields
-			if err := visit(entry); err != nil {
+			if err := visit(row, stored); err != nil {
 				return 0, err
 			}
 			ordinal++
@@ -71,7 +77,7 @@ func visitCanonicalJournal(ctx context.Context, tx spi.ReadTx, threadID string, 
 	}
 }
 
-func validateCanonicalThreadClosure(ctx context.Context, tx spi.ReadTx, threadID string) (map[string]ThreadMeta, error) {
+func validateCanonicalThreadClosure(ctx context.Context, source spi.ReadTx, threadID string) (map[string]ThreadMeta, error) {
 	metas := map[string]ThreadMeta{}
 	seen := map[string]bool{}
 	queue := []string{threadID}
@@ -85,6 +91,7 @@ func validateCanonicalThreadClosure(ctx context.Context, tx spi.ReadTx, threadID
 			continue
 		}
 		seen[id] = true
+		tx := threadSnapshotRecords(source, id)
 		meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, id)
 		if errors.Is(err, ErrThreadDeleted) && id != threadID {
 			continue

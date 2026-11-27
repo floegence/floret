@@ -17,6 +17,7 @@ const queryContinuationMaxBytes = 128 << 10
 // The mutation checks the pinned metadata and manifest before using the result.
 type canonicalQueryContinuation struct {
 	threadID string
+	parentID string
 	metadata []byte
 	manifest []byte
 	state    *queryThread
@@ -28,12 +29,13 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 	err := func() error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
-		return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		return repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 			var err error
 			meta, err = readPublishedThreadMeta(tx, backendDomainV32Format, threadID)
 			if err != nil {
 				return err
 			}
+			continuation.parentID = meta.ParentThreadID
 			continuation.metadata, err = tx.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, threadID))
 			if err != nil {
 				return err
@@ -66,7 +68,7 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 		state := newQueryThread()
 		projector := &queryProjector{metadataOnly: true}
 		var leaf entryLocator
-		err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		err = repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 			if err := continuation.verify(tx); err != nil {
 				return err
 			}
@@ -79,7 +81,7 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 		})
 		for first := int64(1); err == nil && first <= leaf.Depth; first += 128 {
 			last := min(first+127, leaf.Depth)
-			err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
+			err = repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 				if err := continuation.verify(tx); err != nil {
 					return err
 				}
@@ -95,7 +97,7 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 		projector.finish(state, threadID, meta)
 		continuation.state = state
 		if err != nil {
-			if changed := repo.backend.View(ctx, continuation.verify); changed != nil {
+			if changed := repo.viewThreadRecords(ctx, threadID, continuation.verify); changed != nil {
 				return nil, changed
 			}
 			return nil, err

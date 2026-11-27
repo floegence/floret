@@ -51,7 +51,7 @@ func (reader *executionSegmentReader) Segments(ctx context.Context, scope, provi
 	}
 	prefix, size := reader.prefix, reader.bytes
 	ordinal := uint64(len(prefix))
-	err := kernel.promptBackend.View(ctx, func(tx spi.ReadTx) error {
+	err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
 		namespacePrefix := promptRecordPrefix(scope, promptSegment)
 		start := namespacePrefix
 		if ordinal != 0 {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -40,7 +41,7 @@ func putEffectSourceLocator(tx spi.WriteTx, entry Entry) error {
 	if err != nil {
 		return err
 	}
-	previous, err := readEffectSourceLocator(tx, attempt.EffectAttemptID)
+	previous, err := readEffectSourceLocator(storagebridge.CatalogReader(tx), attempt.EffectAttemptID)
 	if err == nil {
 		if previous.ThreadID != entry.ThreadID {
 			return ErrAuthorityCorrupt
@@ -63,7 +64,7 @@ func putEffectSourceLocator(tx spi.WriteTx, entry Entry) error {
 	if err != nil {
 		return err
 	}
-	if err := tx.Put(backendEntryIndexNamespace, backendDomainKey("effect_owner", attempt.EffectAttemptID), raw); err != nil {
+	if err := storagebridge.PutIndexedThreadRecord(tx, storagebridge.CatalogRecord{Namespace: backendEntryIndexNamespace, Key: backendDomainKey("effect_owner", attempt.EffectAttemptID)}, raw); err != nil {
 		return err
 	}
 	return tx.Put(backendEntryIndexNamespace, backendDomainKey("effect", entry.ThreadID, attempt.EffectAttemptID), []byte(entry.ID))

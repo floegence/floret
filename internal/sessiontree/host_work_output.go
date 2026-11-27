@@ -174,7 +174,7 @@ func validOutputReason(reason string) bool {
 
 // pinForkOutputStreams installs a per-fork immutable watermark in both binding
 // and final facts. Retaining once per binding protects the common source.
-func pinForkOutputStreams(ctx context.Context, tx spi.WriteTx, entries []Entry) error {
+func pinForkOutputStreams(ctx context.Context, tx spi.ReadTx, entries []Entry, retain func(OutputSource, OutputSnapshot) error) error {
 	snapshots := map[string]*OutputSnapshot{}
 	for i := range entries {
 		if entries[i].Type != EntryHostWork {
@@ -209,7 +209,7 @@ func pinForkOutputStreams(ctx context.Context, tx spi.WriteTx, entries []Entry) 
 				return err
 			}
 			snapshots[work.ID] = pin
-			if err := retainOutputSource(tx, source.ID); err != nil {
+			if err := retain(source, *pin); err != nil {
 				return err
 			}
 		}

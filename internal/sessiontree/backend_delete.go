@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -35,7 +37,7 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	var result DeleteRootTreeResult
-	err = repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err = storagebridge.DeleteTree(ctx, repo.backend, func(tx spi.WriteTx, retire func(identity.ThreadID) error) error {
 		root, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTombstone, rootID), backendDomainRecordTombstone, rootID, "", 0)
 		if err != nil {
 			return err
@@ -71,6 +73,11 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 				return err
 			}
 			now := repo.now().UTC()
+			if retire != nil {
+				if err := removeDeletedEffectLocators(ctx, tx, ids); err != nil {
+					return err
+				}
+			}
 			for _, id := range ids {
 				meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, id)
 				if err != nil {
@@ -83,13 +90,31 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 				if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTombstone, id), backendDomainRecordTombstone, id, "", 0, tombstone); err != nil {
 					return err
 				}
-				if err := deleteCanonicalThreadRecords(ctx, tx, meta); err != nil {
+				if retire != nil {
+					if err := releaseThreadOutputCharges(ctx, tx, id); err != nil {
+						return err
+					}
+					if err := updateChildMembership(tx, id, meta.ParentThreadID, ""); err != nil {
+						return err
+					}
+					if err := tx.Delete(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, id)); err != nil {
+						return err
+					}
+					if meta.ParentThreadID == "" {
+						if err := tx.Delete(backendDomainV32Namespace, backendDomainKey(backendDomainRecordRootThread, id)); err != nil {
+							return err
+						}
+					}
+					if err := retire(identity.ThreadID(id)); err != nil {
+						return err
+					}
+				} else if err := deleteCanonicalThreadRecords(ctx, tx, meta); err != nil {
 					return err
 				}
 			}
 			result.ThreadIDs = ids
 		}
-		if settle != nil {
+		if settle != nil && retire == nil {
 			return settle(tx, result.ThreadIDs)
 		}
 		return nil
@@ -104,6 +129,42 @@ func (repo *BackendRepo) deleteCanonicalRootTree(ctx context.Context, rootID, re
 		repo.threadQuerySnapshots.invalidateThread(id)
 	}
 	return result, nil
+}
+
+func removeDeletedEffectLocators(ctx context.Context, tx spi.WriteTx, threads []string) error {
+	deleted := make(map[string]bool, len(threads))
+	for _, thread := range threads {
+		deleted[thread] = true
+	}
+	prefix := backendDomainKey("effect_owner")
+	request := spi.ScanRequest{Namespace: backendEntryIndexNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: backendThreadEntryPageSize}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		page, err := tx.Scan(request)
+		if err != nil {
+			return err
+		}
+		for _, row := range page.Records {
+			var locator effectSourceLocator
+			if err := decodeCanonicalBodyJSON(row.Value, &locator); err != nil || locator.EntryID == "" || locator.ThreadID == "" {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if deleted[locator.ThreadID] {
+				if err := tx.Delete(backendEntryIndexNamespace, row.Key); err != nil {
+					return err
+				}
+			}
+		}
+		if !page.HasMore {
+			return nil
+		}
+		if len(page.Next) == 0 || bytes.Compare(page.Next, request.After) <= 0 {
+			return ErrAuthorityCorrupt
+		}
+		request.After = page.Next
+	}
 }
 
 func visitCanonicalTombstones(ctx context.Context, tx spi.ReadTx, visit func(ThreadTombstone) error) error {

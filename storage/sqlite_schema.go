@@ -2,12 +2,13 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/sqliterecords"
 	"github.com/floegence/floret/v7/internal/storagebridge"
-	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // The physical format owns only table structure; record values remain opaque.
@@ -83,59 +84,50 @@ func inspectSQLitePhysicalSchema(ctx context.Context, query sqliteQueryer) (stri
 }
 
 func (tx *sqliteTx) PrepareFloretStorage(access storagebridge.StartupAccess) (bool, error) {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-	if !tx.active {
-		return false, spi.ErrTransactionClosed
-	}
-	if tx.readOnly {
-		return false, spi.ErrInvalidArgument
-	}
-	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	if err != nil || version == "5" {
-		return false, err
-	}
-	if access.OnMigration != nil {
-		access.OnMigration()
-	}
-	if version == "1" {
-		if _, err := tx.tx.ExecContext(tx.ctx, `UPDATE floret_backend_metadata SET value=CAST('2' AS BLOB) WHERE name='physical_schema'`); err != nil {
-			return false, classifySQLiteError(tx.ctx, err)
+	return sqliterecords.Access(tx.Tx, true, func(ctx context.Context, transaction *sql.Tx) (bool, error) {
+		version, err := inspectSQLitePhysicalSchema(ctx, transaction)
+		if err != nil || version == "5" {
+			return false, err
 		}
-		version = "2"
-	}
-	if version == "2" {
-		for _, statement := range []string{sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTermsV3, "UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'"} {
-			if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
-				return false, classifySQLiteError(tx.ctx, err)
+		if access.OnMigration != nil {
+			access.OnMigration()
+		}
+		if version == "1" {
+			if _, err := transaction.ExecContext(ctx, `UPDATE floret_backend_metadata SET value=CAST('2' AS BLOB) WHERE name='physical_schema'`); err != nil {
+				return false, sqliterecords.ClassifyError(ctx, err)
+			}
+			version = "2"
+		}
+		if version == "2" {
+			for _, statement := range []string{sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTermsV3, "UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'"} {
+				if _, err := transaction.ExecContext(ctx, statement); err != nil {
+					return false, sqliterecords.ClassifyError(ctx, err)
+				}
+			}
+			version = "3"
+		}
+		// Preserve the released 3 -> 4 edge before retiring its derived state.
+		if version != "4" {
+			for _, statement := range []string{"DROP TABLE floret_index_terms", "DELETE FROM floret_index_documents", sqliteIndexPostings, sqliteIndexPostingDocuments, "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
+				if _, err := transaction.ExecContext(ctx, statement); err != nil {
+					return false, sqliterecords.ClassifyError(ctx, err)
+				}
 			}
 		}
-		version = "3"
-	}
-	// Preserve the released 3 -> 4 edge before retiring its derived state.
-	if version != "4" {
-		for _, statement := range []string{"DROP TABLE floret_index_terms", "DELETE FROM floret_index_documents", sqliteIndexPostings, sqliteIndexPostingDocuments, "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
-			if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
-				return false, classifySQLiteError(tx.ctx, err)
+		// Format 5 removes only disposable search tables. Canonical bytes stay exact.
+		for _, statement := range []string{"DROP TABLE floret_index_postings", "DROP TABLE floret_index_documents", "UPDATE floret_backend_metadata SET value=CAST('5' AS BLOB) WHERE name='physical_schema'"} {
+			if _, err := transaction.ExecContext(ctx, statement); err != nil {
+				return false, sqliterecords.ClassifyError(ctx, err)
 			}
 		}
-	}
-	// Format 5 removes only disposable search tables. Canonical bytes stay exact.
-	for _, statement := range []string{"DROP TABLE floret_index_postings", "DROP TABLE floret_index_documents", "UPDATE floret_backend_metadata SET value=CAST('5' AS BLOB) WHERE name='physical_schema'"} {
-		if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
-			return false, classifySQLiteError(tx.ctx, err)
-		}
-	}
-	_, err = inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	return true, err
+		_, err = inspectSQLitePhysicalSchema(ctx, transaction)
+		return true, err
+	})
 }
 
 func (tx *sqliteTx) FloretPhysicalMigrationRequired(storagebridge.StartupAccess) (bool, error) {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-	if !tx.active {
-		return false, spi.ErrTransactionClosed
-	}
-	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	return version != "5", err
+	return sqliterecords.Access(tx.Tx, false, func(ctx context.Context, transaction *sql.Tx) (bool, error) {
+		version, err := inspectSQLitePhysicalSchema(ctx, transaction)
+		return version != "5", err
+	})
 }

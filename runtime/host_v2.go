@@ -198,6 +198,70 @@ func (backend *serializedBackend) View(ctx context.Context, read func(spi.ReadTx
 	return backend.backend.View(ctx, read)
 }
 
+func (backend *serializedBackend) ViewThreadRecords(ctx context.Context, request storagebridge.ThreadRead, read func(spi.ReadTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.ViewThread(ctx, backend.backend, request, read)
+}
+
+func (backend *serializedBackend) CreateThreadRecords(ctx context.Context, request storagebridge.ThreadCreation, write func(spi.WriteTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.CreateThread(ctx, backend.backend, request, write)
+}
+
+func (backend *serializedBackend) DeleteThreadFiles(ctx context.Context, write storagebridge.TreeDeletion) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.DeleteTree(ctx, backend.backend, write)
+}
+
+func (backend *serializedBackend) UpdateThreadRecords(ctx context.Context, thread identity.ThreadID, write func(spi.WriteTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.UpdateThread(ctx, backend.backend, thread, write)
+}
+
+func (backend *serializedBackend) UpdateRelatedThread(ctx context.Context, thread, related identity.ThreadID, write func(spi.WriteTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.UpdateRelatedThread(ctx, backend.backend, thread, related, write)
+}
+
+func (backend *serializedBackend) ForkThreadRecords(ctx context.Context, source, target identity.ThreadID, write storagebridge.ForkWriter) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.ForkThread(ctx, backend.backend, source, target, write)
+}
+
+func (backend *serializedBackend) ViewPromptRecords(ctx context.Context, scope string, read func(spi.ReadTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.ViewPrompt(ctx, backend.backend, scope, read)
+}
+
+func (backend *serializedBackend) UpdatePromptRecords(ctx context.Context, destinations []storagebridge.PromptDestination, write func(spi.WriteTx) error) error {
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
+	return storagebridge.UpdatePrompt(ctx, backend.backend, destinations, write)
+}
+
 func (backend *serializedBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
 	if err := backend.acquire(ctx); err != nil {
 		return err
@@ -305,10 +369,29 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		if inspectErr != nil {
 			return inspectErr
 		}
+		layout, separateThreads := tx.(interface{ EmptyThreadCatalog() (bool, error) })
+		if separateThreads {
+			switch logicalState {
+			case logicalSchemaCurrent:
+				if err := sessiontree.ValidateThreadCatalogBaseline(tx); err != nil {
+					return err
+				}
+			case logicalSchemaMissing:
+				empty, err := layout.EmptyThreadCatalog()
+				if err != nil || !empty {
+					return errors.Join(ErrUnsupportedSchema, err)
+				}
+			default:
+				return ErrUnsupportedSchema
+			}
+		}
 		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV19 || logicalState == logicalSchemaV18 || logicalState == logicalSchemaV17 || logicalState == logicalSchemaV15 || logicalState == logicalSchemaV14 || logicalState == logicalSchemaV13 || logicalState == logicalSchemaV12 || logicalState == logicalSchemaV11 || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
 			var current bool
 			currentKernel, current, inspectErr = internalstorage.NewCurrentBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents)
 			if !current {
+				if separateThreads {
+					return errors.Join(ErrUnsupportedSchema, inspectErr)
+				}
 				currentKernel = nil
 			}
 			if inspectErr == nil && currentKernel != nil {
@@ -326,6 +409,9 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 			}
 			currentKernel, initializedFreshStore, inspectErr = internalstorage.NewFreshBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents, progress)
 			if inspectErr != nil || !initializedFreshStore {
+				if separateThreads {
+					return errors.Join(ErrUnsupportedSchema, inspectErr)
+				}
 				return inspectErr
 			}
 			return commitLogicalSchemaTransaction(tx, logicalState)
@@ -334,6 +420,11 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	})
 	if err != nil {
 		return nil, runtimeHostError(err)
+	}
+	if layout, ok := backend.(interface{ RecoverThreadFiles(context.Context) error }); ok {
+		if err := layout.RecoverThreadFiles(ctx); err != nil {
+			return nil, runtimeHostError(err)
+		}
 	}
 	startupContext, startupCancel := context.WithCancel(context.Background())
 	kernel, err := internalstorage.NewDeferredBackendKernel(coordinatedBackend, time.Now, startup.waitUsable)
@@ -962,7 +1053,7 @@ func commitLogicalSchemaTransaction(tx spi.WriteTx, observed logicalSchemaState)
 	if err != nil {
 		return err
 	}
-	return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
+	return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: logicalSchemaNamespace, Key: []byte(logicalSchemaKey)}, envelope)
 }
 
 func (agent *Agent) turnExecutionOptions() turnExecutionOptions {

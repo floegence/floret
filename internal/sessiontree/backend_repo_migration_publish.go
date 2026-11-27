@@ -14,7 +14,9 @@ import (
 // Runtime operations continue using the canonical owner between these reads.
 type migrationSourceReader struct {
 	ctx     context.Context
-	backend spi.Backend
+	backend interface {
+		View(context.Context, func(spi.ReadTx) error) error
+	}
 }
 
 var _ spi.BoundedRecordReader = migrationSourceReader{}

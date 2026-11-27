@@ -128,7 +128,7 @@ func (repo *BackendRepo) prepareWindowProjectionSnapshot(ctx context.Context, th
 }
 
 func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread string, wanted windowPreparationNeeds) error {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(ctx, thread)
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return err
@@ -266,7 +266,7 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 	update := func(write func(spi.WriteTx) error) error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
-		return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+		return repo.updateThreadRecords(ctx, thread, func(tx spi.WriteTx) error {
 			if _, err := verifyWindowPreparationOwner(ctx, tx, meta); err != nil {
 				return err
 			}

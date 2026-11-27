@@ -15,6 +15,16 @@ Floret owns tuple-key encoding, envelopes, indexes, and all domain
 interpretation. Implementations of `storage/spi` remain physical backends and
 must not be decoded into a second Agent model by hosts.
 
+`storage.ThreadSQLite` selects an independent-history environment at an absolute
+path in an existing directory. Its fixed file fences incompatible writers; the
+matching `.d` directory contains the catalog and private thread databases. One
+Host reads thread files through a bounded handle pool. Catalog and existing
+thread writes use one rollback-journal transaction. A fork publishes a newly
+prepared history at the canonical anchor, not a copy of the live source file.
+Neither a fence alone nor an active SQLite main file is an environment backup.
+The initial directory layout requires logical schema 20 and domain schema 43;
+monolithic formats are not runtime inputs of this constructor.
+
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6

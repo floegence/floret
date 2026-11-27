@@ -10,6 +10,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -80,6 +81,9 @@ func putPromptValue(tx spi.WriteTx, key []byte, kind string, value any) error {
 	encoded, err := storagecodec.EncodeEnvelope(kind, payload)
 	if err != nil {
 		return err
+	}
+	if bytes.Equal(key, promptSchemaKey) {
+		return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: promptRecordsNamespace, Key: key}, encoded)
 	}
 	return tx.Put(promptRecordsNamespace, key, encoded)
 }
@@ -181,39 +185,44 @@ func scanPromptRecords(tx spi.ReadTx, start, end []byte, visit func(spi.Record) 
 }
 
 func validatePromptRecordValue(record promptRecord) error {
-	var scope string
+	_, err := promptRecordAuthor(record)
+	return err
+}
+
+func promptRecordAuthor(record promptRecord) (string, error) {
+	var scope, thread string
 	switch record.Category {
 	case promptSegment:
 		var value cache.Segment
 		if err := decodePromptJSON(record.Value, &value); err != nil {
-			return err
+			return "", err
 		}
-		scope = value.PromptScopeID
+		scope, thread = value.PromptScopeID, value.ThreadID
 	case promptToolset:
 		var value cache.ToolsetSnapshot
 		if err := decodePromptJSON(record.Value, &value); err != nil {
-			return err
+			return "", err
 		}
-		scope = value.PromptScopeID
+		scope, thread = value.PromptScopeID, value.ThreadID
 	case promptRequest:
 		var value cache.ProviderRequestRecord
 		if err := decodePromptJSON(record.Value, &value); err != nil {
-			return err
+			return "", err
 		}
-		scope = value.PromptScopeID
+		scope, thread = value.PromptScopeID, value.ThreadID
 	case promptResponse:
 		var value cache.ProviderResponseRecord
 		if err := decodePromptJSON(record.Value, &value); err != nil {
-			return err
+			return "", err
 		}
-		scope = value.PromptScopeID
+		scope, thread = value.PromptScopeID, value.ThreadID
 	default:
-		return errors.New("unknown prompt record category")
+		return "", errors.New("unknown prompt record category")
 	}
 	if strings.TrimSpace(scope) == "" || scope != record.ScopeID {
-		return errors.New("prompt record scope identity mismatch")
+		return "", errors.New("prompt record scope identity mismatch")
 	}
-	return nil
+	return thread, nil
 }
 
 func verifyPromptRecords(tx spi.ReadTx) error {
@@ -276,7 +285,7 @@ func (kernel *BackendKernel) readPromptCategory(ctx context.Context, scope strin
 		return nil, err
 	}
 	var result promptBatch
-	err := kernel.promptBackend.View(ctx, func(tx spi.ReadTx) error {
+	err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
 		prefix := promptRecordPrefix(scope, category)
 		return scanPromptRecords(tx, prefix, prefixEnd(prefix), func(row spi.Record) error {
 			var record promptRecord

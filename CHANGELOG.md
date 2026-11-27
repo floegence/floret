@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v7.134.0
+
+- Introduce `storage.ThreadSQLite` for a single Host with a catalog and independent thread databases. This physical layout starts a new compatibility baseline and does not convert monolithic stores at startup.
 
 ## v7.133.2
 

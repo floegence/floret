@@ -1559,7 +1559,7 @@ func (repo *BackendRepo) ThreadPrepared(ctx context.Context, threadID string) (b
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	var ready bool
-	err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+	err := repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 		if err := readThreadMigrationFailure(tx, threadID); err != nil {
 			return err
 		}
@@ -1609,5 +1609,8 @@ func (repo *BackendRepo) ThreadPrepared(ctx context.Context, threadID string) (b
 		}
 		return nil
 	})
+	if errors.Is(err, ErrThreadNotFound) || errors.Is(err, ErrThreadDeleted) {
+		return false, nil
+	}
 	return ready, err
 }

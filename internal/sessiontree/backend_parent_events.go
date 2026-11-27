@@ -6,7 +6,9 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -189,7 +191,11 @@ func (repo *BackendRepo) ReportToParent(ctx context.Context, req ParentReportReq
 		if mutation.meta.ParentThreadID == "" {
 			return ErrInvalidParent
 		}
-		parent, err := readPublishedThreadMeta(mutation.tx, backendDomainV32Format, mutation.meta.ParentThreadID)
+		target, err := storagebridge.RelatedWriter(mutation.tx, identity.ThreadID(mutation.meta.ParentThreadID))
+		if err != nil {
+			return err
+		}
+		parent, err := readPublishedThreadMeta(target, backendDomainV32Format, mutation.meta.ParentThreadID)
 		if errors.Is(err, ErrThreadNotFound) {
 			return ErrInvalidParent
 		}
@@ -200,7 +206,7 @@ func (repo *BackendRepo) ReportToParent(ctx context.Context, req ParentReportReq
 			return err
 		}
 		id := "parent-event:" + StableHash(strings.Join([]string{inv.ThreadID, inv.TurnID, inv.RunID, inv.ToolCallID}, "\x00"))[:32]
-		if existing, err := readCanonicalEntryMetadata(mutation.tx, parent.ID, id); err == nil {
+		if existing, err := readCanonicalEntryMetadata(target, parent.ID, id); err == nil {
 			event, err := decodeParentEvent(existing)
 			if err != nil {
 				return err
@@ -236,7 +242,7 @@ func (repo *BackendRepo) ReportToParent(ctx context.Context, req ParentReportReq
 			return err
 		}
 		result = ParentEvent{ID: id, ParentThreadID: parent.ID, SourceThreadID: inv.ThreadID, SourceTurnID: inv.TurnID, SourceRunID: inv.RunID, SourceEntryID: effectAttemptEntryID(attempt.EffectAttemptID, attempt.State), Kind: "report", Message: req.Message, ReceivedAt: mutation.repo.now().UTC()}
-		appended, err := appendCanonicalParentEvent(ctx, mutation.tx, result)
+		appended, err := appendCanonicalParentEvent(ctx, target, result)
 		if appended {
 			mutation.parentID = parent.ID
 		}

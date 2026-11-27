@@ -34,7 +34,7 @@ func (repo *BackendRepo) canonicalThreadUpdate(ctx context.Context, threadID str
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err := repo.updateThreadRecords(ctx, threadID, func(tx spi.WriteTx) error {
 		meta, err := readPublishedThreadMeta(tx, repo.domainFormat(), threadID)
 		if err != nil {
 			return err

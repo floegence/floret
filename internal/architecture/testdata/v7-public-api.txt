@@ -2535,6 +2535,7 @@ field SQLiteSpaceUsage.FreePageCount int64 tag="json:\"free_page_count\""
 field SQLiteSpaceUsage.ReclaimableBytes int64 tag="json:\"reclaimable_bytes\""
 field SQLiteSpaceUsage.AutoVacuum string tag="json:\"auto_vacuum\""
 type Source struct
+func ThreadSQLite func(path string) github.com/floegence/floret/v7/storage.Source
 
 package github.com/floegence/floret/v7/storage/spi
 type Backend interface interface{Close() error; Update(context.Context, func(github.com/floegence/floret/v7/storage/spi.WriteTx) error) error; View(context.Context, func(github.com/floegence/floret/v7/storage/spi.ReadTx) error) error}

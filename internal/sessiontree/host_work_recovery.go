@@ -197,7 +197,7 @@ func (repo *BackendRepo) PendingHostWorks(ctx context.Context, thread string) ([
 }
 
 func (repo *BackendRepo) rebuildPendingWorkSources(ctx context.Context, thread string) ([]HostWork, error) {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(ctx, thread)
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return nil, err
@@ -241,7 +241,7 @@ func (repo *BackendRepo) rebuildPendingWorkSources(ctx context.Context, thread s
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	err = repo.backend.Update(ctx, func(write spi.WriteTx) error {
+	err = repo.updateThreadRecords(ctx, thread, func(write spi.WriteTx) error {
 		if err := reader.verify(write); err != nil {
 			return err
 		}

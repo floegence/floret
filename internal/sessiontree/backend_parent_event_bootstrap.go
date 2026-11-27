@@ -15,7 +15,8 @@ func canonicalPendingParentEvents(ctx context.Context, tx spi.ReadTx, meta Threa
 	if meta.ParentThreadID == "" {
 		return nil, nil
 	}
-	if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, meta.ParentThreadID); errors.Is(err, ErrThreadDeleted) {
+	parent := threadSnapshotRecords(tx, meta.ParentThreadID)
+	if _, err := readPublishedThreadMeta(parent, backendDomainV32Format, meta.ParentThreadID); errors.Is(err, ErrThreadDeleted) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -88,7 +89,7 @@ func canonicalPendingParentEvents(ctx context.Context, tx spi.ReadTx, meta Threa
 			if !found {
 				continue
 			}
-			if _, err := readCanonicalEntryMetadata(tx, event.ParentThreadID, event.ID); errors.Is(err, ErrEntryNotFound) {
+			if _, err := readCanonicalEntryMetadata(parent, event.ParentThreadID, event.ID); errors.Is(err, ErrEntryNotFound) {
 				result = append(result, event)
 				delete(pending, id)
 				if len(result) == limit {
@@ -143,7 +144,7 @@ func (repo *BackendRepo) BootstrapParentEvents(ctx context.Context) error {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		for {
-			reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+			reader := repo.threadSnapshot(ctx, record.ID)
 			changed, err := repo.prepareParentEvents(ctx, reader, record.ID)
 			if errors.Is(err, spi.ErrConflict) {
 				continue

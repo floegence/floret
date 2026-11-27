@@ -187,7 +187,7 @@ func (repo *BackendRepo) prepareActivityFields(ctx context.Context, thread, entr
 // The caller owns migrationGate. Historical field preparation uses private
 // bounded staging and publishes readiness only after every source check.
 func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread, entryID string, activeOnly bool) error {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: work, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(work, thread)
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return err
@@ -216,7 +216,7 @@ func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread
 	update := func(write func(spi.WriteTx) error) error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
-		return repo.backend.Update(work, func(tx spi.WriteTx) error {
+		return repo.updateThreadRecords(work, thread, func(tx spi.WriteTx) error {
 			// Immutable source identity survives normal appends. Validate current
 			// ancestry and the same body instead of requiring an unchanged tail.
 			meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread)

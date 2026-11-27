@@ -6,6 +6,8 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -27,7 +29,7 @@ func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canoni
 	}
 	var prepared bool
 	var count int
-	if err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+	if err := repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
 		if err := reader.verify(tx); err != nil {
 			return err
 		}
@@ -49,7 +51,9 @@ func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canoni
 		return false, err
 	}
 	if len(pending) == 0 {
-		return false, repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+		repo.mu.Lock()
+		defer repo.mu.Unlock()
+		return false, reader.update(repo, threadID, func(tx spi.WriteTx) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -75,12 +79,19 @@ func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canoni
 	err = func() error {
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
-		err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+		if err := reader.verifyPeers(); err != nil {
+			return err
+		}
+		err := storagebridge.UpdateRelatedThread(ctx, repo.backend, identity.ThreadID(threadID), identity.ThreadID(meta.ParentThreadID), func(tx spi.WriteTx) error {
 			if err := reader.verify(tx); err != nil {
 				return err
 			}
+			parent, err := storagebridge.RelatedWriter(tx, identity.ThreadID(meta.ParentThreadID))
+			if err != nil {
+				return err
+			}
 			for _, event := range pending {
-				appended, err := appendCanonicalParentEvent(ctx, tx, event)
+				appended, err := appendCanonicalParentEvent(ctx, parent, event)
 				if err != nil {
 					return err
 				}

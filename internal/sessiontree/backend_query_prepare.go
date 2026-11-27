@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -15,6 +16,62 @@ type canonicalSnapshotReader struct {
 	migrationSourceReader
 	format   backendDomainFormat
 	metadata map[string]migrationMetadataRead
+	repo     *BackendRepo
+	thread   string
+	peers    map[string]*canonicalSnapshotReader
+}
+
+type snapshotView func(context.Context, func(spi.ReadTx) error) error
+
+func (view snapshotView) View(ctx context.Context, read func(spi.ReadTx) error) error {
+	return view(ctx, read)
+}
+
+func (repo *BackendRepo) threadSnapshot(ctx context.Context, thread string) *canonicalSnapshotReader {
+	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+	if _, scoped := repo.backend.(interface {
+		ViewThreadRecords(context.Context, storagebridge.ThreadRead, func(spi.ReadTx) error) error
+	}); scoped {
+		reader.repo, reader.thread = repo, thread
+		reader.peers = map[string]*canonicalSnapshotReader{thread: reader}
+		reader.backend = snapshotView(func(ctx context.Context, read func(spi.ReadTx) error) error {
+			return repo.viewThreadRecords(ctx, thread, read)
+		})
+	}
+	return reader
+}
+
+func threadSnapshotRecords(tx spi.ReadTx, thread string) spi.ReadTx {
+	reader, ok := tx.(*canonicalSnapshotReader)
+	if !ok || reader.repo == nil {
+		return tx
+	}
+	if peer := reader.peers[thread]; peer != nil {
+		return peer
+	}
+	peer := reader.repo.threadSnapshot(reader.ctx, thread)
+	peer.peers = reader.peers
+	reader.peers[thread] = peer
+	return peer
+}
+
+func (reader *canonicalSnapshotReader) verifyPeers() error {
+	for id, peer := range reader.peers {
+		if id == reader.thread || len(peer.metadata) == 0 {
+			continue
+		}
+		if err := peer.backend.View(reader.ctx, peer.verify); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (reader *canonicalSnapshotReader) update(repo *BackendRepo, thread string, write func(spi.WriteTx) error) error {
+	if err := reader.verifyPeers(); err != nil {
+		return err
+	}
+	return repo.updateThreadRecords(reader.ctx, thread, write)
 }
 
 func (reader *canonicalSnapshotReader) Get(namespace string, key []byte) ([]byte, error) {
@@ -58,6 +115,9 @@ func (reader *canonicalSnapshotReader) validationError(err error) error {
 	if err == nil || reader.ctx.Err() != nil {
 		return err
 	}
+	if changed := reader.verifyPeers(); changed != nil {
+		return changed
+	}
 	if changed := reader.backend.View(reader.ctx, reader.verify); changed != nil {
 		return changed
 	}
@@ -68,7 +128,7 @@ func (reader *canonicalSnapshotReader) validationError(err error) error {
 // release the backend between pages; each metadata transaction writes a bounded
 // document batch. The manifest appears only after every batch commits.
 func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string) error {
-	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+	reader := repo.threadSnapshot(ctx, threadID)
 	if changed, err := repo.prepareParentEvents(ctx, reader, threadID); err != nil {
 		return err
 	} else if changed {
@@ -97,7 +157,7 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 			err = func() error {
 				repo.mu.Lock()
 				defer repo.mu.Unlock()
-				err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+				err := reader.update(repo, threadID, func(tx spi.WriteTx) error {
 					if err := reader.verify(tx); err != nil {
 						return err
 					}
@@ -126,7 +186,7 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 		flush := func() error {
 			repo.mu.Lock()
 			defer repo.mu.Unlock()
-			return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			return reader.update(repo, threadID, func(tx spi.WriteTx) error {
 				if err := reader.verify(tx); err != nil {
 					return err
 				}
@@ -164,11 +224,11 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	err = repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err = reader.update(repo, threadID, func(tx spi.WriteTx) error {
 		if err := reader.verify(tx); err != nil {
 			return err
 		}
-		if err := clearThreadMigrationFailure(tx, threadID); err != nil {
+		if err := clearThreadMigrationFailure(storagebridge.CatalogWriter(tx), threadID); err != nil {
 			return err
 		}
 		return putQueryManifest(tx, threadID, state.leaf)
@@ -244,7 +304,7 @@ func (repo *BackendRepo) prepareNextQueryThread(ctx context.Context) (bool, erro
 	} else if err == nil && repo.parentEventsEnabled() {
 		// Recovery is independent of index readiness: enabling parent events
 		// may need receipts even when both threads already have complete indexes.
-		reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+		reader := repo.threadSnapshot(ctx, record.ID)
 		var changed bool
 		changed, err = repo.prepareParentEvents(ctx, reader, record.ID)
 		if err == nil && changed {

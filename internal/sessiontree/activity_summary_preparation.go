@@ -45,7 +45,7 @@ func (repo *BackendRepo) prepareActivitySummariesOwned(ctx context.Context, read
 		repo.mu.Lock()
 		err := func() error {
 			defer repo.mu.Unlock()
-			return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			return repo.updateThreadRecords(ctx, meta.ID, func(tx spi.WriteTx) error {
 				if _, err := verifyWindowPreparationOwner(ctx, tx, meta); err != nil {
 					return err
 				}

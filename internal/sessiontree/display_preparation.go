@@ -68,7 +68,7 @@ func (repo *BackendRepo) prepareDisplaySourcesOwned(ctx context.Context, thread 
 	for {
 		var entries []Entry
 		var through, count int
-		err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		err := repo.viewThreadRecords(ctx, thread, func(tx spi.ReadTx) error {
 			if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread); err != nil {
 				return err
 			}
@@ -126,7 +126,7 @@ func (repo *BackendRepo) prepareDisplaySourcesOwned(ctx context.Context, thread 
 			}
 			if ref := entry.bodyFields["activity_json"]; ref.Bytes > 0 {
 				ready := false
-				if err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+				if err := repo.viewThreadRecords(ctx, thread, func(tx spi.ReadTx) error {
 					_, err := readActivityFieldNode(tx, ref, "")
 					if errors.Is(err, spi.ErrNotFound) {
 						return nil
@@ -150,7 +150,7 @@ func (repo *BackendRepo) prepareDisplaySourcesOwned(ctx context.Context, thread 
 		err = func() error {
 			repo.mu.Lock()
 			defer repo.mu.Unlock()
-			return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+			return repo.updateThreadRecords(ctx, thread, func(tx spi.WriteTx) error {
 				if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread); err != nil {
 					return err
 				}
@@ -199,7 +199,7 @@ func (repo *BackendRepo) DisplayPrepared(ctx context.Context, thread string) (bo
 		return false, nil
 	}
 	ready := false
-	err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+	err := repo.viewThreadRecords(ctx, thread, func(tx spi.ReadTx) error {
 		meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread)
 		if errors.Is(err, ErrThreadNotFound) || errors.Is(err, ErrThreadDeleted) {
 			return nil
@@ -245,6 +245,9 @@ func (repo *BackendRepo) DisplayPrepared(ctx context.Context, thread string) (bo
 		ready = sparse.Queue == 0 || found && queue.Events == sparse.Queue
 		return nil
 	})
+	if errors.Is(err, ErrThreadNotFound) || errors.Is(err, ErrThreadDeleted) {
+		return false, nil
+	}
 	return ready, err
 }
 
@@ -302,7 +305,7 @@ func (repo *BackendRepo) prepareDisplayThreadOwned(ctx context.Context, thread s
 	}
 	for {
 		var source string
-		err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		err := repo.viewThreadRecords(ctx, thread, func(tx spi.ReadTx) error {
 			meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, thread)
 			if err != nil {
 				return err
@@ -324,7 +327,7 @@ func (repo *BackendRepo) prepareDisplayThreadOwned(ctx context.Context, thread s
 		return err
 	}
 	ready := false
-	if err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
+	if err := repo.viewThreadRecords(ctx, thread, func(tx spi.ReadTx) error {
 		coverage, err := readSparseCoverage(tx, thread)
 		if err != nil {
 			return err

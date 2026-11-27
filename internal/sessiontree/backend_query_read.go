@@ -139,31 +139,42 @@ func canonicalQueryReadParts(ctx context.Context, tx spi.ReadTx, record *queryRe
 	return queryReadParts(record, source)
 }
 
-func (repo *BackendRepo) canonicalQuerySession(ctx context.Context, tx spi.ReadTx) *querySession {
+type queryOwnerView func(string, func(spi.ReadTx) error) error
+
+func queryOwnerRead[V any](view queryOwnerView, thread string, read func(spi.ReadTx) (V, error)) (value V, err error) {
+	err = view(thread, func(tx spi.ReadTx) error { var readErr error; value, readErr = read(tx); return readErr })
+	return
+}
+
+func (repo *BackendRepo) canonicalQuerySession(ctx context.Context, view queryOwnerView) *querySession {
 	if repo.threadQuerySnapshots == nil {
 		repo.threadQuerySnapshots = &querySnapshots{snapshots: map[string]*querySnapshot{}}
 	}
 	return &querySession{now: repo.now, querySnapshots: repo.threadQuerySnapshots,
 		readDirect: func(rec *queryRecord, field string, in threadquery.ContentRange) (threadquery.ContentPage, error) {
-			return readQueryBodyRange(ctx, tx, rec, field, in)
+			return queryOwnerRead(view, rec.row.ThreadID.String(), func(tx spi.ReadTx) (threadquery.ContentPage, error) {
+				return readQueryBodyRange(ctx, tx, rec, field, in)
+			})
 		},
 		lookupContent: func(thread, key string) (*queryRecord, error) {
-			return canonicalQueryRecordForAppend(ctx, tx, thread, key)
+			return queryOwnerRead(view, thread, func(tx spi.ReadTx) (*queryRecord, error) { return canonicalQueryRecordForAppend(ctx, tx, thread, key) })
 		},
 		selectRecords: func(ctx context.Context, authorized map[string]bool, object threadquery.Object, filter threadquery.Filter) ([]*queryRecord, error) {
-			ids := make([]string, 0, len(authorized))
+			var documents []queryStoredDocument
 			for id := range authorized {
 				if len(filter.ThreadIDs) > 0 && !queryThreadSelected(filter.ThreadIDs, id) {
 					continue
 				}
-				ids = append(ids, id)
-			}
-			documents, err := queryMetadataReader(tx).listDocuments(queryMetadataSelection{ThreadIDs: ids, Object: string(object)})
-			if err != nil {
-				return nil, err
+				selected, err := queryOwnerRead(view, id, func(tx spi.ReadTx) ([]queryStoredDocument, error) {
+					return queryMetadataReader(tx).listDocuments(queryMetadataSelection{ThreadIDs: []string{id}, Object: string(object)})
+				})
+				if err != nil {
+					return nil, err
+				}
+				documents = append(documents, selected...)
 			}
 			return selectQueryCandidates(ctx, documents, authorized, object, filter, repo.threadQuerySnapshots, func(document queryStoredDocument) (*queryRecord, error) {
-				return materializeCanonicalQueryDocument(ctx, tx, document)
+				return queryOwnerRead(view, document.ThreadID, func(tx spi.ReadTx) (*queryRecord, error) { return materializeCanonicalQueryDocument(ctx, tx, document) })
 			})
 		},
 		queryRecordContent: func(record *queryRecord) (*queryRecord, error) {
@@ -174,8 +185,10 @@ func (repo *BackendRepo) canonicalQuerySession(ctx context.Context, tx spi.ReadT
 			if err != nil {
 				return nil, err
 			}
-			return materializeCanonicalQueryDocument(ctx, tx, document)
+			return queryOwnerRead(view, document.ThreadID, func(tx spi.ReadTx) (*queryRecord, error) { return materializeCanonicalQueryDocument(ctx, tx, document) })
 		},
-		readParts: func(record *queryRecord) ([]queryPart, error) { return canonicalQueryReadParts(ctx, tx, record) },
+		readParts: func(record *queryRecord) ([]queryPart, error) {
+			return queryOwnerRead(view, record.row.ThreadID.String(), func(tx spi.ReadTx) ([]queryPart, error) { return canonicalQueryReadParts(ctx, tx, record) })
+		},
 	}
 }

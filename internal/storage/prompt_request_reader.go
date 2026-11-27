@@ -29,7 +29,7 @@ func (kernel *BackendKernel) LatestProviderRequest(ctx context.Context, scope st
 	}
 	var result cache.ProviderRequestRecord
 	found := false
-	err := kernel.promptBackend.View(ctx, func(tx spi.ReadTx) error {
+	err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
 		counters, err := readPromptCounters(tx, scope)
 		if err != nil {
 			return err

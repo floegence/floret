@@ -200,7 +200,7 @@ func updatePromptLookup(tx spi.WriteTx, record promptRecord) error {
 func (kernel *BackendKernel) preparePromptLookupPage(ctx context.Context, scope string, category int) error {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	return kernel.promptBackend.Update(ctx, func(tx spi.WriteTx) error {
+	return kernel.updatePrompt(ctx, scope, func(tx spi.WriteTx) error {
 		counter, err := readPromptCounters(tx, scope)
 		if err != nil {
 			return err
@@ -258,7 +258,7 @@ func (kernel *BackendKernel) withPromptLookup(ctx context.Context, scope string,
 		kernel.promptMu.Lock()
 		err := func() error {
 			defer kernel.promptMu.Unlock()
-			return kernel.promptBackend.View(ctx, func(tx spi.ReadTx) error {
+			return kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
 				counters, err := readPromptCounters(tx, scope)
 				if err != nil {
 					return err

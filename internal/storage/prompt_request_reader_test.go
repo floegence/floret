@@ -146,3 +146,42 @@ func TestLatestRequestRejectsMissingOrMismatchedAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestDeleteWithRequestClearsOnlyDeletedThreadPrompts(t *testing.T) {
+	ctx := t.Context()
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	kernel, err := NewBackendKernel(ctx, backend, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range []string{"thread", "thread-extra"} {
+		if _, err := kernel.CreateThread(ctx, sessiontree.ThreadMeta{ID: thread}); err != nil {
+			t.Fatal(err)
+		}
+		if err := kernel.CheckpointProviderRequest(ctx, nil, nil, cache.ProviderRequestRecord{ID: "saved", PromptScopeID: thread, ThreadID: thread}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := kernel.DeleteRootTreeWithRequest(ctx, "thread", " ", "fingerprint"); err == nil {
+		t.Fatal("accepted blank request key")
+	}
+	for _, replay := range []bool{false, true} {
+		result, err := kernel.DeleteRootTreeWithRequest(ctx, "thread", "delete", "fingerprint")
+		if err != nil || result.Replayed != replay {
+			t.Fatalf("delete replay=%t: %v", result.Replayed, err)
+		}
+		if _, found, err := kernel.LatestProviderRequest(ctx, "thread"); err != nil || found {
+			t.Fatalf("deleted request remains: found=%t err=%v", found, err)
+		}
+		if _, found, err := kernel.LatestProviderRequest(ctx, "thread-extra"); err != nil || !found {
+			t.Fatalf("sibling request lost: found=%t err=%v", found, err)
+		}
+	}
+	if _, err := kernel.DeleteRootTreeWithRequest(ctx, "thread", "delete", "changed"); !errors.Is(err, sessiontree.ErrRequestConflict) {
+		t.Fatalf("unexpected conflicting replay: %v", err)
+	}
+}

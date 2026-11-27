@@ -1,4 +1,4 @@
-package storage
+package sqliterecords
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func (tx *sqliteTx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]byte, error) {
+func (tx *Tx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]byte, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if err := tx.usable(); err != nil {
@@ -27,17 +27,17 @@ func (tx *sqliteTx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]by
 		positions[string(key)] = append(positions[string(key)], i)
 		arguments = append(arguments, key)
 	}
-	query := "SELECT key, value FROM floret_backend_records WHERE namespace = ? AND key IN (" + strings.TrimSuffix(strings.Repeat("?,", len(request.Keys)), ",") + ")"
+	query := "SELECT key, value FROM " + tx.table + " WHERE namespace = ? AND key IN (" + strings.TrimSuffix(strings.Repeat("?,", len(request.Keys)), ",") + ")"
 	rows, err := tx.tx.QueryContext(tx.ctx, query, arguments...)
 	if err != nil {
-		return nil, classifySQLiteError(tx.ctx, err)
+		return nil, ClassifyError(tx.ctx, err)
 	}
 	defer rows.Close()
 	result := make([][]byte, len(request.Keys))
 	for rows.Next() {
 		var key, value []byte
 		if err := rows.Scan(&key, &value); err != nil {
-			return nil, classifySQLiteError(tx.ctx, err)
+			return nil, ClassifyError(tx.ctx, err)
 		}
 		indices, found := positions[string(key)]
 		if !found {
@@ -53,7 +53,7 @@ func (tx *sqliteTx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]by
 		delete(positions, string(key))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, classifySQLiteError(tx.ctx, err)
+		return nil, ClassifyError(tx.ctx, err)
 	}
 	if len(positions) > 0 {
 		return nil, spi.ErrNotFound
@@ -63,7 +63,7 @@ func (tx *sqliteTx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]by
 
 // Coalesce a bounded write set without committing or changing the durability
 // of the surrounding transaction. Duplicate keys retain ordered Put semantics.
-func (tx *sqliteTx) WriteFloretRecords(namespace string, records []spi.Record) error {
+func (tx *Tx) WriteFloretRecords(namespace string, records []spi.Record) error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if err := tx.usable(); err != nil {
@@ -79,7 +79,7 @@ func (tx *sqliteTx) WriteFloretRecords(namespace string, records []spi.Record) e
 		}
 		arguments = append(arguments, namespace, bytes.Clone(record.Key), bytes.Clone(record.Value))
 	}
-	query := "INSERT INTO floret_backend_records(namespace, key, value) VALUES " + strings.TrimSuffix(strings.Repeat("(?,?,?),", len(records)), ",") + " ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value WHERE floret_backend_records.value IS NOT excluded.value"
+	query := "INSERT INTO " + tx.table + "(namespace, key, value) VALUES " + strings.TrimSuffix(strings.Repeat("(?,?,?),", len(records)), ",") + " ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value WHERE floret_backend_records.value IS NOT excluded.value"
 	_, err := tx.tx.ExecContext(tx.ctx, query, arguments...)
-	return classifySQLiteError(tx.ctx, err)
+	return ClassifyError(tx.ctx, err)
 }

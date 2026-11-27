@@ -6,8 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -227,7 +229,7 @@ func (kernel *BackendKernel) Checkpoint(ctx context.Context) error {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
 	scopes := kernel.pendingScopes()
-	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error { return kernel.flushPrompt(tx, scopes...) })
+	err := kernel.checkpointScopes(ctx, scopes, nil, func(tx spi.WriteTx) error { return kernel.flushPrompt(tx, scopes...) })
 	if err == nil {
 		kernel.clearPending(scopes...)
 	}
@@ -334,7 +336,7 @@ func (kernel *BackendKernel) CheckpointProviderRequest(ctx context.Context, segm
 			scopes = append(scopes, record.ScopeID)
 		}
 	}
-	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
+	err := kernel.checkpointScopes(ctx, scopes, &request, func(tx spi.WriteTx) error {
 		var batch promptBatch
 		for _, scope := range scopes {
 			batch = append(batch, kernel.pending[scope]...)
@@ -348,10 +350,30 @@ func (kernel *BackendKernel) CheckpointProviderRequest(ctx context.Context, segm
 	return err
 }
 
+func (kernel *BackendKernel) checkpointScopes(ctx context.Context, scopes []string, request *cache.ProviderRequestRecord, write func(spi.WriteTx) error) error {
+	destinations := make([]storagebridge.PromptDestination, 0, len(scopes))
+	for _, scope := range scopes {
+		destination := storagebridge.PromptDestination{Scope: scope}
+		if request != nil && scope == request.PromptScopeID {
+			destination.Author = identity.ThreadID(request.ThreadID)
+		}
+		destinations = append(destinations, destination)
+	}
+	return kernel.CheckpointPromptRecords(ctx, destinations, write)
+}
+
+func (kernel *BackendKernel) viewPrompt(ctx context.Context, scope string, read func(spi.ReadTx) error) error {
+	return storagebridge.ViewPrompt(ctx, kernel.promptBackend, scope, read)
+}
+
+func (kernel *BackendKernel) updatePrompt(ctx context.Context, scope string, write func(spi.WriteTx) error) error {
+	return storagebridge.UpdatePrompt(ctx, kernel.promptBackend, []storagebridge.PromptDestination{{Scope: scope}}, write)
+}
+
 func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopes ...string) error {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
+	err := kernel.checkpointScopes(ctx, scopes, nil, func(tx spi.WriteTx) error {
 		for _, scope := range scopes {
 			if err := deletePromptScope(tx, scope); err != nil {
 				return err
@@ -366,10 +388,21 @@ func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopes ...s
 	return err
 }
 
-func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, root string) (result sessiontree.DeleteRootTreeResult, err error) {
+func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, root string) (sessiontree.DeleteRootTreeResult, error) {
+	return kernel.deleteRootTree(ctx, root, "", "")
+}
+
+func (kernel *BackendKernel) DeleteRootTreeWithRequest(ctx context.Context, root, requestKey, fingerprint string) (sessiontree.DeleteRootTreeResult, error) {
+	if err := sessiontree.ValidateDeleteRequest(requestKey, fingerprint); err != nil {
+		return sessiontree.DeleteRootTreeResult{}, err
+	}
+	return kernel.deleteRootTree(ctx, root, requestKey, fingerprint)
+}
+
+func (kernel *BackendKernel) deleteRootTree(ctx context.Context, root, requestKey, fingerprint string) (result sessiontree.DeleteRootTreeResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	result, err = kernel.BackendRepo.DeleteRootTreeInTransaction(ctx, root, "", "", func(tx spi.WriteTx, threadIDs []string) error {
+	result, err = kernel.BackendRepo.DeleteRootTreeInTransaction(ctx, root, requestKey, fingerprint, func(tx spi.WriteTx, threadIDs []string) error {
 		for _, scope := range threadIDs {
 			if err := deletePromptScope(tx, scope); err != nil {
 				return err

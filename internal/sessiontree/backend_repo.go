@@ -962,6 +962,10 @@ func (repo *BackendRepo) Checkpoint(ctx context.Context) error {
 // CheckpointDomain commits additional durable records after all preceding
 // session-tree record mutations.
 func (repo *BackendRepo) CheckpointDomain(ctx context.Context, checkpoint func(spi.WriteTx) error) error {
+	return repo.CheckpointPromptRecords(ctx, nil, checkpoint)
+}
+
+func (repo *BackendRepo) CheckpointPromptRecords(ctx context.Context, destinations []storagebridge.PromptDestination, checkpoint func(spi.WriteTx) error) error {
 	if repo == nil {
 		return errors.New("backend repository is required")
 	}
@@ -974,14 +978,14 @@ func (repo *BackendRepo) CheckpointDomain(ctx context.Context, checkpoint func(s
 		}
 	}
 	if delegate := repo.delegate.Load(); delegate != nil {
-		return delegate.CheckpointDomain(ctx, checkpoint)
+		return delegate.CheckpointPromptRecords(ctx, destinations, checkpoint)
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	if repo.domainMemory == nil && !repo.threadScoped {
 		return errors.New("session-tree state is missing")
 	}
-	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+	err := storagebridge.UpdatePrompt(ctx, repo.backend, destinations, func(tx spi.WriteTx) error {
 		if checkpoint != nil {
 			return checkpoint(tx)
 		}
