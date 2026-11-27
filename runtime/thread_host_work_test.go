@@ -75,7 +75,7 @@ func TestHostWorkCompletionAndRestartUnknown(t *testing.T) {
 			path := t.TempDir() + "/state.db"
 			writeFailure := errors.New("host-work cancellation write failed")
 			open := func() *Host {
-				h, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+				h, err := Open(t.Context(), Options{Storage: storage.ThreadSQLite(path)})
 				if err != nil {
 					t.Fatal(err)
 				}

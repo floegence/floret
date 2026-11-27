@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -70,11 +71,8 @@ func (repo *BackendRepo) ReadArtifact(ctx context.Context, req ArtifactReadReque
 		return ArtifactContent{}, errors.New("artifact read requires thread and artifact identities")
 	}
 	var result ArtifactContent
-	err := repo.canonicalArtifactView(ctx, threadID, strings.TrimSpace(req.ParentThreadID), func(tx spi.ReadTx) error {
+	err := repo.canonicalArtifactView(ctx, threadID, strings.TrimSpace(req.ParentThreadID), true, func(tx spi.ReadTx) error {
 		reader := canonicalArtifactReader(ctx, tx)
-		if err := reader.validateArtifactReadAuthorityLocked(req.ParentThreadID, threadID); err != nil {
-			return err
-		}
 		record, found, err := reader.record(threadID, artifactID)
 		if err != nil {
 			return err
@@ -99,7 +97,7 @@ func (repo *BackendRepo) ReadArtifact(ctx context.Context, req ArtifactReadReque
 
 // Authorization may intentionally distinguish missing parents, deleted children,
 // and unrelated tombstones. Let the shared reader classify them in one snapshot.
-func (repo *BackendRepo) canonicalArtifactView(ctx context.Context, threadID, parentID string, read func(spi.ReadTx) error, legacy func(*MemoryRepo) error) error {
+func (repo *BackendRepo) canonicalArtifactView(ctx context.Context, threadID, parentID string, authorize bool, read func(spi.ReadTx) error, legacy func(*MemoryRepo) error) error {
 	if repo == nil || ctx == nil {
 		return spi.ErrInvalidArgument
 	}
@@ -109,7 +107,7 @@ func (repo *BackendRepo) canonicalArtifactView(ctx context.Context, threadID, pa
 		}
 	}
 	if delegate := repo.delegate.Load(); delegate != nil {
-		return delegate.canonicalArtifactView(ctx, threadID, parentID, read, legacy)
+		return delegate.canonicalArtifactView(ctx, threadID, parentID, authorize, read, legacy)
 	}
 	if repo.domainFormat().version < backendDomainV32Version {
 		return repo.view(ctx, legacy)
@@ -122,7 +120,28 @@ func (repo *BackendRepo) canonicalArtifactView(ctx context.Context, threadID, pa
 			return err
 		}
 	}
-	return repo.backend.View(ctx, read)
+	check := func(tx spi.ReadTx) error {
+		if !authorize {
+			return nil
+		}
+		return canonicalArtifactReader(ctx, tx).validateArtifactReadAuthorityLocked(parentID, threadID)
+	}
+	if _, scoped := repo.backend.(interface {
+		ViewThreadRecords(context.Context, storagebridge.ThreadRead, func(spi.ReadTx) error) error
+	}); scoped {
+		if authorize {
+			if err := repo.backend.View(ctx, check); err != nil {
+				return err
+			}
+		}
+		return repo.viewThreadRecords(ctx, threadID, read)
+	}
+	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		if err := check(tx); err != nil {
+			return err
+		}
+		return read(tx)
+	})
 }
 
 func (repo *BackendRepo) ArtifactClosure(ctx context.Context, req ArtifactClosureRequest) (artifact.Closure, error) {
@@ -161,7 +180,7 @@ func (repo *BackendRepo) ValidateArtifactForkDestination(ctx context.Context, cl
 	if err := artifact.ValidateClosure(closure); err != nil {
 		return ErrAuthorityCorrupt
 	}
-	return repo.canonicalArtifactView(ctx, closure.DestinationThreadID, "", func(tx spi.ReadTx) error {
+	return repo.canonicalArtifactView(ctx, closure.DestinationThreadID, "", false, func(tx spi.ReadTx) error {
 		return canonicalArtifactReader(ctx, tx).validateArtifactForkDestinationLocked(closure)
 	}, func(memory *MemoryRepo) error { return memory.ValidateArtifactForkDestination(ctx, closure) })
 }

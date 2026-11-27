@@ -59,11 +59,8 @@ func (repo *BackendRepo) ReadArtifactPage(ctx context.Context, req ArtifactPageR
 	if req.Offset < 0 || req.MaxBytes < utf8.UTFMax || req.MaxBytes > OutputSourceChunkBytes {
 		return result, spi.ErrInvalidArgument
 	}
-	err := repo.canonicalArtifactView(ctx, req.ThreadID, req.ParentThreadID, func(tx spi.ReadTx) error {
+	err := repo.canonicalArtifactView(ctx, req.ThreadID, req.ParentThreadID, true, func(tx spi.ReadTx) error {
 		reader := canonicalArtifactReader(ctx, tx)
-		if err := reader.validateArtifactReadAuthorityLocked(req.ParentThreadID, req.ThreadID); err != nil {
-			return err
-		}
 		key := artifactRecordKey(req.ThreadID, req.ArtifactID)
 		raw, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0)
 		if err != nil {

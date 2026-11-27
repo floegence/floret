@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.134.1
+
+- Read sealed artifacts and their pages from the owning thread file after checking catalog ancestry. The on-disk format is unchanged.
+
 ## v7.134.0
 
 - Introduce `storage.ThreadSQLite` for a single Host with a catalog and independent thread databases. This physical layout starts a new compatibility baseline and does not convert monolithic stores at startup.
