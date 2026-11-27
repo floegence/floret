@@ -2091,6 +2091,7 @@ const ThreadTurnFailureControlError github.com/floegence/floret/v7/runtime.Threa
 const ThreadTurnFailureDuplicateToolCallID github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "duplicate_tool_call_id"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "engine_contract"
+const ThreadTurnFailureFinalResponseOwnership github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "final_response_ownership"
 type ThreadTurnFailureInput struct
 field ThreadTurnFailureInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadTurnFailureInput.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""

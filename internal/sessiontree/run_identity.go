@@ -1,17 +1,37 @@
 package sessiontree
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/floegence/floret/v7/identity"
 )
+
+var ErrFinalResponseOwnership = errors.New("final response is outside its canonical turn")
+
+// ExecutionRun identifies facts of an executing turn. Out-of-band events
+// retain their source run, which need not be the current execution.
+func (entry Entry) ExecutionRun() string {
+	switch entry.Type {
+	case EntryTurnMarker, EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult,
+		EntryInteractionAsked, EntryInteractionDone, EntryRunFailure, EntryModelContext,
+		EntryCompaction, EntryHostWorkAdmitted, EntryParentEventsAdmitted, EntryGoalContext:
+	case EntryCancelRequested:
+		if entry.ID == HostWorkStopEntryID(entry.TurnID) {
+			return ""
+		}
+	default:
+		return ""
+	}
+	return strings.TrimSpace(entry.RunID)
+}
 
 // CurrentRunID follows explicit canonical entries, including continuation runs
 // that do not introduce another started marker.
 func CurrentRunID(path []Entry, turnID string) (string, error) {
 	for index := len(path) - 1; index >= 0; index-- {
 		entry := path[index]
-		if entry.Type == EntryCustom || entry.TurnID != turnID || strings.TrimSpace(entry.RunID) == "" {
+		if entry.TurnID != turnID || entry.ExecutionRun() == "" {
 			continue
 		}
 		if _, err := identity.ParseRunID(entry.RunID); err != nil {

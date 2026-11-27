@@ -2067,7 +2067,7 @@ func newTurnProjectionContractErrorf(format string, args ...any) error {
 
 func turnProjectionFailureOrigin(err error) engine.FailureOrigin {
 	var contractFailure *turnProjectionContractError
-	if errors.As(err, &contractFailure) {
+	if errors.As(err, &contractFailure) || errors.Is(err, sessiontree.ErrFinalResponseOwnership) {
 		return engine.FailureOriginContract
 	}
 	return engine.FailureOriginStorage

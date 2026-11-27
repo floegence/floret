@@ -63,9 +63,7 @@ func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemFor
 		return nil
 	}
 	facts.lifecycle.Observe(entry)
-	if entry.Type != sessiontree.EntryCustom && strings.TrimSpace(entry.RunID) != "" {
-		facts.turn.RunID = identity.RunID(strings.TrimSpace(entry.RunID))
-	}
+	facts.turn.RunID = projection.lifecycle.turns[entry.TurnID].runID
 	at, err := sessiontree.EntryOccurrenceTime(entry)
 	if err != nil {
 		return runtimeHostError(err)
@@ -153,8 +151,8 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 			var lastOrdinal uint64
 			for _, ref := range refs {
 				item, found := itemForEntry(ref)
-				if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant || !threadItemHasText(item) || item.Ordinal < lastOrdinal {
-					facts.finalErr = fmt.Errorf("%w: final response is outside its canonical turn", ErrAuthorityCorrupt)
+				if !found || item.TurnID != turn.TurnID || item.RunID.String() != facts.terminal.RunID || item.Kind != ThreadItemAssistant || !threadItemHasText(item) || item.Ordinal < lastOrdinal {
+					facts.finalErr = fmt.Errorf("%w: %w", ErrAuthorityCorrupt, sessiontree.ErrFinalResponseOwnership)
 					break
 				}
 				if !seen[item.ID] {

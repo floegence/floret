@@ -160,7 +160,7 @@ func observeWindowSources(ctx context.Context, tx spi.ReadTx, stored *storedWind
 		if strings.TrimSpace(entry.Metadata[TurnFailureCodeMetadataKey]) != "" {
 			turn.FailureCode = entry.ID
 		}
-		if entry.Type != EntryCustom && strings.TrimSpace(entry.RunID) != "" {
+		if entry.ExecutionRun() != "" {
 			turn.Identity = entry.ID
 		}
 		if windowResponseBoundary(entry) {
@@ -421,13 +421,13 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 			return WindowSources{}, err
 		}
 		if turn.Identity != "" {
-			source, err := activeLocatedEntry(ctx, tx, meta, turn.Identity)
-			if err != nil || source.TurnID != id || source.Type == EntryCustom || strings.TrimSpace(source.RunID) == "" {
-				return WindowSources{}, errors.Join(ErrAuthorityCorrupt, err)
+			source, err := windowExecutionSource(ctx, tx, meta, id, turn)
+			if err != nil {
+				return WindowSources{}, err
 			}
-		}
-		if err := add(turn.Identity); err != nil {
-			return WindowSources{}, err
+			if err := add(source.ID); err != nil {
+				return WindowSources{}, err
+			}
 		}
 		for run, sourceID := range turn.Boundaries {
 			source, err := activeLocatedEntry(ctx, tx, meta, sourceID)
@@ -440,6 +440,47 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 		}
 	}
 	return result, nil
+}
+
+// Released window locators could point to a receipt. Recover the execution
+// source on the same frozen path without rewriting the journal or the index.
+func windowExecutionSource(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, id string, turn storedWindowTurnSources) (Entry, error) {
+	source, err := activeLocatedEntry(ctx, tx, meta, turn.Identity)
+	if err != nil || source.TurnID != id || source.Type == EntryCustom || strings.TrimSpace(source.RunID) == "" {
+		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if source.ExecutionRun() != "" {
+		return source, nil
+	}
+	if turn.Terminal != "" {
+		marker, err := activeLocatedEntry(ctx, tx, meta, turn.Terminal)
+		if err != nil || marker.Type != EntryTurnMarker || marker.TurnID != id || marker.ExecutionRun() == "" {
+			return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		switch marker.TurnStatus {
+		case TurnCompleted, TurnFailed, TurnAborted:
+			if marker.PathDepth < source.PathDepth {
+				return marker, nil
+			}
+		case TurnWaiting:
+		default:
+			return Entry{}, ErrAuthorityCorrupt
+		}
+	}
+	for source.ParentID != "" {
+		if err := ctx.Err(); err != nil {
+			return Entry{}, err
+		}
+		parent, err := readCanonicalEntryMetadata(tx, meta.ID, source.ParentID)
+		if err != nil || parent.PathDepth+1 != source.PathDepth {
+			return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if parent.TurnID == id && parent.ExecutionRun() != "" {
+			return parent, nil
+		}
+		source = parent
+	}
+	return Entry{}, ErrAuthorityCorrupt
 }
 
 func validateWindowCompactionSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, stored storedWindowSources) error {

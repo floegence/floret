@@ -999,6 +999,7 @@ func (c ThreadTurnFailureCode) Valid() bool {
 type ThreadTurnFailureReason string
 
 const (
+	ThreadTurnFailureFinalResponseOwnership          ThreadTurnFailureReason = "final_response_ownership"
 	ThreadTurnFailureRepeatedToolCalls               ThreadTurnFailureReason = "repeated_tool_calls"
 	ThreadTurnFailureNoProgress                      ThreadTurnFailureReason = "no_progress"
 	ThreadTurnFailureDuplicateToolCallID             ThreadTurnFailureReason = "duplicate_tool_call_id"

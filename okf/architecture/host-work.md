@@ -44,6 +44,11 @@ turn's final response. Same-turn omissions, ordinary foreign execution entries,
 invalid settlement facts and broken ancestry remain errors. Current-store reads
 and restart need no record rewrite or schema migration.
 
+The source run of a passive receipt is not execution authority. In a multi-run
+turn the terminal marker owns the final reply. Full, incremental and window
+reads retain that owner after a late receipt from an earlier execution. An
+actual mismatched reply still fails with a typed final-response ownership reason.
+
 # Shutdown and uncertain effects
 
 `Host.SuspendExecution` rejects new executions, provider dispatch and local tool

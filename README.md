@@ -1174,6 +1174,10 @@ canonical code and exact fixed Engine reason, including historical reads and
 restart. Unknown failures have no guessed reason. No durable schema changes are
 required; codes, retry savepoints and unknown-effect restrictions stay intact.
 
+`ThreadTurnFailureFinalResponseOwnership` distinguishes an unverifiable final reply
+from storage I/O for both current and released failure records. A passive work
+receipt updates its invocation, never the run that completed the turn.
+
 `ThreadService.Subscribe` publishes workspace summary and current-view updates;
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle

@@ -4,10 +4,15 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/tools"
 )
 
 func classifyThreadTurnFailureReason(code ThreadTurnFailureCode, message string) ThreadTurnFailureReason {
+	// Released projection failures used storage before the contract error was typed.
+	if (code == ThreadTurnFailureStorage || code == ThreadTurnFailureEngineContract) && message == ErrAuthorityCorrupt.Error()+": "+sessiontree.ErrFinalResponseOwnership.Error() {
+		return ThreadTurnFailureFinalResponseOwnership
+	}
 	if code == ThreadTurnFailureProvider && message == engine.ErrDuplicateToolCallID.Error() {
 		return ThreadTurnFailureDuplicateToolCallID
 	}

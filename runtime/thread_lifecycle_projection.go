@@ -38,7 +38,7 @@ func (projection *threadLifecycleProjection) observe(entry sessiontree.Entry) {
 		facts = &threadLifecycleFacts{}
 		projection.turns[entry.TurnID] = facts
 	}
-	if value := strings.TrimSpace(entry.RunID); entry.Type != sessiontree.EntryCustom && value != "" {
+	if value := entry.ExecutionRun(); value != "" {
 		facts.runID = identity.RunID(value)
 	}
 	if entry.Type == sessiontree.EntryRunFailure {

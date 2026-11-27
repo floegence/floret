@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.131.0
+
+- Preserve the executing and completing run when earlier host work settles. Validate final replies against the terminal marker. Expose `ThreadTurnFailureFinalResponseOwnership` for current and released diagnostics without rewriting history.
+
 ## v7.130.0
 
 - Add optional `runtime.ThreadForkOriginReader` for recovering the immutable origin of a known destination. Replaying a deleted Fork now reports the public `ErrThreadDeleted`, as does `LookupFork`.

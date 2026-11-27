@@ -101,9 +101,9 @@ func readSummaryProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, 
 			}
 		}
 		if turn.Identity != "" {
-			entry, err := activeLocatedEntry(ctx, tx, meta, turn.Identity)
-			if err != nil || entry.TurnID != latest.TurnID || entry.Type == EntryCustom || strings.TrimSpace(entry.RunID) == "" {
-				return WindowProjection{}, errors.Join(ErrAuthorityCorrupt, err)
+			entry, err := windowExecutionSource(ctx, tx, meta, latest.TurnID, turn)
+			if err != nil {
+				return WindowProjection{}, err
 			}
 			// Identity may itself be an interaction. Include its exact control
 			// group below even when the stored pending set no longer contains it.

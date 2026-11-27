@@ -124,6 +124,23 @@ func TestCanonicalTurnReadsAcrossEarlierHostWorkSettlement(t *testing.T) {
 				verify(fmt.Sprintf("restart %d", i))
 			}
 			if backend, ok := repo.(*BackendRepo); ok {
+				// Released window locators named the late settlement itself. Exercise
+				// both the terminal shortcut and a locator without a terminal hint.
+				meta, err := backend.Thread(t.Context(), "thread")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := backend.backend.View(t.Context(), func(tx spi.ReadTx) error {
+					for _, terminal := range []string{"first-done", ""} {
+						source, err := windowExecutionSource(t.Context(), tx, meta, "first", storedWindowTurnSources{Terminal: terminal, Identity: hostWorkEntryID("background", true)})
+						if err != nil || source.ID != "first-done" {
+							return fmt.Errorf("late settlement resolved to %s: %v", source.ID, err)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 				for _, sample := range []struct {
 					leaf    string
 					pending int
