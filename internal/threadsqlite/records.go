@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 
 	"github.com/floegence/floret/v7/identity"
@@ -42,6 +43,10 @@ func (catalog *Catalog) ViewThread(ctx context.Context, files *Files, thread ide
 				return err
 			}
 			defer conn.Close()
+			if err := catalog.snapshots.Acquire(ctx, 1); err != nil {
+				return err
+			}
+			defer catalog.snapshots.Release(1)
 			return catalog.withAttached(ctx, conn, true, func() error {
 				return files.onConnection(ctx, conn, ref, true, func(tx *sql.Tx) error {
 					if err := catalog.checkAttachedRoute(ctx, tx, ref); err != nil {
@@ -86,7 +91,10 @@ func (catalog *Catalog) withAttached(ctx context.Context, conn *sql.Conn, readOn
 		return err
 	}
 	defer func() { err = errors.Join(err, detachCatalog(ctx, conn)) }()
-	return use()
+	if err := use(); err != nil {
+		return fmt.Errorf("attached catalog transaction (%s): %w", mode, err)
+	}
+	return nil
 }
 
 func (catalog *Catalog) checkAttachedRoute(ctx context.Context, tx *sql.Tx, ref Reference) error {

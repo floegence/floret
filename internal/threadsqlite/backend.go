@@ -72,10 +72,11 @@ func (backend *Backend) catalogTransaction(ctx context.Context, readOnly bool, u
 	if ctx == nil {
 		return spi.ErrInvalidArgument
 	}
-	if err := backend.Catalog.acquire(ctx); err != nil {
+	release, err := backend.Catalog.acquireOwner(ctx, readOnly)
+	if err != nil {
 		return err
 	}
-	defer backend.Catalog.release()
+	defer release()
 	tx, err := backend.Catalog.owner.BeginTx(ctx, &sql.TxOptions{ReadOnly: readOnly})
 	if errors.Is(err, sql.ErrConnDone) {
 		return spi.ErrClosed

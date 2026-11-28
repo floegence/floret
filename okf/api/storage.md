@@ -22,8 +22,18 @@ Host reads thread files through a bounded handle pool. Catalog and existing
 thread writes use one rollback-journal transaction. A fork publishes a newly
 prepared history at the canonical anchor, not a copy of the live source file.
 Neither a fence alone nor an active SQLite main file is an environment backup.
-The initial directory layout requires logical schema 20 and domain schema 43;
-monolithic formats are not runtime inputs of this constructor.
+Physical format 7 uses format-2 thread databases. The active history determines
+the model-visible context. Execution attempts, retained content blocks and
+rebuildable read metadata have distinct ownership. Directory writes wait for
+read snapshots before starting a write transaction; the member pool bounds
+descriptors independently of how many clients watch a thread. The fork reads
+one source snapshot, carries no execution or provider-resume authority, and owns
+its selected content independently of subsequent source appends or deletion.
+The fixed fence rejects format 6 with an offline migration requirement. Do not
+start a host between installation steps. Back up the complete stopped layout,
+verify file identities and content, and retain the original until acceptance.
+The logical schema remains 20 and the domain schema 43. Monolithic formats are
+not runtime inputs of this constructor.
 
 ## Domain migration
 

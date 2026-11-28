@@ -28,6 +28,16 @@ func (journal *Journal) Revision() (int64, error) {
 	return revision, err
 }
 
+type SnapshotMark struct {
+	File              string
+	Revision, Entries int64
+}
+
+func (journal *Journal) SnapshotMark() (mark SnapshotMark, err error) {
+	err = journal.tx.QueryRowContext(journal.ctx, `SELECT hex(file),commit_rev,(SELECT coalesce(max(entry_no),-1)+1 FROM `+journal.database+`history_events WHERE entry_no IS NOT NULL) FROM `+journal.database+`floret_thread_header WHERE singleton=1`).Scan(&mark.File, &mark.Revision, &mark.Entries)
+	return mark, err
+}
+
 func (journal *Journal) VisitTurn(turn string, markersOnly bool, visit func(EntryEvent) error) error {
 	if turn == "" {
 		return nil

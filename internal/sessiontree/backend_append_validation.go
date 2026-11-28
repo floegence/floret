@@ -68,6 +68,18 @@ func visitCanonicalPathMetadataAfter(ctx context.Context, tx spi.ReadTx, threadI
 	if leafID == "" {
 		return nil
 	}
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != threadID {
+			return ErrInvalidThreadAuthority
+		}
+		return journal.VisitPathAfter(leafID, afterDepth, func(event member.EntryEvent) error {
+			entry, err := memberPathEntry(journal, event)
+			if err != nil {
+				return err
+			}
+			return visit(entry)
+		})
+	}
 	leaf, err := readEntryLocator(tx, threadID, leafID)
 	if err != nil {
 		return err

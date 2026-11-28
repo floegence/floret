@@ -84,7 +84,7 @@ func rehearse(ctx context.Context, path string, thread identity.ThreadID) (err e
 	}
 	pathToFence := filepath.Join(directory, "catalog.sqlite")
 	location := threadsqlite.Source{CatalogPath: pathToFence, Directory: pathToFence + ".d", Limit: 3, MaxIdle: 1, IdleTTL: time.Minute}
-	options := runtime.Options{Storage: storage.ThreadSQLite(pathToFence), DeferExecution: true, EnableParentEvents: true}
+	options := runtime.Options{Storage: storage.NewSource(location), DeferExecution: true, EnableParentEvents: true}
 	bootstrap, err := runtime.Open(ctx, options)
 	if err != nil {
 		return err

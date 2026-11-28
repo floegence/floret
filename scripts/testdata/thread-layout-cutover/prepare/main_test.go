@@ -109,7 +109,7 @@ func TestPreparationNeverInstallsOrOverwrites(t *testing.T) {
 	if err := install(ctx, path, pending, nil); err == nil {
 		t.Fatal("replayed completed swap")
 	}
-	installed, err := readWindow(ctx, storage.ThreadSQLite(path), thread.ThreadID)
+	installed, err := readWindow(ctx, formatSix(path), thread.ThreadID)
 	if err != nil || installed != expected {
 		t.Fatal("unreadable installed history", err)
 	}

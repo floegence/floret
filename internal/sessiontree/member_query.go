@@ -15,7 +15,7 @@ import (
 	"github.com/floegence/floret/v7/threadquery"
 )
 
-func (repo *BackendRepo) prepareMemberQuery(ctx context.Context, thread string) error {
+func (repo *BackendRepo) prepareMemberQuery(ctx context.Context, thread string, rebuild bool) error {
 	var revision int64
 	var meta ThreadMeta
 	var projected *queryThread
@@ -37,6 +37,9 @@ func (repo *BackendRepo) prepareMemberQuery(ctx context.Context, thread string) 
 		projected, err = projectCanonicalQuery(ctx, tx, meta)
 		if err != nil {
 			return err
+		}
+		if rebuild {
+			return nil
 		}
 		ready, err := journal.QueryReady(meta.LeafID)
 		if err != nil || !ready {
@@ -86,6 +89,9 @@ func (repo *BackendRepo) prepareMemberQuery(ctx context.Context, thread string) 
 			return spi.ErrConflict
 		}
 		if err := journal.RemoveQueryItems(); err != nil {
+			return err
+		}
+		if err := rebuildMemberWindow(ctx, tx, meta); err != nil {
 			return err
 		}
 		index := queryMetadataWriter(tx)

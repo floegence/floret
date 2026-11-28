@@ -8,6 +8,9 @@ CREATE TABLE floret_thread_header (
   parent_checked_seq INTEGER REFERENCES history_events(seq),
   commit_rev INTEGER NOT NULL DEFAULT 0 CHECK (commit_rev >= 0),
   read_gen INTEGER NOT NULL DEFAULT 1 CHECK (read_gen > 0),
+  window_valid INTEGER NOT NULL DEFAULT 1 CHECK(window_valid IN (0,1)),
+  model_preceding_seq INTEGER REFERENCES history_events(seq),
+  model_current_seq INTEGER REFERENCES history_events(seq),
   read_leaf_seq INTEGER REFERENCES history_events(seq),
   read_version INTEGER NOT NULL CHECK (read_version > 0),
   read_rev INTEGER NOT NULL DEFAULT 0 CHECK (read_rev BETWEEN 0 AND commit_rev)
@@ -26,8 +29,9 @@ CREATE TABLE history_events (
   kind TEXT NOT NULL, schema_ver INTEGER NOT NULL CHECK (schema_ver > 0),
   at_ns INTEGER, turn_id TEXT, run_id TEXT,
   turn_marker TEXT, content_source TEXT, reasoning_source TEXT,
+  call_source TEXT, view_flags INTEGER NOT NULL DEFAULT 0 CHECK (view_flags >= 0),
   recovery_group TEXT CHECK(recovery_group IN ('queue','parent','host_work')),
-  parent_seq INTEGER REFERENCES history_events(seq) CHECK (parent_seq < seq),
+  parent_no INTEGER REFERENCES history_events(entry_no) CHECK (parent_no < entry_no),
   subject_seq INTEGER REFERENCES history_events(seq),
   object_seq INTEGER REFERENCES history_events(seq),
   scope_key TEXT, request_key TEXT,
@@ -37,6 +41,7 @@ CREATE TABLE history_events (
   model_prev_seq INTEGER REFERENCES history_events(seq) CHECK (model_prev_seq < seq),
   payload BLOB NOT NULL CHECK (length(payload) <= 16384),
   CHECK ((entry_no IS NULL) = (path_depth IS NULL)),
+  CHECK ((parent_no IS NOT NULL) = coalesce(path_depth > 1, 0)),
   CHECK (model_input = 0 OR entry_no IS NOT NULL),
   CHECK ((scope_key IS NULL) = (request_key IS NULL)),
   CHECK ((prompt_scope IS NULL) = (prompt_no IS NULL)),
@@ -50,11 +55,20 @@ CREATE TABLE history_events (
 CREATE INDEX history_commit ON history_events(commit_rev, seq);
 CREATE INDEX history_todo ON history_events(seq) WHERE kind='todo_updated';
 CREATE UNIQUE INDEX history_continuation ON history_events(kind) WHERE kind='provider_continuation';
-CREATE UNIQUE INDEX history_entry_order ON history_events(entry_no) WHERE entry_no IS NOT NULL;
-CREATE INDEX history_parent ON history_events(parent_seq, seq) WHERE parent_seq IS NOT NULL;
+CREATE UNIQUE INDEX history_entry_order ON history_events(entry_no);
+CREATE INDEX history_branch_edges ON history_events(entry_no) WHERE entry_no IS NOT NULL AND (parent_no IS NULL OR parent_no != entry_no-1);
 CREATE INDEX history_turn ON history_events(turn_id, seq) WHERE turn_id IS NOT NULL;
 CREATE INDEX history_content_source ON history_events(content_source,entry_no) WHERE content_source IS NOT NULL;
 CREATE INDEX history_reasoning_source ON history_events(reasoning_source,entry_no) WHERE reasoning_source IS NOT NULL;
+CREATE INDEX history_call_source ON history_events(turn_id,call_source,entry_no) WHERE call_source IS NOT NULL;
+CREATE INDEX history_window_turn ON history_events(turn_id,entry_no) WHERE (view_flags & 1) != 0;
+CREATE INDEX history_goal_source ON history_events(entry_no) WHERE (view_flags & 2) != 0;
+CREATE INDEX history_window_context ON history_events(entry_no) WHERE (view_flags & 4) != 0;
+CREATE INDEX history_window_model ON history_events(entry_no) WHERE (view_flags & 8) != 0;
+CREATE INDEX history_window_interaction ON history_events(entry_no) WHERE (view_flags & 16) != 0;
+CREATE INDEX history_window_response ON history_events(turn_id,run_id,entry_no) WHERE (view_flags & 32) != 0;
+CREATE INDEX history_window_summary ON history_events(entry_no) WHERE (view_flags & 64) != 0;
+CREATE INDEX history_kind_entry ON history_events(kind,entry_no) WHERE entry_no IS NOT NULL;
 CREATE UNIQUE INDEX history_active_turn ON history_events(turn_id) WHERE kind='turn_marker' AND work_head=1;
 CREATE INDEX history_recovery_group ON history_events(recovery_group,entry_no) WHERE recovery_group IS NOT NULL;
 CREATE INDEX history_subject ON history_events(subject_seq, kind, seq) WHERE subject_seq IS NOT NULL;
@@ -88,7 +102,7 @@ CREATE TABLE read_items (
   last_seq INTEGER NOT NULL REFERENCES history_events(seq) CHECK (last_seq >= first_seq),
   source_rev INTEGER NOT NULL CHECK (source_rev > 0),
   turn_id TEXT, run_id TEXT, role TEXT, tool_name TEXT, tool_kind TEXT, status TEXT,
-  at_ns INTEGER NOT NULL, completed_ns INTEGER, elapsed_ns INTEGER CHECK (elapsed_ns >= 0),
+  at_ns INTEGER NOT NULL, completed_ns INTEGER, elapsed_ns INTEGER,
   fold_flags INTEGER NOT NULL CHECK (fold_flags >= 0),
   preview TEXT NOT NULL CHECK (length(CAST(preview AS BLOB)) <= 4096),
   summary BLOB NOT NULL CHECK (length(summary) <= 8192),
@@ -98,6 +112,7 @@ CREATE TABLE read_items (
 CREATE INDEX read_time ON read_items(generation, view_kind, at_ns, item_id);
 CREATE INDEX read_turn ON read_items(generation, view_kind, turn_id, position);
 CREATE INDEX read_unfolded ON read_items(generation, view_kind, position) WHERE fold_flags = 0;
+CREATE INDEX read_reserved ON read_items(generation, view_kind, position) WHERE fold_flags = 1;
 CREATE INDEX read_tool_name ON read_items(generation, tool_name, item_id) WHERE view_kind = 'tool';
 CREATE INDEX read_completed ON read_items(generation, completed_ns, item_id) WHERE view_kind = 'tool';
 CREATE INDEX read_elapsed ON read_items(generation, elapsed_ns, item_id) WHERE view_kind = 'tool';

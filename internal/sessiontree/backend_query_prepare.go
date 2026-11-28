@@ -128,7 +128,7 @@ func (reader *canonicalSnapshotReader) validationError(err error) error {
 // The caller owns the migration gate. Canonical metadata reads
 // release the backend between pages; each metadata transaction writes a bounded
 // document batch. The manifest appears only after every batch commits.
-func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string) error {
+func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string, rebuild bool) error {
 	reader := repo.threadSnapshot(ctx, threadID)
 	if changed, err := repo.prepareParentEvents(ctx, reader, threadID); err != nil {
 		return err
@@ -137,7 +137,7 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 		return spi.ErrConflict
 	}
 	if member.Enabled(repo.backend) {
-		return repo.prepareMemberQuery(ctx, threadID)
+		return repo.prepareMemberQuery(ctx, threadID, rebuild)
 	}
 	metas, err := validateCanonicalThreadClosure(ctx, reader, threadID)
 	if err != nil {
@@ -304,7 +304,7 @@ func (repo *BackendRepo) prepareNextQueryThread(ctx context.Context) (bool, erro
 		}
 	}
 	if err == nil && !ready {
-		err = repo.prepareQueryThread(ctx, record.ID)
+		err = repo.prepareQueryThread(ctx, record.ID, false)
 	} else if err == nil && repo.parentEventsEnabled() {
 		// Recovery is independent of index readiness: enabling parent events
 		// may need receipts even when both threads already have complete indexes.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -19,6 +20,8 @@ type projectionSourceTx struct {
 	bytes    int
 }
 type projectionReadKey struct{ namespace, key string }
+
+func (tx *projectionSourceTx) MemberJournal() *member.Journal { return member.From(tx.ReadTx) }
 
 func newProjectionSourceTx(tx spi.ReadTx) *projectionSourceTx {
 	if current, ok := tx.(*projectionSourceTx); ok {

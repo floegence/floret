@@ -644,7 +644,7 @@ func (repo *BackendRepo) PrepareQueryThread(ctx context.Context, threadID string
 	}
 	defer release()
 	for {
-		err := repo.prepareQueryThread(work, threadID)
+		err := repo.prepareQueryThread(work, threadID, true)
 		if !errors.Is(err, spi.ErrConflict) {
 			return err
 		}

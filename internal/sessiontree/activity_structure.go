@@ -155,6 +155,7 @@ func writeActivityMergeMetadata(tx spi.WriteTx, ref canonicalBodyRef, source str
 }
 
 type activitySourceLocation struct {
+	member  *memberActivity
 	fact    activitymerge.Fact
 	inline  string
 	nodes   map[string]activityFieldNode
@@ -353,6 +354,7 @@ func activityStructurePage(ctx context.Context, tx spi.ReadTx, entries []Entry, 
 func activityStructureFieldsPage(ctx context.Context, tx spi.ReadTx, fields map[string]activitySourceLocation, input ActivityStructureInput) (ActivityStructurePage, error) {
 	var err error
 	var keys []string
+	var directoryChildren bool
 	arrayCount := -1
 	var loc activitySourceLocation
 	var field ActivityFieldSource
@@ -400,6 +402,9 @@ func activityStructureFieldsPage(ctx context.Context, tx spi.ReadTx, fields map[
 			}
 			if node.Kind == "array" {
 				arrayCount = node.Count
+			} else if node.Kind == "object" && loc.member != nil && loc.member.directory != nil {
+				arrayCount = node.Count
+				directoryChildren = true
 			} else {
 				keys = node.Children
 			}
@@ -418,6 +423,11 @@ func activityStructureFieldsPage(ctx context.Context, tx spi.ReadTx, fields map[
 		var key string
 		if arrayCount >= 0 {
 			key = strconv.Itoa(i)
+			if directoryChildren {
+				if err := loc.member.lookup('c', loc.path, i, &key); err != nil {
+					return ActivityStructurePage{}, err
+				}
+			}
 		} else {
 			key = keys[i]
 		}
@@ -480,6 +490,9 @@ func (repo *BackendRepo) ActivityStructure(ctx context.Context, input ActivitySt
 }
 
 func activityLocationNode(tx spi.ReadTx, loc activitySourceLocation) (activityFieldNode, error) {
+	if loc.member != nil {
+		return loc.member.node(loc.path)
+	}
 	if loc.inline != "" {
 		node, ok := loc.nodes[loc.path]
 		if !ok {

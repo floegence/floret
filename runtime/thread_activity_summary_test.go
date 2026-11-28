@@ -311,6 +311,29 @@ func TestActivitySummaryVersionChangesOnlyWithItsActivity(t *testing.T) {
 	}
 }
 
+func TestLiveActivityTargetsLatestCanonicalCallOccurrence(t *testing.T) {
+	_, actor, _, sub := nativeUpdatesFixture(t)
+	sub.Close()
+	actor.state.turnID, actor.state.runID = "turn", "run"
+	projection := newThreadCanonicalProjection()
+	for index, id := range []string{"first", "second"} {
+		entry := sessiontree.Entry{ID: id, ThreadID: actor.threadID, Type: sessiontree.EntryToolCall, TurnID: "turn", RunID: "run", PathDepth: int64(index + 1), RawHash: id, CreatedAt: time.Now().UTC(), Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: "shared"}}
+		if err := projection.items.append([]sessiontree.Entry{entry}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	actor.canonical = projection
+	actor.state.view.Items, _ = projection.items.snapshot()
+	before := actor.state.view.Items[0].Activity
+	activity := observation.ActivityItem{ToolID: "shared", ToolName: "inspect", Kind: observation.ActivityKindTool, Status: observation.ActivityStatusSuccess}
+	if !actor.applyActivityItems(identity.ThreadID(actor.threadID), "turn", "run", []observation.ActivityItem{activity}, time.Now()) {
+		t.Fatal("activity not applied")
+	}
+	if len(actor.state.view.Items) != 2 || actor.state.view.Items[0].Activity != before || actor.state.view.Items[1].ID != "tool-occurrence:second" || actor.state.view.Items[1].Activity.Status != activity.Status {
+		t.Fatal("activity crossed occurrence boundary")
+	}
+}
+
 func TestActivityFieldGoalCanonicalRestart(t *testing.T) {
 	path := t.TempDir() + "/goal.sqlite"
 	goalText := strings.Repeat("Retain the full canonical goal. ", 3000)

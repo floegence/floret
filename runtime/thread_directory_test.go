@@ -32,14 +32,7 @@ func TestDirectoryHostCompletesTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "store.sqlite")
-	entry, err := threadsqlite.CreateCatalog(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := entry.Close(); err != nil {
-		t.Fatal(err)
-	}
-	source := threadsqlite.Source{CatalogPath: path, Directory: root, Limit: 2, MaxIdle: 1, IdleTTL: time.Minute}
+	source := storage.ThreadSQLite(path)
 	answer := florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "stored answer"}, {Type: provider.EventDone, Reason: "stop"}}}
 	call := florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "probe", Name: "read_probe", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}}
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "directory", StateCompatibilityKey: "directory:1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, answer, call, answer)
@@ -56,7 +49,7 @@ func TestDirectoryHostCompletesTurn(t *testing.T) {
 	}
 	open := func() (*Host, ThreadService) {
 		t.Helper()
-		host, err := Open(ctx, Options{Storage: storage.NewSource(source), EnableParentEvents: true})
+		host, err := Open(ctx, Options{Storage: source, EnableParentEvents: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +125,7 @@ func TestDirectoryHostCompletesTurn(t *testing.T) {
 	if _, err := service.View(ctx, thread.ThreadID); err == nil {
 		t.Fatal("deleted thread remains readable")
 	}
-	paths, err := filepath.Glob(filepath.Join(root, "??", "*.sqlite"))
+	paths, err := filepath.Glob(filepath.Join(path+".d", "??", "*.sqlite"))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("unexpected remaining thread files: %d %v", len(paths), err)
 	}
@@ -145,14 +138,7 @@ func TestDirectoryChildCompletionPublishesParentReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "store.sqlite")
-	catalog, err := threadsqlite.CreateCatalog(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.Close(); err != nil {
-		t.Fatal(err)
-	}
-	source := storage.NewSource(threadsqlite.Source{CatalogPath: path, Directory: root, Limit: 3, MaxIdle: 1, IdleTTL: time.Minute})
+	source := storage.ThreadSQLite(path)
 	host, service, _ := parentEventHost(t, true, source)
 	parent, err := service.Create(ctx, CreateThreadInput{RequestKey: "parent"})
 	if err != nil {
@@ -203,7 +189,7 @@ func TestDirectoryChildCompletionPublishesParentReceipt(t *testing.T) {
 	if err := service.Delete(ctx, DeleteThreadInput{ThreadID: parent.ThreadID, RequestKey: "delete-tree"}); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := filepath.Glob(filepath.Join(root, "??", "*.sqlite"))
+	paths, err := filepath.Glob(filepath.Join(path+".d", "??", "*.sqlite"))
 	if err != nil || len(paths) != 0 {
 		t.Fatalf("subtree files: %d %v", len(paths), err)
 	}

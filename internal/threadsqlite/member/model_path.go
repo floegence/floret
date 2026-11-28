@@ -62,3 +62,81 @@ func (journal *Journal) VisitModelPath(leaf string, visit func(EntryEvent) error
 	}
 	return nil
 }
+
+func (journal *Journal) VisitPathAfter(leaf string, after int64, visit func(EntryEvent) error) error {
+	if leaf == "" || after < 0 || visit == nil {
+		return spi.ErrInvalidArgument
+	}
+	events := journal.database + "history_events"
+	var count int64
+	if err := journal.tx.QueryRowContext(journal.ctx, `SELECT path_depth FROM `+events+` WHERE event_id=? AND entry_no IS NOT NULL`, leaf).Scan(&count); err != nil {
+		return err
+	}
+	if after >= count {
+		return nil
+	}
+	rows, err := journal.tx.QueryContext(journal.ctx, `WITH RECURSIVE path(number,parent,depth) AS (SELECT entry_no,parent_no,path_depth FROM `+events+` WHERE event_id=? AND entry_no IS NOT NULL UNION ALL SELECT p.entry_no,p.parent_no,p.path_depth FROM `+events+` p JOIN path ON path.parent=p.entry_no WHERE path.depth>? AND p.entry_no<path.number AND p.path_depth=path.depth-1) SELECT number FROM path ORDER BY depth`, leaf, after+1)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var lastID string
+	depth := after
+	for rows.Next() {
+		var number int64
+		if err := rows.Scan(&number); err != nil {
+			return err
+		}
+		entry, err := journal.EntryNumber(number)
+		if err != nil {
+			return err
+		}
+		depth++
+		if entry.Depth != depth || (lastID != "" && entry.ParentID != lastID) || (depth == 1 && entry.ParentID != "") {
+			return ErrContentIntegrity
+		}
+		if err := visit(entry); err != nil {
+			return err
+		}
+		lastID = entry.ID
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if depth != count || lastID != leaf {
+		return ErrContentIntegrity
+	}
+	return nil
+}
+
+func (journal *Journal) Ancestor(id string, depth int64) (EntryEvent, error) {
+	events := journal.database + "history_events"
+	if depth < 1 {
+		return EntryEvent{}, spi.ErrInvalidArgument
+	}
+	var number, current int64
+	if err := journal.tx.QueryRowContext(journal.ctx, `SELECT entry_no,path_depth FROM `+events+` WHERE event_id=? AND entry_no IS NOT NULL`, id).Scan(&number, &current); err != nil {
+		return EntryEvent{}, err
+	}
+	for current >= depth && number >= current-1 {
+		target := number - (current - depth)
+		var edge, edgeDepth int64
+		var parent sql.NullInt64
+		err := journal.tx.QueryRowContext(journal.ctx, `SELECT entry_no,path_depth,parent_no FROM `+events+` WHERE entry_no IS NOT NULL AND (parent_no IS NULL OR parent_no != entry_no-1) AND entry_no>? AND entry_no<=? ORDER BY entry_no DESC LIMIT 1`, target, number).Scan(&edge, &edgeDepth, &parent)
+		if errors.Is(err, sql.ErrNoRows) {
+			entry, err := journal.EntryNumber(target)
+			if err != nil || entry.Depth != depth {
+				return EntryEvent{}, errors.Join(ErrContentIntegrity, err)
+			}
+			return entry, nil
+		}
+		if err != nil {
+			return EntryEvent{}, err
+		}
+		if edgeDepth != current-(number-edge) || !parent.Valid || parent.Int64 < 0 || parent.Int64 >= edge {
+			break
+		}
+		number, current = parent.Int64, edgeDepth-1
+	}
+	return EntryEvent{}, ErrContentIntegrity
+}

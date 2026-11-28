@@ -33,6 +33,8 @@ func From(tx spi.ReadTx) *Journal {
 
 func (journal *Journal) RestrictToReads() { journal.readOnly = true }
 
+func (journal *Journal) Context() context.Context { return journal.ctx }
+
 func OpenJournal(ctx context.Context, tx *sql.Tx, thread identity.ThreadID, related bool) (*Journal, error) {
 	if ctx == nil || tx == nil || thread == "" {
 		return nil, spi.ErrInvalidArgument

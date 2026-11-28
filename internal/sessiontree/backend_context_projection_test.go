@@ -236,6 +236,16 @@ func TestStoredContextProjectionRollbackAndCorruptSources(t *testing.T) {
 
 func TestStoredContextProjectionPreservesDeferredActivityAuthority(t *testing.T) {
 	_, repo := projectionSourcesFixture(t, 0)
+	checkDeferredActivityAuthority(t, repo)
+}
+
+func TestMemberContextProjectionPreservesDeferredActivityAuthority(t *testing.T) {
+	repo, _ := openDiskMemberRepo(t, t.TempDir()+"/catalog.sqlite", true)
+	checkDeferredActivityAuthority(t, repo)
+}
+
+func checkDeferredActivityAuthority(t *testing.T, repo *BackendRepo) {
+	t.Helper()
 	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "activity"}); err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +261,23 @@ func TestStoredContextProjectionPreservesDeferredActivityAuthority(t *testing.T)
 		t.Fatal(err)
 	}
 	assertContextProjection(t, repo, "activity")
+}
+
+func TestRunlessObservationRejectsOnlyAmbiguousOwnership(t *testing.T) {
+	first := Entry{Type: EntryToolCall, TurnID: "turn", RunID: "one", Message: session.Message{ToolCallID: "work"}}
+	next := first
+	next.RunID = "two"
+	obs := Entry{ID: "observation", Type: EntryCustom, TurnID: "turn", Metadata: map[string]string{"kind": "tool_activity", "tool_id": "work"}}
+	for _, events := range [][]Entry{{first, next}, {obs, first, next}, {first, next, obs}, {first, obs, next}} {
+		var projection ActivityIdentityProjection
+		for _, entry := range events {
+			projection.Observe(entry)
+		}
+		if err := projection.Validate(); (len(events) == 2 && err != nil) || (len(events) > 2 && !errors.Is(err, ErrAuthorityCorrupt)) {
+			t.Fatalf("events %d: %v", len(events), err)
+		}
+		projection.VisitInvocations(func(string, string, string) { t.Fatal("published ambiguous run identity") })
+	}
 }
 
 var _ ThreadContextProjectionReader = (*BackendRepo)(nil)

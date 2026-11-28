@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"slices"
 	"strings"
 
@@ -79,6 +80,14 @@ func (repo *BackendRepo) ReadProjectionSources(ctx context.Context, thread, leaf
 	}
 	var result PathProjectionPage
 	err := repo.withProjectionSources(ctx, thread, leaf, seeds, func(tx spi.ReadTx, set ProjectionSourceSet) error {
+		if journal := member.From(tx); journal != nil {
+			var err error
+			result, err = materializeMemberWindow(journal, set.LeafID, set.Sources, fields, false)
+			if err != nil {
+				return err
+			}
+			return attachGoalProjectionBefore(ctx, tx, thread, result.Entries)
+		}
 		bodies := newCanonicalBodyPageReader(ctx, tx)
 		var err error
 		result, err = materializeProjectionPage(PathMetadataWindow{LeafID: set.LeafID, Entries: set.Sources}, projectionBodyFields(set.Sources, fields), bodies.prefetch, func(_ string, field CanonicalField) (string, error) {
@@ -234,7 +243,7 @@ func projectionSourceClosureMode(ctx context.Context, seeds []string, read func(
 		if membershipOnly {
 			groups = slices.DeleteFunc(groups, func(group projectionSourceGroup) bool {
 				switch group.Kind {
-				case "output", "tool", "interaction", "input_batch", "hosted":
+				case "output", "tool", "invocation", "interaction", "input_batch", "hosted":
 					return false
 				}
 				return true

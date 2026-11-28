@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -14,9 +15,10 @@ import (
 )
 
 type memberEntryData struct {
-	Facts        Entry                     `json:"facts"`
-	Bodies       map[string]member.BodyRef `json:"bodies,omitempty"`
-	ActivityJSON string                    `json:"activity_json,omitempty"`
+	Text         map[string]CanonicalTextFacts `json:"text,omitempty"`
+	Facts        Entry                         `json:"facts"`
+	Bodies       map[string]member.BodyRef     `json:"bodies,omitempty"`
+	ActivityJSON string                        `json:"activity_json,omitempty"`
 }
 
 type memberEntryPayload struct {
@@ -48,6 +50,10 @@ func entryMemberEvent(entry Entry, number int64) (member.EntryEvent, error) {
 	event.KeepParent = entry.Type == EntryTurnMarker && entry.TurnStatus == TurnSavePoint
 	event.ContentSource, event.ReasoningSource = entry.Message.ContentSourceID, entry.Message.ReasoningSourceID
 	event.RecoveryGroup = sparseSourceCategory(entry)
+	event.CallSource, event.ViewFlags, err = memberReadFacets(entry)
+	if err != nil {
+		return member.EntryEvent{}, err
+	}
 	if entry.Type == EntryTurnMarker {
 		event.Marker = string(entry.TurnStatus)
 	}
@@ -100,7 +106,7 @@ func appendMemberEntry(journal *member.Journal, number int64, entry Entry) (int6
 		return 0, ErrAuthorityCorrupt
 	}
 	if err := ValidateEntryIntegrity(entry); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("validate member entry: %w", err)
 	}
 	event, err := entryMemberEvent(entry, number)
 	if err != nil {
@@ -120,9 +126,20 @@ func appendMemberEntry(journal *member.Journal, number int64, entry Entry) (int6
 			}
 			continue
 		}
+		if windowTextField(entry, field) {
+			if data.Text == nil {
+				data.Text = map[string]CanonicalTextFacts{}
+			}
+			data.Text[field] = canonicalTextFacts(value)
+		}
 		ref, err := journal.PutBody(memberBodyClass(entry.Type, field), event.At, []byte(value))
 		if err != nil {
 			return 0, err
+		}
+		if field == "activity_json" {
+			if err := indexMemberActivity(journal, ref, value); err != nil {
+				return 0, fmt.Errorf("index activity directory: %w", err)
+			}
 		}
 		if data.Bodies == nil {
 			data.Bodies = map[string]member.BodyRef{}
@@ -225,7 +242,7 @@ func restoreMemberEntry(journal *member.Journal, event member.EntryEvent, data *
 		return Entry{}, err
 	}
 	want, err := entryMemberEvent(entry, event.Number)
-	if err != nil || want.State != event.State || want.Attempt != event.Attempt || want.RequestScope != event.RequestScope || want.RequestKey != event.RequestKey || want.SubjectID != event.SubjectID || want.ModelInput != event.ModelInput || want.Marker != event.Marker || want.ContentSource != event.ContentSource || want.ReasoningSource != event.ReasoningSource {
+	if err != nil || want.State != event.State || want.Attempt != event.Attempt || want.RequestScope != event.RequestScope || want.RequestKey != event.RequestKey || want.SubjectID != event.SubjectID || want.ModelInput != event.ModelInput || want.Marker != event.Marker || want.ContentSource != event.ContentSource || want.ReasoningSource != event.ReasoningSource || want.CallSource != event.CallSource || want.ViewFlags != event.ViewFlags || want.RecoveryGroup != event.RecoveryGroup {
 		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return entry, nil

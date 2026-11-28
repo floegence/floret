@@ -1404,8 +1404,12 @@ runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("agent.db")})
 For a local environment with one history database per thread, use
 `storage.ThreadSQLite(absolutePath)`. The parent directory must exist. The
 fixed file and its sibling `.d` directory form one environment; do not copy
-the fixed file alone to back it up. This constructor does not adopt or convert
-an existing single-file store.
+the fixed file alone to back it up. This constructor creates and opens only
+physical format 7. Format 6 requires offline conversion of the entire stopped
+environment; it is never opened as a fallback. Single-file stores remain a
+separate source. Fork selects the message prefix at its anchor and freezes the
+reachable output committed in that same fork snapshot. An already frozen output
+keeps its exact boundary, including on a second fork.
 
 Hosts may observe Floret's product-neutral startup phases without reading
 physical records:

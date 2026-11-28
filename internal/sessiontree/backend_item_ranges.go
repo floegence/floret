@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/tools"
 	"math/bits"
 	"slices"
@@ -34,22 +35,25 @@ func (c *ItemKindCounts) add(b ItemKindCounts) {
 	c.Steering += b.Steering
 }
 func itemKindCount(kind string) (ItemKindCounts, error) {
+	return countItemsOfKind(kind, 1)
+}
+func countItemsOfKind(kind string, count int) (ItemKindCounts, error) {
 	c := ItemKindCounts{}
 	switch kind {
 	case "user":
-		c.User = 1
+		c.User = count
 	case "assistant":
-		c.Assistant = 1
+		c.Assistant = count
 	case "thinking":
-		c.Thinking = 1
+		c.Thinking = count
 	case "tool":
-		c.Tool = 1
+		c.Tool = count
 	case "interaction":
-		c.Interaction = 1
+		c.Interaction = count
 	case "goal":
-		c.Goal = 1
+		c.Goal = count
 	case "steering":
-		c.Steering = 1
+		c.Steering = count
 	default:
 		return c, ErrAuthorityCorrupt
 	}
@@ -99,27 +103,30 @@ func (c *ItemActivityCounts) add(b ItemActivityCounts) {
 	c.Unknown += b.Unknown
 }
 func itemActivityCount(member ItemMember) (ItemActivityCounts, error) {
+	return countActivities(member.Kind, member.ActivityStatus, 1)
+}
+func countActivities(kind, status string, count int) (ItemActivityCounts, error) {
 	c := ItemActivityCounts{}
-	if member.Kind != "tool" {
+	if kind != "tool" {
 		return c, nil
 	}
-	switch member.ActivityStatus {
+	switch status {
 	case "pending":
-		c.Pending = 1
+		c.Pending = count
 	case "running":
-		c.Running = 1
+		c.Running = count
 	case "waiting":
-		c.Waiting = 1
+		c.Waiting = count
 	case "success":
-		c.Success = 1
+		c.Success = count
 	case "error":
-		c.Error = 1
+		c.Error = count
 	case "declined":
-		c.Declined = 1
+		c.Declined = count
 	case "canceled":
-		c.Canceled = 1
+		c.Canceled = count
 	case "", "unknown":
-		c.Unknown = 1
+		c.Unknown = count
 	default:
 		return c, ErrAuthorityCorrupt
 	}
@@ -410,22 +417,19 @@ func memoryItemMembershipRange(ctx context.Context, meta ThreadMeta, entries []E
 
 func memoryRangeMembers(ctx context.Context, entries []Entry) ([]ItemMember, error) {
 	var projection ItemMembership
+	presentations := map[string]*tools.ActivityPresentation{}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if _, err := projection.Observe(entry, uint64(entry.PathDepth)); err != nil {
+		step, err := projection.Observe(entry, uint64(entry.PathDepth))
+		if err != nil {
 			return nil, err
 		}
-	}
-	// Memory repositories already own full entries. Use the same presentation
-	// merge to produce semantic parity; persistent reads use stored locators.
-	presentations := map[string]*tools.ActivityPresentation{}
-	for _, entry := range entries {
-		if entry.Type != EntryToolCall && entry.Type != EntryToolResult || entry.Message.Kind == "control_signal" {
+		if step.Main == nil || step.Main.Member.Kind != "tool" || entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryHostWork {
 			continue
 		}
-		id := "tool:" + entry.TurnID + ":" + strings.TrimSpace(entry.Message.ToolCallID)
+		id := step.Main.Member.ID
 		value := entry.Message.Activity
 		if value == nil {
 			value = HistoricalActivityPresentation(entry.Message.ToolName, CanonicalToolStatus(entry))
@@ -532,7 +536,7 @@ func validateItemActivitySource(ctx context.Context, tx spi.ReadTx, meta ThreadM
 			Kind       string
 			ToolCallID string `json:"tool_call_id"`
 		}
-		if err := json.Unmarshal(source.Payload, &approval); err != nil || approval.Kind != "approval" || "tool:"+source.TurnID+":"+strings.TrimSpace(approval.ToolCallID) != member.ID {
+		if err := json.Unmarshal(source.Payload, &approval); err != nil || approval.Kind != "approval" || !matchesItemTool(ctx, tx, meta, member, approval.ToolCallID) {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 	}
@@ -541,10 +545,21 @@ func validateItemActivitySource(ctx context.Context, tx spi.ReadTx, meta ThreadM
 	}
 	ref := member.ActivitySource
 	source, err := activeLocatedEntry(ctx, tx, meta, ref.ID)
-	if err != nil || source.RawHash != ref.Hash || source.PathDepth != ref.Depth || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Type != EntryToolCall && source.Type != EntryToolResult && source.Type != EntryHostWork || CanonicalToolStatus(source) != member.ActivityStatus || "tool:"+source.TurnID+":"+strings.TrimSpace(source.Message.ToolCallID) != member.ID {
+	if err != nil || source.RawHash != ref.Hash || source.PathDepth != ref.Depth || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Type != EntryToolCall && source.Type != EntryToolResult && source.Type != EntryHostWork || CanonicalToolStatus(source) != member.ActivityStatus || !matchesItemTool(ctx, tx, meta, member, source.Message.ToolCallID) {
 		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return nil
+}
+
+func matchesItemTool(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, item ItemMember, call string) bool {
+	if item.ID == "tool:"+item.TurnID+":"+strings.TrimSpace(call) {
+		return true
+	}
+	if item.ID != "tool-occurrence:"+item.SourceID {
+		return false
+	}
+	source, err := activeLocatedEntry(ctx, tx, meta, item.SourceID)
+	return err == nil && source.TurnID == item.TurnID && source.RunID == item.RunID && source.Message.ToolCallID == call
 }
 
 // Reuse canonical source locators; no new durable projection or startup scan.
@@ -592,6 +607,9 @@ func itemSlotBeforeDepth(ctx context.Context, tx spi.ReadTx, thread string, coun
 }
 
 func readItemMembershipRange(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, input ItemMembershipRangeOptions, kinds map[string]bool) (ItemMembershipRange, error) {
+	if member.From(tx) != nil {
+		return memberItemRange(ctx, tx, meta, input)
+	}
 	var result ItemMembershipRange
 	err := func() error {
 		tx = newProjectionSourceTx(tx)

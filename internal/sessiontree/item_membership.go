@@ -62,6 +62,7 @@ type ItemMembership struct {
 	inputs             ToolInputProjection
 	reasoning, content map[string]int
 	tools, hosted      map[itemMemberKey]int
+	toolIDs            map[string]bool
 	interactions       map[string]itemMemberKey
 	failed             map[string]itemMemberKey
 	pending            map[string]int
@@ -75,6 +76,7 @@ func (p *ItemMembership) initialize() {
 	}
 	p.reasoning, p.content = map[string]int{}, map[string]int{}
 	p.tools, p.hosted = map[itemMemberKey]int{}, map[itemMemberKey]int{}
+	p.toolIDs = map[string]bool{}
 	p.interactions, p.failed = map[string]itemMemberKey{}, map[string]itemMemberKey{}
 	p.pending = map[string]int{}
 	p.approvals = map[itemMemberKey]contextSourceRef{}
@@ -206,7 +208,12 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 		if index, found := p.tools[key]; found && entry.Type == EntryToolResult {
 			step.Main = previous(index)
 		} else {
-			step.Main = add("tool:"+entry.TurnID+":"+strings.TrimSpace(entry.Message.ToolCallID), "tool", false)
+			id := "tool:" + entry.TurnID + ":" + strings.TrimSpace(entry.Message.ToolCallID)
+			if p.toolIDs[id] {
+				id = "tool-occurrence:" + entry.ID
+			}
+			p.toolIDs[id] = true
+			step.Main = add(id, "tool", false)
 			p.tools[key] = step.Main.Member.Slot
 		}
 		if step.Main != nil {

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Store independent thread histories in physical format 7 with format-2 members. Read model input from history, freeze reachable growing output at fork, and retain exact existing output bounds. Opening a format-6 environment requires an explicit offline conversion; old writers cannot open the new files.
+- Keep repeated provider call IDs distinct in conversation windows and search, including after reopening the thread.
+
 ## v7.134.1
 
 - Read sealed artifacts and their pages from the owning thread file after checking catalog ancestry. The on-disk format is unchanged.

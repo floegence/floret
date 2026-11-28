@@ -13,8 +13,21 @@ import (
 type ActivityIdentityProjection struct {
 	invocationRuns map[activityProjectionKey]string
 	unresolved     map[activityProjectionKey]threadUnresolvedActivity
+	ambiguous      map[activityProjectionKey]bool
+	requiresRun    map[activityProjectionKey]bool
 	sequence       uint64
 	err            error
+}
+
+func runlessToolObservation(entry Entry) bool {
+	if entry.Type != EntryCustom || entry.RunID != "" {
+		return false
+	}
+	switch entry.Metadata["kind"] {
+	case "tool_dispatch", "tool_activity", "subagent_approval", "pending_tool_settlement":
+		return true
+	}
+	return false
 }
 
 type threadUnresolvedActivity struct {
@@ -36,19 +49,33 @@ func (projection *ActivityIdentityProjection) Observe(entry Entry) {
 			projection.invocationRuns = map[activityProjectionKey]string{}
 		}
 		if prior := projection.invocationRuns[key]; prior != "" && prior != entry.RunID {
-			projection.err = errors.Join(ErrAuthorityCorrupt, errors.New("tool activity has ambiguous canonical invocation identity"))
+			if projection.ambiguous == nil {
+				projection.ambiguous = map[activityProjectionKey]bool{}
+			}
+			projection.ambiguous[key] = true
+			if projection.requiresRun[key] {
+				projection.err = errors.Join(ErrAuthorityCorrupt, errors.New("tool activity has ambiguous canonical invocation identity"))
+			}
 			return
 		}
 		projection.invocationRuns[key] = entry.RunID
 		delete(projection.unresolved, key)
 		return
 	}
-	if entry.Type != EntryCustom || entry.RunID != "" {
+	if !runlessToolObservation(entry) {
 		return
 	}
 	switch entry.Metadata["kind"] {
 	case "tool_dispatch", "tool_activity", "subagent_approval", "pending_tool_settlement":
 		key := activityProjectionKey{turnID: entry.TurnID, callID: activityFirstNonEmpty(entry.Message.ToolCallID, entry.Metadata["tool_id"])}
+		if projection.requiresRun == nil {
+			projection.requiresRun = map[activityProjectionKey]bool{}
+		}
+		projection.requiresRun[key] = true
+		if projection.ambiguous[key] {
+			projection.err = errors.Join(ErrAuthorityCorrupt, errors.New("tool activity has ambiguous canonical invocation identity"))
+			return
+		}
 		if projection.invocationRuns[key] == "" {
 			if projection.unresolved == nil {
 				projection.unresolved = map[activityProjectionKey]threadUnresolvedActivity{}
@@ -79,7 +106,9 @@ type activityProjectionKey struct{ turnID, callID string }
 
 func (projection *ActivityIdentityProjection) VisitInvocations(visit func(string, string, string)) {
 	for key, run := range projection.invocationRuns {
-		visit(key.turnID, key.callID, run)
+		if !projection.ambiguous[key] {
+			visit(key.turnID, key.callID, run)
+		}
 	}
 }
 

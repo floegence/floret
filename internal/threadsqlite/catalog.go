@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/floegence/floret/v7/internal/sqliterecords"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
+	"golang.org/x/sync/semaphore"
 )
 
 type Catalog struct {
@@ -27,6 +29,7 @@ type Catalog struct {
 	fence     *Catalog
 	path      string
 	gate      chan struct{}
+	snapshots *semaphore.Weighted
 	closeOnce sync.Once
 	closeErr  error
 	Store     FileID
@@ -81,7 +84,7 @@ func openCatalogFile(ctx context.Context, path string, create, exclusive bool) (
 	if err != nil {
 		return nil, errors.Join(sqliterecords.ClassifyError(ctx, err), db.Close())
 	}
-	catalog := &Catalog{db: db, owner: owner, path: path, gate: make(chan struct{}, 1)}
+	catalog := &Catalog{db: db, owner: owner, path: path, gate: make(chan struct{}, 1), snapshots: semaphore.NewWeighted(math.MaxInt64)}
 	var mode string
 	if err := owner.QueryRowContext(ctx, `PRAGMA locking_mode`).Scan(&mode); err != nil || mode != locking {
 		return nil, errors.Join(ErrFileFormat, err, catalog.Close())
@@ -98,7 +101,15 @@ func CreateMemberCatalog(ctx context.Context, path string) (*Catalog, error) {
 }
 
 func createCatalog(ctx context.Context, path, version string) (*Catalog, error) {
-	if ctx == nil {
+	var store FileID
+	if _, err := rand.Read(store[:]); err != nil {
+		return nil, err
+	}
+	return createCatalogForStore(ctx, path, version, store)
+}
+
+func createCatalogForStore(ctx context.Context, path, version string, store FileID) (*Catalog, error) {
+	if ctx == nil || store == (FileID{}) {
 		return nil, spi.ErrInvalidArgument
 	}
 	if err := ctx.Err(); err != nil {
@@ -108,9 +119,7 @@ func createCatalog(ctx context.Context, path, version string) (*Catalog, error) 
 	if err != nil {
 		return nil, err
 	}
-	if _, err = rand.Read(fence.Store[:]); err != nil {
-		return nil, errors.Join(err, fence.Close())
-	}
+	fence.Store = store
 	if err := os.Mkdir(path+".d", 0700); err != nil {
 		return nil, errors.Join(err, fence.Close())
 	}
@@ -226,6 +235,9 @@ func (catalog *Catalog) verify(ctx context.Context, expectedMode, expectedVersio
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT value FROM floret_backend_metadata WHERE name='physical_schema'),(SELECT value FROM floret_backend_metadata WHERE name='store')`).Scan(&version, &raw); err != nil {
 		return err
 	}
+	if version == "6" && expectedVersion == "7" && expectedMode == "wal" {
+		return errors.Join(ErrFileFormat, errors.New("format six requires offline thread member conversion"))
+	}
 	if version != expectedVersion || len(raw) != len(catalog.Store) {
 		return ErrFileFormat
 	}
@@ -247,10 +259,24 @@ func (catalog *Catalog) acquire(ctx context.Context) error {
 
 func (catalog *Catalog) release() { <-catalog.gate }
 
+func (catalog *Catalog) acquireOwner(ctx context.Context, readOnly bool) (func(), error) {
+	if readOnly {
+		return catalog.release, catalog.acquire(ctx)
+	}
+	if err := catalog.snapshots.Acquire(ctx, math.MaxInt64); err != nil {
+		return nil, err
+	}
+	if err := catalog.acquire(ctx); err != nil {
+		catalog.snapshots.Release(math.MaxInt64)
+		return nil, err
+	}
+	return func() { catalog.release(); catalog.snapshots.Release(math.MaxInt64) }, nil
+}
+
 func (catalog *Catalog) Close() error {
 	catalog.closeOnce.Do(func() {
-		catalog.gate <- struct{}{}
-		defer catalog.release()
+		release, _ := catalog.acquireOwner(context.Background(), false)
+		defer release()
 		catalog.closeErr = errors.Join(catalog.owner.Close(), catalog.db.Close())
 		if catalog.fence != nil {
 			catalog.closeErr = errors.Join(catalog.closeErr, catalog.fence.Close())
@@ -338,10 +364,11 @@ func (catalog *Catalog) publish(ctx context.Context, files *Files, operation str
 			return err
 		}
 	}
-	if err := catalog.acquire(ctx); err != nil {
+	release, err := catalog.acquireOwner(ctx, false)
+	if err != nil {
 		return err
 	}
-	defer catalog.release()
+	defer release()
 	tx, err := catalog.owner.BeginTx(ctx, nil)
 	if err != nil {
 		return err

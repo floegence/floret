@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 
@@ -76,6 +77,11 @@ func appendCanonicalQuery(ctx context.Context, tx spi.WriteTx, before, after Thr
 	if entry.ParentID != before.LeafID {
 		return rebuildCanonicalQuery(ctx, tx, after)
 	}
+	if member.From(tx) != nil {
+		if err := appendMemberWindow(ctx, tx, after, entry); err != nil {
+			return nil, fmt.Errorf("project window member: %w", err)
+		}
+	}
 	if previous == nil || previous.leaf != before.LeafID {
 		var err error
 		previous, err = projectCanonicalQuery(ctx, tx, before)
@@ -122,6 +128,11 @@ func canonicalQueryRecordForAppend(ctx context.Context, tx spi.ReadTx, threadID,
 }
 
 func rebuildCanonicalQuery(ctx context.Context, tx spi.WriteTx, after ThreadMeta) (*queryThread, error) {
+	if member.From(tx) != nil {
+		if err := rebuildMemberWindow(ctx, tx, after); err != nil {
+			return nil, err
+		}
+	}
 	index := queryMetadataWriter(tx)
 	state, err := projectCanonicalQuery(ctx, tx, after)
 	if err != nil {

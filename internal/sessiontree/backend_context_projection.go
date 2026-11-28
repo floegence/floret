@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -72,6 +73,17 @@ func (sources contextProjectionSources) ids() map[string]bool {
 }
 
 func readStoredContextProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) (ThreadContextProjection, error) {
+	if member.From(tx) != nil {
+		var leaf entryLocator
+		if meta.LeafID != "" {
+			var err error
+			leaf, err = readEntryLocator(tx, meta.ID, meta.LeafID)
+			if err != nil {
+				return ThreadContextProjection{}, err
+			}
+		}
+		return memberContextProjection(ctx, tx, meta, leaf, nil)
+	}
 	var stored storedContextProjection
 	if err := readItemJSON(tx, contextProjectionKey(meta.ID), &stored); err != nil {
 		return ThreadContextProjection{}, err

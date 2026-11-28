@@ -53,6 +53,9 @@ func ViewRecordFile(ctx context.Context, path string, store FileID, ref Referenc
 	if !bytes.Equal(rawStore, store[:]) || !bytes.Equal(rawFile, ref.File[:]) || thread != ref.Thread.String() {
 		return ErrFileIdentity
 	}
+	if err := verifyOfflineNamespace(ctx, tx, false); err != nil {
+		return err
+	}
 	records := sqliterecords.New(ctx, tx, true)
 	defer sqliterecords.End(records)
 	return read(records)

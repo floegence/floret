@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/floegence/floret/v7/identity"
@@ -143,11 +144,11 @@ func (mutation *canonicalJournalMutation) appendFact(entry Entry, options Append
 	}
 	saved, meta, err := appendCanonicalEntry(mutation.ctx, mutation.tx, previous, entry, options, settlement)
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("append %s: %w", entry.Type, err)
 	}
 	projected, err := appendCanonicalQuery(mutation.ctx, mutation.tx, previous, meta, saved, mutation.query)
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("index %s: %w", entry.Type, err)
 	}
 	mutation.meta, mutation.query = meta, projected
 	mutation.entries = append(mutation.entries, saved)

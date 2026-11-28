@@ -435,7 +435,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				}
 			} else {
 				toolItemIndex[toolKey] = len(items)
-				items = appendItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
+				items = appendItem(items, ThreadItem{ID: membership.Main.Member.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
 			}
 			toolIndex := toolItemIndex[toolKey]
 			if !session.IsGoalTool(entry.Message) {

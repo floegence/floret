@@ -117,6 +117,13 @@ func readActivityTextRange(ctx context.Context, tx spi.ReadTx, ref canonicalBody
 	if _, err := readCanonicalBodyRecord(tx, ref); err != nil {
 		return "", err
 	}
+	return activityTextRange(node, offset, limit, func(i int) (activityTextPart, error) { return readActivityTextPart(tx, ref, node, path, i) }, func(start, size int) ([]byte, error) { return readCanonicalBodyBytes(ctx, tx, ref, start, size) }, alignment...)
+}
+
+func activityTextRange(node activityFieldNode, offset, limit int, partAt func(int) (activityTextPart, error), bytesAt func(int, int) ([]byte, error), alignment ...*int) (string, error) {
+	if node.Kind != "string" || offset < 0 || offset > node.Bytes || limit < utf8.UTFMax || limit > canonicalBodyBlockBytes {
+		return "", spi.ErrInvalidArgument
+	}
 	end := min(node.Bytes, offset+limit)
 	result := strings.Builder{}
 	// Part ordinals are binary searched by decoded position. Reading a suffix
@@ -127,7 +134,7 @@ func readActivityTextRange(ctx context.Context, tx spi.ReadTx, ref canonicalBody
 		if part, ok := cache[index]; ok {
 			return part, nil
 		}
-		part, err := readActivityTextPart(tx, ref, node, path, index)
+		part, err := partAt(index)
 		if err == nil {
 			cache[index] = part
 		}
@@ -168,7 +175,7 @@ func readActivityTextRange(ctx context.Context, tx spi.ReadTx, ref canonicalBody
 			encoded[0] = '"'
 			for read := 0; read < part.EncodedBytes; {
 				size := min(canonicalBodyReadBytes, part.EncodedBytes-read)
-				value, err := readCanonicalBodyBytes(ctx, tx, ref, part.Offset+read, size)
+				value, err := bytesAt(part.Offset+read, size)
 				if err != nil {
 					return "", err
 				}

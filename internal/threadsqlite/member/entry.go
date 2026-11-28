@@ -9,6 +9,8 @@ import (
 )
 
 type EntryEvent struct {
+	CallSource                             string
+	ViewFlags                              int64
 	RecoveryGroup                          string
 	ID, ParentID, Kind, Turn, Run          string
 	Number, Depth, At                      int64
@@ -49,13 +51,13 @@ func (journal *Journal) AppendEntry(event EntryEvent) (int64, error) {
 	}
 	var parent, previous, subject, ordinal sql.NullInt64
 	if event.ParentID != "" {
-		var depth int64
-		err := journal.tx.QueryRowContext(journal.ctx, `SELECT seq,path_depth,CASE model_input WHEN 1 THEN seq ELSE model_prev_seq END FROM `+events+` WHERE event_id=? AND entry_no IS NOT NULL`, event.ParentID).Scan(&parent, &depth, &previous)
+		var seq, depth int64
+		err := journal.tx.QueryRowContext(journal.ctx, `SELECT entry_no,seq,path_depth,CASE model_input WHEN 1 THEN seq ELSE model_prev_seq END FROM `+events+` WHERE event_id=? AND entry_no IS NOT NULL`, event.ParentID).Scan(&parent, &seq, &depth, &previous)
 		if err != nil || depth != event.Depth-1 {
 			return 0, errors.Join(ErrContentIntegrity, err)
 		}
 		if event.KeepParent {
-			previous = parent
+			previous = sql.NullInt64{Int64: seq, Valid: true}
 		}
 	}
 	if event.SubjectID != "" {
@@ -101,7 +103,7 @@ func (journal *Journal) AppendEntry(event EntryEvent) (int64, error) {
 		}
 	}
 	var seq int64
-	err = journal.tx.QueryRowContext(journal.ctx, `INSERT INTO `+events+`(event_id,entry_no,path_depth,model_input,commit_rev,kind,schema_ver,at_ns,turn_id,run_id,parent_seq,model_prev_seq,subject_seq,scope_key,request_key,attempt_id,ordinal,state,work_head,payload,turn_marker,content_source,reasoning_source,recovery_group) VALUES(?,?,?,?,?,?,1,?,nullif(?,''),nullif(?,''),?,?,?,nullif(?,''),nullif(?,''),nullif(?,''),?,nullif(?,''),?,?,nullif(?,''),nullif(?,''),nullif(?,''),nullif(?,'')) RETURNING seq`, event.ID, event.Number, event.Depth, event.ModelInput, rev, event.Kind, event.At, event.Turn, event.Run, parent, previous, subject, event.RequestScope, event.RequestKey, event.Attempt, ordinal, event.State, open, event.Payload, event.Marker, event.ContentSource, event.ReasoningSource, event.RecoveryGroup).Scan(&seq)
+	err = journal.tx.QueryRowContext(journal.ctx, `INSERT INTO `+events+`(event_id,entry_no,path_depth,model_input,commit_rev,kind,schema_ver,at_ns,turn_id,run_id,parent_no,model_prev_seq,subject_seq,scope_key,request_key,attempt_id,ordinal,state,work_head,payload,turn_marker,content_source,reasoning_source,recovery_group,call_source,view_flags) VALUES(?,?,?,?,?,?,1,?,nullif(?,''),nullif(?,''),?,?,?,nullif(?,''),nullif(?,''),nullif(?,''),?,nullif(?,''),?,?,nullif(?,''),nullif(?,''),nullif(?,''),nullif(?,''),nullif(?,''),?) RETURNING seq`, event.ID, event.Number, event.Depth, event.ModelInput, rev, event.Kind, event.At, event.Turn, event.Run, parent, previous, subject, event.RequestScope, event.RequestKey, event.Attempt, ordinal, event.State, open, event.Payload, event.Marker, event.ContentSource, event.ReasoningSource, event.RecoveryGroup, event.CallSource, event.ViewFlags).Scan(&seq)
 	return seq, err
 }
 
@@ -115,7 +117,7 @@ func (journal *Journal) entry(filter string, arg any) (EntryEvent, error) {
 	events := journal.database + "history_events"
 	var item EntryEvent
 	var version int
-	err := journal.tx.QueryRowContext(journal.ctx, `SELECT item.event_id,coalesce(parent.event_id,''),item.kind,coalesce(item.turn_id,''),coalesce(item.run_id,''),item.entry_no,item.path_depth,item.at_ns,item.model_input,coalesce(item.scope_key,''),coalesce(item.request_key,''),coalesce(item.attempt_id,''),coalesce(item.state,''),coalesce(subject.event_id,''),item.payload,item.schema_ver,coalesce(item.turn_marker,''),coalesce(item.content_source,''),coalesce(item.reasoning_source,'') FROM `+events+` item LEFT JOIN `+events+` parent ON parent.seq=item.parent_seq LEFT JOIN `+events+` subject ON subject.seq=item.subject_seq WHERE item.entry_no IS NOT NULL AND `+filter, arg).Scan(&item.ID, &item.ParentID, &item.Kind, &item.Turn, &item.Run, &item.Number, &item.Depth, &item.At, &item.ModelInput, &item.RequestScope, &item.RequestKey, &item.Attempt, &item.State, &item.SubjectID, &item.Payload, &version, &item.Marker, &item.ContentSource, &item.ReasoningSource)
+	err := journal.tx.QueryRowContext(journal.ctx, `SELECT item.event_id,coalesce(parent.event_id,''),item.kind,coalesce(item.turn_id,''),coalesce(item.run_id,''),item.entry_no,item.path_depth,item.at_ns,item.model_input,coalesce(item.scope_key,''),coalesce(item.request_key,''),coalesce(item.attempt_id,''),coalesce(item.state,''),coalesce(subject.event_id,''),item.payload,item.schema_ver,coalesce(item.turn_marker,''),coalesce(item.content_source,''),coalesce(item.reasoning_source,''),coalesce(item.recovery_group,''),coalesce(item.call_source,''),item.view_flags FROM `+events+` item LEFT JOIN `+events+` parent ON parent.entry_no=item.parent_no LEFT JOIN `+events+` subject ON subject.seq=item.subject_seq WHERE item.entry_no IS NOT NULL AND `+filter, arg).Scan(&item.ID, &item.ParentID, &item.Kind, &item.Turn, &item.Run, &item.Number, &item.Depth, &item.At, &item.ModelInput, &item.RequestScope, &item.RequestKey, &item.Attempt, &item.State, &item.SubjectID, &item.Payload, &version, &item.Marker, &item.ContentSource, &item.ReasoningSource, &item.RecoveryGroup, &item.CallSource, &item.ViewFlags)
 	if err == nil && version != 1 {
 		return EntryEvent{}, ErrContentIntegrity
 	}

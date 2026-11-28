@@ -303,7 +303,7 @@ func TestQueryPreparationVerifiesMetadataBetweenTransactions(t *testing.T) {
 		_, err := repo.Append(t.Context(), Entry{ThreadID: "history", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "concurrent tail"}}, AppendOptions{ID: "concurrent"})
 		return err
 	}
-	if err := repo.prepareQueryThread(t.Context(), "history"); !errors.Is(err, spi.ErrConflict) {
+	if err := repo.prepareQueryThread(t.Context(), "history", true); !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("concurrent append error = %v, want conflict before publication", err)
 	}
 	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {

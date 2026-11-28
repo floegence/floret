@@ -6,6 +6,7 @@ import (
 	"math/bits"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -207,6 +208,13 @@ func (repo *BackendRepo) DisplayPrepared(ctx context.Context, thread string) (bo
 		if err != nil {
 			return err
 		}
+		if journal := member.From(tx); journal != nil {
+			if ready, err = journal.QueryReady(meta.LeafID); err != nil || !ready {
+				return err
+			}
+			ready, err = journal.WindowValid()
+			return err
+		}
 		count, err := readJournalCount(tx, thread)
 		if err != nil {
 			return err
@@ -294,6 +302,20 @@ func pendingDisplayActivity(tx spi.ReadTx, meta ThreadMeta) (string, error) {
 }
 
 func (repo *BackendRepo) prepareDisplayThreadOwned(ctx context.Context, thread string) error {
+	if member.Enabled(repo.backend) {
+		ready, err := repo.DisplayPrepared(ctx, thread)
+		if err != nil || ready {
+			return err
+		}
+		if err := repo.prepareMemberQuery(ctx, thread, true); err != nil {
+			return err
+		}
+		ready, err = repo.DisplayPrepared(ctx, thread)
+		if err != nil || !ready {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return nil
+	}
 	if err := repo.prepareProjectionSources(ctx, thread); err != nil {
 		return err
 	}

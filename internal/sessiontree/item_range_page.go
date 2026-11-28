@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -145,7 +146,16 @@ func (repo *BackendRepo) ItemRangePage(ctx context.Context, input ItemRangePageO
 	err = repo.withActivitySummaryPreparation(ctx, input.ThreadID, func() error {
 		return repo.canonicalThreadView(ctx, input.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
 			var err error
-			spans, err = readRangePageTree(ctx, newProjectionSourceTx(tx), meta, input, kinds)
+			tx = newProjectionSourceTx(tx)
+			if member.From(tx) != nil {
+				spans, err = collectRangePage(ctx, input, func(anchor string) (ItemMembershipWindow, error) {
+					return readItemMembershipWindow(ctx, tx, meta, ItemMembershipWindowOptions{ThreadID: meta.ID, LeafID: input.LeafID, AnchorID: anchor, Direction: input.Direction, Limit: 1})
+				}, func(query ItemMembershipRangeOptions) (ItemMembershipRange, error) {
+					return memberItemRange(ctx, tx, meta, query)
+				})
+			} else {
+				spans, err = readRangePageTree(ctx, tx, meta, input, kinds)
+			}
 			return err
 		}, func(memory *MemoryRepo) error {
 			var err error

@@ -25,6 +25,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func formatSix(path string) storage.Source {
+	return storage.NewSource(threadsqlite.Source{CatalogPath: path, Directory: path + ".d", Limit: 3, MaxIdle: 1, IdleTTL: time.Minute})
+}
+
 type sealedFile struct {
 	Name   string
 	Bytes  int64
@@ -149,7 +153,7 @@ func seal(ctx context.Context, sourcePath, pending string, thread identity.Threa
 	if err := errors.Join(err, physical.Close()); err != nil {
 		return err
 	}
-	digest, err := readWindow(ctx, storage.ThreadSQLite(fence), thread)
+	digest, err := readWindow(ctx, formatSix(fence), thread)
 	if err != nil || digest != expected {
 		return errors.Join(spi.ErrConflict, err)
 	}

@@ -102,11 +102,17 @@ func decodeEntryLocator(raw []byte, id string) (entryLocator, error) {
 }
 
 func entryAncestor(ctx context.Context, tx spi.ReadTx, threadID string, node entryLocator, depth int64) (entryLocator, error) {
-	if journal := member.From(tx); journal != nil && node.Depth == int64(node.Ordinal)+1 && depth > 0 && depth < node.Depth {
+	if journal := member.From(tx); journal != nil && depth > 0 && depth < node.Depth {
 		if journal.Thread() != threadID {
 			return entryLocator{}, ErrInvalidThreadAuthority
 		}
-		event, err := journal.EntryNumber(depth - 1)
+		var event member.EntryEvent
+		var err error
+		if node.Depth == int64(node.Ordinal)+1 {
+			event, err = journal.EntryNumber(depth - 1)
+		} else {
+			event, err = journal.Ancestor(node.ID, depth)
+		}
 		if err != nil || event.Depth != depth {
 			return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
 		}

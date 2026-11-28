@@ -190,16 +190,9 @@ func (repo *BackendRepo) parentEventPage(ctx context.Context, query ParentEventQ
 			}
 			meta.LeafID = query.LeafID
 		}
-		records, err := canonicalParentReceiptHistory(ctx, tx, meta)
-		if err != nil {
-			return err
-		}
-		result, err = pageParentEvents(records, query)
-		if err != nil {
-			return err
-		}
-		result.LeafID = meta.LeafID
-		return resolveCanonicalParentInteractions(ctx, tx, result.Events)
+		var err error
+		result, err = readMemberParentPage(ctx, tx, meta, query)
+		return err
 	}, func(memory *MemoryRepo) error {
 		var err error
 		result, err = memory.ParentEvents(ctx, query)
@@ -221,6 +214,19 @@ func (repo *BackendRepo) parentEventPage(ctx context.Context, query ParentEventQ
 		return err
 	})
 	return result, err
+}
+
+func readMemberParentPage(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, query ParentEventQuery) (ParentEventPage, error) {
+	records, err := canonicalParentReceiptHistory(ctx, tx, meta)
+	if err != nil {
+		return ParentEventPage{}, err
+	}
+	result, err := pageParentEvents(records, query)
+	if err != nil {
+		return ParentEventPage{}, err
+	}
+	result.LeafID = meta.LeafID
+	return result, resolveCanonicalParentInteractions(ctx, tx, result.Events)
 }
 
 func (repo *BackendRepo) ReportToParent(ctx context.Context, req ParentReportRequest) (ParentEvent, error) {

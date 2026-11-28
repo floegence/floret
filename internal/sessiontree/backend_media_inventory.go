@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -71,8 +72,17 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 	sort.Strings(ids)
 	counts := make(map[string]int, len(ids))
 	readers := make(map[string]*canonicalSnapshotReader, len(ids))
+	marks := make(map[string]member.SnapshotMark)
 	var result []Entry
 	for _, id := range ids {
+		if member.Enabled(repo.backend) {
+			mark, err := repo.visitMemberMedia(ctx, id, threadID == "", &budget, func(entry Entry) { result = append(result, entry) })
+			if err != nil {
+				return nil, true, err
+			}
+			marks[id], counts[id] = mark, int(mark.Entries)
+			continue
+		}
 		reader := repo.threadSnapshot(ctx, id)
 		readers[id] = reader
 		if threadID == "" {
@@ -122,6 +132,16 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 	defer repo.mu.Unlock()
 	for id, count := range counts {
 		err := repo.viewThreadRecords(ctx, id, func(tx spi.ReadTx) error {
+			if mark, ok := marks[id]; ok {
+				current, err := member.From(tx).SnapshotMark()
+				if err != nil {
+					return err
+				}
+				if current != mark {
+					return spi.ErrConflict
+				}
+				return nil
+			}
 			if err := readers[id].verify(tx); err != nil {
 				return err
 			}

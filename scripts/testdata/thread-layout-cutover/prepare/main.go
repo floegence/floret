@@ -107,7 +107,14 @@ type preparation struct {
 }
 
 func fill(ctx context.Context, snapshot, fence string, result *preparation) (err error) {
-	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.ThreadSQLite(fence), DeferExecution: true, EnableParentEvents: true})
+	catalog, err := threadsqlite.CreateCatalog(ctx, fence)
+	if err != nil {
+		return err
+	}
+	if err := catalog.Close(); err != nil {
+		return err
+	}
+	host, err := runtime.Open(ctx, runtime.Options{Storage: formatSix(fence), DeferExecution: true, EnableParentEvents: true})
 	if err != nil {
 		return err
 	}
@@ -224,7 +231,7 @@ func prepare(ctx context.Context, path, pending string, thread identity.ThreadID
 		return err
 	}
 	for range 2 {
-		digest, err := readWindow(ctx, storage.ThreadSQLite(fence), thread)
+		digest, err := readWindow(ctx, formatSix(fence), thread)
 		if err != nil || digest != observed {
 			return errors.Join(errors.New("prepared store window differs"), err)
 		}

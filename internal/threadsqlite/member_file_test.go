@@ -9,7 +9,65 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/threadsqlite/member"
+	"github.com/floegence/floret/v7/storage/spi"
 )
+
+func TestMemberSnapshotAdmitsParallelReadsAndFencesCatalogWrite(t *testing.T) {
+	ctx := t.Context()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "store")
+	catalog, err := CreateMemberCatalog(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := NewMemberFiles(path+".d", catalog.Store, 3, 2, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &Backend{ThreadViews: ThreadViews{Catalog: catalog, Files: files}}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	refs := []Reference{{FileID{1}, "one"}, {FileID{2}, "two"}}
+	for _, ref := range refs {
+		if err := files.Create(ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.Publish(ctx, files, string(ref.Thread), []Replacement{{Thread: ref.Thread, Next: ref.File}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(ctx context.Context) error {
+		return backend.catalogTransaction(ctx, false, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO floret_thread_decisions VALUES('writer',zeroblob(32))`)
+			return err
+		})
+	}
+	err = catalog.ViewThread(ctx, files, "one", func(spi.ReadTx) error {
+		bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := catalog.ViewThread(bounded, files, "two", func(spi.ReadTx) error { return nil }); err != nil {
+			return err
+		}
+		waiting, stop := context.WithTimeout(ctx, 30*time.Millisecond)
+		defer stop()
+		if err := write(waiting); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("writer did not wait for catalog snapshot: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := write(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestMemberFilePoolRejectsOtherFormatsAndDDLDrift(t *testing.T) {
 	ctx := t.Context()

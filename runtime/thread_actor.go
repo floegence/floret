@@ -383,6 +383,12 @@ func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID
 			continue
 		}
 		id := threadToolSegmentID(turnID, activity.ToolID)
+		if activity.Kind == observation.ActivityKindTool && runtime.canonical != nil && runtime.canonical.items != nil {
+			projection := runtime.canonical.items
+			if position, ok := projection.toolItemIndex[threadToolKey(turnID, runID, activity.ToolID)]; ok {
+				id = projection.items[position].ID
+			}
+		}
 		if activity.Kind == observation.ActivityKindHosted {
 			id = "hosted:" + threadToolKey(turnID, runID, activity.ToolID)
 			if runtime.itemIndexByID(id) < 0 {

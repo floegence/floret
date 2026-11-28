@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -68,6 +69,13 @@ func (repo *BackendRepo) prepareWindowReadSources(ctx context.Context, thread st
 	}
 	if delegate := repo.delegate.Load(); delegate != nil {
 		return delegate.prepareWindowReadSources(ctx, thread, wanted)
+	}
+	if member.Enabled(repo.backend) {
+		ready, err := repo.ThreadPrepared(ctx, thread)
+		if err != nil || ready {
+			return err
+		}
+		return repo.prepareMemberQuery(ctx, thread, false)
 	}
 	var needs windowPreparationNeeds
 	err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, meta ThreadMeta) error {

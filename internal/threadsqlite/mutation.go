@@ -50,10 +50,11 @@ func (backend *Backend) UpdateRelatedThread(ctx context.Context, thread, related
 				return err
 			}
 			defer conn.Close()
-			if err := backend.Catalog.acquire(ctx); err != nil {
+			release, err := backend.Catalog.acquireOwner(ctx, false)
+			if err != nil {
 				return err
 			}
-			defer backend.Catalog.release()
+			defer release()
 			return backend.Catalog.withAttached(ctx, conn, false, func() (err error) {
 				if _, err := conn.ExecContext(ctx, `PRAGMA floret_catalog.synchronous=FULL`); err != nil {
 					return err

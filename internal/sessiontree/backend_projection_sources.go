@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"slices"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
@@ -318,6 +319,9 @@ func (repo *BackendRepo) prepareProjectionSources(ctx context.Context, thread st
 	if repo.domainFormat().version < backendDomainV32Version {
 		return nil
 	}
+	if member.Enabled(repo.backend) {
+		return nil
+	}
 	complete := false
 	err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, _ ThreadMeta) error {
 		count, err := readJournalCount(tx, thread)
@@ -426,6 +430,9 @@ func (repo *BackendRepo) prepareProjectionSources(ctx context.Context, thread st
 // Dense membership rejects missing and extra records. Canonical sources verify
 // identity and hash; ancestry excludes branches outside the requested leaf.
 func visitProjectionSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf entryLocator, group projectionSourceGroup, visit func(Entry) error) error {
+	if member.From(tx) != nil {
+		return visitMemberGroup(ctx, tx, meta, leaf, group, visit)
+	}
 	_, err := visitProjectionSourceRange(ctx, tx, meta, leaf, group, 0, 0, visit)
 	return err
 }

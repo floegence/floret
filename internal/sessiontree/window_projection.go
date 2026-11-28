@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -143,6 +144,9 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 			return WindowProjection{}, err
 		}
 	}
+	if member.From(tx) != nil {
+		return readMemberWindowProjection(ctx, tx, meta, options, fields, parentEvents)
+	}
 	tx = newProjectionSourceTx(tx)
 	if options.SummaryOnly {
 		return readSummaryProjection(ctx, tx, meta, fields, options.Summary)
@@ -159,35 +163,8 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 		return WindowProjection{}, err
 	}
 	if options.ActivityFields {
-		// Read no summary bodies until the complete requested membership is
-		// known. Resolve its misses together, rather than rereading all prior
-		// summaries once for every cold tool in this window.
-		var pending []string
-		for _, member := range result.Membership.Members {
-			if member.ActivityPending {
-				pending = append(pending, member.SourceID)
-			}
-		}
-		if len(pending) > 0 {
-			return WindowProjection{}, &activitySummaryWindowPreparationRequired{sources: pending}
-		}
-		result.ActivitySummaries = map[string]ItemActivitySummary{}
-		for _, member := range result.Membership.Members {
-			if member.Kind != "tool" {
-				continue
-			}
-			source, err := activeLocatedEntry(ctx, tx, meta, member.SourceID)
-			if err != nil {
-				return WindowProjection{}, err
-			}
-			if source.Type != EntryToolCall && source.Type != EntryToolResult || session.IsGoalTool(source.Message) {
-				continue
-			}
-			summary, err := readItemActivitySummary(ctx, tx, meta, member)
-			if err != nil {
-				return WindowProjection{}, err
-			}
-			result.ActivitySummaries[member.ID] = summary
+		if err := result.readActivitySummaries(ctx, tx); err != nil {
+			return WindowProjection{}, err
 		}
 	}
 	var turns, seeds []string
@@ -500,6 +477,41 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 		result.Summary = nil
 	}
 	return result, nil
+}
+
+func (result *WindowProjection) readActivitySummaries(ctx context.Context, tx spi.ReadTx) error {
+	var pending []string
+	for _, item := range result.Membership.Members {
+		if item.ActivityPending {
+			pending = append(pending, item.SourceID)
+		}
+	}
+	if len(pending) != 0 {
+		return &activitySummaryWindowPreparationRequired{sources: pending}
+	}
+	result.ActivitySummaries = map[string]ItemActivitySummary{}
+	readSource := activeLocatedEntry
+	if member.From(tx) != nil {
+		readSource = memberSourceEntry
+	}
+	for _, item := range result.Membership.Members {
+		if item.Kind != "tool" {
+			continue
+		}
+		source, err := readSource(ctx, tx, result.Meta, item.SourceID)
+		if err != nil {
+			return err
+		}
+		if source.Type != EntryToolCall && source.Type != EntryToolResult || session.IsGoalTool(source.Message) {
+			continue
+		}
+		summary, err := readItemActivitySummary(ctx, tx, result.Meta, item)
+		if err != nil {
+			return err
+		}
+		result.ActivitySummaries[item.ID] = summary
+	}
+	return nil
 }
 
 func memoryProjectionMembership(leaf string, members []ItemMember, options ItemMembershipWindowOptions) (ItemMembershipWindow, error) {

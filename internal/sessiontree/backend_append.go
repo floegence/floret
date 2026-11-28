@@ -153,7 +153,7 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 		return fail(errors.Join(ErrAuthorityCorrupt, err))
 	}
 	if err := putCanonicalStoredEntry(ctx, tx, backendDomainV32Format, backendDomainEntryKey(meta.ID, count), entry.ID, meta.ID, count, entry); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("store journal entry: %w", err))
 	}
 	if journal := member.From(tx); journal != nil && entry.Type == EntryHostWork {
 		work, err := decodeHostWork(entry)
@@ -171,7 +171,7 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 	}
 	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
 	if err := validateCanonicalAppendedEntry(ctx, tx, meta, entry); err != nil {
-		return fail(errors.Join(ErrAuthorityCorrupt, err))
+		return fail(fmt.Errorf("validate appended entry: %w", errors.Join(ErrAuthorityCorrupt, err)))
 	}
 	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordThread, meta.ID), backendDomainRecordThread, meta.ID, "", 0, meta); err != nil {
 		return fail(err)

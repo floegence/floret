@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -264,6 +265,9 @@ func appendModelContextSources(ctx context.Context, tx spi.WriteTx, entry Entry,
 	return putItemJSON(tx, modelContextSourcesKey(entry.ThreadID), stored)
 }
 func readModelContextSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) (ModelContextSources, error) {
+	if member.From(tx) != nil {
+		return readMemberModelSources(ctx, tx, meta)
+	}
 	var stored storedModelContextSources
 	if err := readItemJSON(tx, modelContextSourcesKey(meta.ID), &stored); err != nil {
 		return ModelContextSources{}, err

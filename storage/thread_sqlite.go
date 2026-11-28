@@ -26,20 +26,22 @@ func (source threadSQLiteSource) Open(ctx context.Context) (spi.Backend, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	location := threadsqlite.Source{CatalogPath: path, Directory: path + ".d", Limit: 16, MaxIdle: 4, IdleTTL: time.Minute}
+	open := threadsqlite.OpenMemberCatalog
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		if _, err := os.Lstat(location.Directory); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(path + ".d"); !errors.Is(err, os.ErrNotExist) {
 			return nil, errors.Join(threadsqlite.ErrFileIdentity, err)
 		}
-		catalog, err := threadsqlite.CreateCatalog(ctx, path)
-		if err != nil {
-			return nil, err
-		}
-		if err := catalog.Close(); err != nil {
-			return nil, err
-		}
+		open = threadsqlite.CreateMemberCatalog
 	} else if err != nil {
 		return nil, err
 	}
-	return location.Open(ctx)
+	catalog, err := open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	files, err := threadsqlite.NewMemberFiles(path+".d", catalog.Store, 16, 4, time.Minute)
+	if err != nil {
+		return nil, errors.Join(err, catalog.Close())
+	}
+	return &threadsqlite.Backend{ThreadViews: threadsqlite.ThreadViews{Catalog: catalog, Files: files}}, nil
 }

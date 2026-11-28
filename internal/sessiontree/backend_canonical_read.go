@@ -477,6 +477,20 @@ func (repo *BackendRepo) canonicalPathWindowMode(ctx context.Context, options Pa
 }
 
 func completeLocatedEntry(ctx context.Context, tx spi.ReadTx, entry Entry) (Entry, error) {
+	if journal := member.From(tx); journal != nil {
+		if entry.ThreadID != journal.Thread() {
+			return Entry{}, ErrInvalidThreadAuthority
+		}
+		event, err := journal.Entry(entry.ID)
+		if err != nil {
+			return Entry{}, err
+		}
+		value, err := materializeMemberEntry(journal, event)
+		if err != nil || value.RawHash != entry.RawHash || value.PathDepth != entry.PathDepth {
+			return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return value, nil
+	}
 	fields := entry.bodyFields
 	entry.bodyFields = nil
 	return materializeCanonicalStoredEntry(ctx, tx, canonicalStoredEntry{Entry: entry, Fields: fields})
@@ -506,27 +520,43 @@ func (repo *BackendRepo) Path(ctx context.Context, threadID, leafID string) ([]E
 }
 
 func activeLocatedEntry(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, entryID string) (Entry, error) {
-	node, err := readEntryLocator(tx, meta.ID, entryID)
+	node, err := activeEntryLocator(ctx, tx, meta, entryID)
 	if err != nil {
 		return Entry{}, err
+	}
+	return readLocatedEntry(tx, backendDomainV32Format, meta.ID, node)
+}
+
+func activeEntryLocator(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, entryID string) (entryLocator, error) {
+	node, err := readEntryLocator(tx, meta.ID, entryID)
+	if err != nil {
+		return entryLocator{}, err
 	}
 	leaf, err := readEntryLocator(tx, meta.ID, meta.LeafID)
 	if err != nil {
-		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, node.Depth)
 	if err != nil {
-		return Entry{}, err
+		return entryLocator{}, err
 	}
 	if ancestor.ID != node.ID {
-		return Entry{}, ErrEntryNotFound
+		return entryLocator{}, ErrEntryNotFound
 	}
-	return readLocatedEntry(tx, backendDomainV32Format, meta.ID, node)
+	return node, nil
 }
 
 func (repo *BackendRepo) CanonicalBodyMetadata(ctx context.Context, threadID, entryID, field string) (CanonicalBodyMetadata, error) {
 	var result CanonicalBodyMetadata
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+		if journal := member.From(tx); journal != nil {
+			if _, err := activeEntryLocator(ctx, tx, meta, entryID); err != nil {
+				return err
+			}
+			fieldValue, err := locateMemberField(journal, entryID, field)
+			result = fieldValue.meta
+			return err
+		}
 		entry, err := activeLocatedEntry(ctx, tx, meta, entryID)
 		if err != nil {
 			return err
@@ -555,6 +585,17 @@ func (repo *BackendRepo) ReadCanonicalBody(ctx context.Context, threadID, entryI
 	}
 	var result CanonicalBodyChunk
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+		if journal := member.From(tx); journal != nil {
+			if _, err := activeEntryLocator(ctx, tx, meta, entryID); err != nil {
+				return err
+			}
+			fieldValue, err := locateMemberField(journal, entryID, field)
+			if err != nil {
+				return err
+			}
+			result, err = fieldValue.chunk(journal, offset, limit)
+			return err
+		}
 		entry, err := activeLocatedEntry(ctx, tx, meta, entryID)
 		if err != nil {
 			return err

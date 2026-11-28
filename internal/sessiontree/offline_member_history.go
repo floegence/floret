@@ -48,6 +48,29 @@ func StageMemberJournal(ctx context.Context, source spi.ReadTx, destination *mem
 	return count, nil
 }
 
+func StageMemberReadItems(ctx context.Context, source spi.ReadTx, destination spi.WriteTx) error {
+	journal := member.From(destination)
+	if journal == nil {
+		return ErrInvalidThreadAuthority
+	}
+	meta, err := readPublishedThreadMeta(source, backendDomainV32Format, journal.Thread())
+	if err != nil {
+		return err
+	}
+	if err := persistThreadMetadata(ctx, destination, meta); err != nil {
+		return err
+	}
+	_, err = rebuildCanonicalQuery(ctx, destination, meta)
+	if err != nil {
+		return err
+	}
+	valid, err := journal.WindowValid()
+	if err != nil || !valid {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return nil
+}
+
 func transferMemberCheckpoints(source spi.ReadTx, target *member.Journal, verify bool) error {
 	thread := target.Thread()
 	todo, hasTodo, err := readThreadTodo(source, thread)
@@ -122,8 +145,34 @@ func stageStoredMemberEntry(ctx context.Context, source spi.ReadTx, destination 
 		if err != nil {
 			return err
 		}
+		if field == "activity_json" && body.Bytes > member.BlockBytes {
+			value, err := materializeCanonicalBody(ctx, source, body)
+			if err != nil {
+				return err
+			}
+			if err := indexMemberActivity(destination, ref, value); err != nil {
+				return err
+			}
+		}
 		if data.Bodies == nil {
 			data.Bodies = map[string]member.BodyRef{}
+		}
+		if windowTextField(entry, field) {
+			facts, err := readBodyTextFacts(source, body)
+			if errors.Is(err, spi.ErrNotFound) {
+				var value string
+				value, err = materializeCanonicalBody(ctx, source, body)
+				if err == nil {
+					facts = canonicalTextFacts(value)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			if data.Text == nil {
+				data.Text = map[string]CanonicalTextFacts{}
+			}
+			data.Text[field] = facts
 		}
 		data.Bodies[field] = ref
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -31,6 +32,9 @@ func goalSourceKey(thread, entry string) []byte {
 	return backendDomainKey(thread, "goal-source", entry)
 }
 func readGoalSourceContext(tx spi.ReadTx, thread, entry string) (goalSourceContext, error) {
+	if journal := member.From(tx); journal != nil {
+		return memberGoalRefs(journal.Context(), tx, thread, entry)
+	}
 	if entry == "" {
 		return goalSourceContext{}, nil
 	}

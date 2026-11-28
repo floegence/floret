@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"strings"
+	"unicode/utf8"
+
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
-	"strings"
-	"unicode/utf8"
 )
 
 type queryPart struct{ field, text string }
@@ -25,6 +27,7 @@ type queryRecord struct {
 type queryThread struct {
 	leaf                  string
 	records               map[string]*queryRecord
+	repeatedCalls         map[string]string
 	complete              bool
 	hostedPending         map[string]map[string]*queryRecord
 	lifecycle             CanonicalLifecycle
@@ -199,6 +202,22 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		base.ToolKind = "local"
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + entry.Message.ToolCallID
+		if entry.Type == EntryToolCall {
+			original, err := projector.read(state, key)
+			if err != nil {
+				return err
+			}
+			if original != nil {
+				if state.repeatedCalls == nil {
+					state.repeatedCalls = map[string]string{}
+				}
+				occurrence := key + "\x00" + entry.ID
+				state.repeatedCalls[key] = occurrence
+				key = occurrence
+			}
+		} else if latest := state.repeatedCalls[key]; latest != "" {
+			key = latest
+		}
 		record := &queryRecord{key: key, row: base, firstSource: entry.ID, lastSource: entry.ID}
 		if entry.Type == EntryToolCall {
 			record.parts = queryEntryParts(entry)
@@ -386,6 +405,7 @@ func cloneQueryThread(source *queryThread) *queryThread {
 	// The transaction owns changed records only. Historical records are read
 	// through their canonical index locators, never copied into an overlay.
 	result.records = map[string]*queryRecord{}
+	result.repeatedCalls = maps.Clone(source.repeatedCalls)
 	result.complete = false
 	result.lifecycle = source.lifecycle.transactionCopy()
 	result.hostedPending = map[string]map[string]*queryRecord{}

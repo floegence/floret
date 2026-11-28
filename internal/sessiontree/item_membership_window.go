@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"slices"
 	"strings"
 
@@ -128,6 +129,13 @@ func readItemMembershipWindow(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 	}
 	if options.LeafID != "" && options.LeafID != meta.LeafID {
 		return ItemMembershipWindow{}, spi.ErrConflict
+	}
+	if journal := member.From(tx); journal != nil {
+		ready, err := journal.QueryReady(meta.LeafID)
+		if err != nil || !ready {
+			return ItemMembershipWindow{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return readMemberWindowPage(ctx, tx, meta, options)
 	}
 	m, found, err := readItemManifest(tx, meta.ID)
 	if err != nil || !found || m.Leaf != meta.LeafID {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/activityfields"
+	memberdb "github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -73,6 +74,13 @@ func (repo *BackendRepo) ReadItemActivityValue(ctx context.Context, input ItemAc
 					return activityfields.Text(struct {
 						Text string `json:"text"`
 					}{field.Text}, "/text", offset, max(4, limit), through)
+				}
+				if memberdb.From(tx) != nil {
+					part, err := memberActivityField(ctx, tx, meta, member, ActivityFieldInput{EntryID: field.EntryID, Path: field.SourcePath, SourceSHA256: field.SourceSHA256, Offset: field.SourceOffset + offset, Limit: max(4, limit)})
+					if err != nil {
+						return "", err
+					}
+					return part.Text[:min(len(part.Text), through-offset)], nil
 				}
 				source, err := activeLocatedEntry(ctx, tx, meta, field.EntryID)
 				if err != nil {

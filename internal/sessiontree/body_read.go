@@ -87,6 +87,10 @@ func readCanonicalEntryBody(ctx context.Context, entry Entry, field string, offs
 		// giant source through a tiny chunk's backing string.
 		result.Text = strings.Clone((value)[offset:end])
 	}
+	return boundBodyChunk(result)
+}
+
+func boundBodyChunk(result CanonicalBodyChunk) (CanonicalBodyChunk, error) {
 	// JSON control-character escaping can expand sixfold. Budget the actual wire
 	// representation even for hostile input; never silently skip source bytes.
 	for {

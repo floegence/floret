@@ -222,10 +222,14 @@ func readCanonicalBodyText(ctx context.Context, tx spi.ReadTx, ref canonicalBody
 	if err != nil {
 		return "", err
 	}
+	return canonicalUTF8Chunk(text, offset, ref.Bytes)
+}
+
+func canonicalUTF8Chunk(text []byte, offset, total int) (string, error) {
 	if len(text) > 0 && !utf8.RuneStart(text[0]) {
 		return "", spi.ErrInvalidArgument
 	}
-	if offset+len(text) < ref.Bytes && len(text) > 0 {
+	if offset+len(text) < total && len(text) > 0 {
 		start := len(text) - 1
 		for start > 0 && !utf8.RuneStart(text[start]) {
 			start--

@@ -25,7 +25,6 @@ type canonicalBodyFacts struct {
 // Hash the exact released JSON field order and escaping while reading text in
 // fixed-size chunks. The body digest and entry checksum are both verified.
 func validateCanonicalStoredIntegrity(ctx context.Context, tx spi.ReadTx, entry Entry) (Entry, map[string]canonicalBodyFacts, error) {
-	facts := map[string]canonicalBodyFacts{}
 	if ref, found := entry.bodyFields["activity_json"]; found {
 		text, err := materializeCanonicalBody(ctx, tx, ref)
 		if err != nil {
@@ -35,6 +34,13 @@ func validateCanonicalStoredIntegrity(ctx context.Context, tx spi.ReadTx, entry 
 			return Entry{}, nil, err
 		}
 	}
+	return validateSegmentedEntry(ctx, entry, func(_ string, ref canonicalBodyRef, writer io.Writer) (canonicalBodyFacts, error) {
+		return writeCanonicalJSONString(ctx, tx, writer, ref)
+	})
+}
+
+func validateSegmentedEntry(ctx context.Context, entry Entry, writeString func(string, canonicalBodyRef, io.Writer) (canonicalBodyFacts, error)) (Entry, map[string]canonicalBodyFacts, error) {
+	facts := map[string]canonicalBodyFacts{}
 	hash := sha256.New()
 	var encode func(reflect.Value, string) error
 	encode = func(value reflect.Value, path string) error {
@@ -44,7 +50,7 @@ func validateCanonicalStoredIntegrity(ctx context.Context, tx spi.ReadTx, entry 
 		field := canonicalRawBodyField(path)
 		if ref, stored := entry.bodyFields[field]; stored && field != "activity_json" {
 			var err error
-			facts[field], err = writeCanonicalJSONString(ctx, tx, hash, ref)
+			facts[field], err = writeString(field, ref, hash)
 			return err
 		}
 		// Only these three structs own segmented string fields. All other values
@@ -168,6 +174,10 @@ func emptyCanonicalJSONValue(value reflect.Value) bool {
 }
 
 func writeCanonicalJSONString(ctx context.Context, tx spi.ReadTx, writer io.Writer, ref canonicalBodyRef) (canonicalBodyFacts, error) {
+	return writeJSONStringChunks(writer, func(visit func([]byte) error) error { return visitCanonicalBody(ctx, tx, ref, visit) })
+}
+
+func writeJSONStringChunks(writer io.Writer, chunks func(func([]byte) error) error) (canonicalBodyFacts, error) {
 	facts := canonicalBodyFacts{}
 	if _, err := io.WriteString(writer, "\""); err != nil {
 		return facts, err
@@ -183,7 +193,7 @@ func writeCanonicalJSONString(ctx context.Context, tx spi.ReadTx, writer io.Writ
 		_, err = writer.Write(raw[1 : len(raw)-1])
 		return err
 	}
-	err := visitCanonicalBody(ctx, tx, ref, func(chunk []byte) error {
+	err := chunks(func(chunk []byte) error {
 		part := chunk
 		if len(carry) != 0 {
 			part = append(carry, chunk...)

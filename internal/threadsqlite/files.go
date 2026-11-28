@@ -317,7 +317,10 @@ func (files *Files) onConnection(ctx context.Context, conn *sql.Conn, ref Refere
 	if readOnly {
 		return nil
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit thread mutation: %w", err)
+	}
+	return nil
 }
 
 func (files *Files) Project(ctx context.Context, source, target Reference, project func(read, write *sql.Tx) error) error {

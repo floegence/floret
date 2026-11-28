@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/internal/session"
+	memberdb "github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"sort"
 	"strings"
 
@@ -226,6 +227,10 @@ func storeActivitySources(ctx context.Context, tx spi.WriteTx, entries []Entry) 
 // Resolve only distinct surviving sources. Replaced tool results are never
 // visited. Every locator remains bound to this member and the active path.
 func effectiveStoredActivityFields(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, member ItemMember) (map[string]activitySourceLocation, error) {
+	if memberdb.From(tx) != nil {
+		fields, _, err := memberActivitySelection(ctx, tx, meta, member)
+		return fields, err
+	}
 	state, err := readStoredActivitySources(tx, meta.ID, member.SourceID)
 	if err != nil {
 		return nil, err
@@ -312,6 +317,16 @@ type ItemActivityReader interface {
 }
 
 func itemActivityMember(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, id string) (ItemMember, error) {
+	if memberdb.From(tx) != nil {
+		page, err := readItemMembershipWindow(ctx, tx, meta, ItemMembershipWindowOptions{ThreadID: meta.ID, ItemIDs: []string{id}, Limit: 1})
+		if err != nil {
+			return ItemMember{}, err
+		}
+		if len(page.Members) != 1 || page.Members[0].Kind != "tool" {
+			return ItemMember{}, ErrEntryNotFound
+		}
+		return page.Members[0], nil
+	}
 	manifest, found, err := readItemManifest(tx, meta.ID)
 	if err != nil || !found || manifest.Leaf != meta.LeafID {
 		return ItemMember{}, fmt.Errorf("item activity membership %q: %w", id, errors.Join(ErrAuthorityCorrupt, err))
@@ -361,21 +376,12 @@ func (repo *BackendRepo) ItemActivityStructure(ctx context.Context, input ItemAc
 			if err != nil {
 				return err
 			}
-			state, err := readStoredActivitySources(tx, meta.ID, member.SourceID)
+			fields, version, err := activityFieldsAtVersion(ctx, tx, meta, member, false)
 			if err != nil {
 				return err
 			}
-			raw, err := json.Marshal(state)
-			if err != nil {
-				return err
-			}
-			version := stableHash(string(raw))
 			if input.Version != "" && input.Version != version {
 				return ErrEntryNotFound
-			}
-			fields, err := effectiveStoredActivityFields(ctx, tx, meta, member)
-			if err != nil {
-				return err
 			}
 			page, err := activityStructureFieldsPage(ctx, tx, fields, ActivityStructureInput{Path: input.Path, Offset: input.Offset, Limit: input.Limit})
 			if err != nil {
@@ -400,6 +406,10 @@ func (repo *BackendRepo) ReadItemActivityField(ctx context.Context, itemID strin
 			tx = newProjectionSourceTx(tx)
 			member, err := itemActivityMember(ctx, tx, meta, itemID)
 			if err != nil {
+				return err
+			}
+			if memberdb.From(tx) != nil {
+				result, err = memberActivityField(ctx, tx, meta, member, input)
 				return err
 			}
 			first, err := activeLocatedEntry(ctx, tx, meta, member.SourceID)
@@ -466,20 +476,38 @@ func (repo *BackendRepo) ReadItemActivitySummary(ctx context.Context, thread, it
 	return result, err
 }
 
+func activityFieldsAtVersion(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, item ItemMember, summary bool) (map[string]activitySourceLocation, string, error) {
+	if memberdb.From(tx) != nil {
+		return memberActivitySelection(ctx, tx, meta, item)
+	}
+	fields, err := effectiveStoredActivityFields(ctx, tx, meta, item)
+	if err != nil {
+		return nil, "", err
+	}
+	state, err := readStoredActivitySources(tx, meta.ID, item.SourceID)
+	if err != nil {
+		return nil, "", err
+	}
+	if summary {
+		return fields, state.Last.Hash, nil
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return nil, "", err
+	}
+	return fields, stableHash(string(raw)), nil
+}
+
 func readItemActivitySummary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, member ItemMember) (ItemActivitySummary, error) {
 	var result ItemActivitySummary
 	if member.ActivityPending {
 		return result, &activitySummaryPreparationRequired{source: member.SourceID}
 	}
-	fields, err := effectiveStoredActivityFields(ctx, tx, meta, member)
+	fields, version, err := activityFieldsAtVersion(ctx, tx, meta, member, true)
 	if err != nil {
 		return result, err
 	}
-	state, err := readStoredActivitySources(tx, meta.ID, member.SourceID)
-	if err != nil {
-		return result, err
-	}
-	result.Version = "canonical:" + state.Last.Hash
+	result.Version = "canonical:" + version
 	result.Facts = activityFactsFromFields(fields)
 	result.Values = map[string]json.RawMessage{}
 	paths := make([]string, 0, len(fields))
@@ -499,12 +527,12 @@ func readItemActivitySummary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 		result.Fields = append(result.Fields, field)
 		if path == "/payload/mutations" && field.Kind == "array" && field.Count == 1 {
 			loc := fields[path]
-			if loc.inline == "" && loc.literal == nil {
-				node, err := readActivityFieldNodeMode(tx, loc.ref, loc.path, true)
+			if loc.literal == nil && (loc.inline == "" || loc.member != nil) {
+				node, err := activitySummaryNode(tx, loc)
 				if err != nil {
 					return result, err
 				}
-				prefix, err := readCanonicalBodyBytes(ctx, tx, loc.ref, node.Offset, min(node.EncodedBytes, activityfields.MutationSummaryBytes))
+				prefix, err := activitySourceBytes(ctx, tx, loc, node.Offset, min(node.EncodedBytes, activityfields.MutationSummaryBytes))
 				if err != nil {
 					return result, err
 				}
@@ -524,12 +552,12 @@ func readItemActivitySummary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 					result.Values[path] = value
 				}
 			} else {
-				node, err := readActivityFieldNodeMode(tx, loc.ref, loc.path, true)
+				node, err := activitySummaryNode(tx, loc)
 				if err != nil {
 					return result, err
 				}
 				if node.EncodedBytes <= 16<<10 {
-					value, err := readCanonicalBodyBytes(ctx, tx, loc.ref, node.Offset, node.EncodedBytes)
+					value, err := activitySourceBytes(ctx, tx, loc, node.Offset, node.EncodedBytes)
 					if err != nil {
 						return result, err
 					}
@@ -568,7 +596,7 @@ func readItemActivitySummary(ctx context.Context, tx spi.ReadTx, meta ThreadMeta
 		if err != nil {
 			return result, err
 		}
-		text, err := readActivityTextRange(ctx, tx, location.ref, node, location.path, field.SourceOffset, max(4, field.Bytes))
+		text, err := activitySourceText(ctx, tx, location, node, field.SourceOffset, max(4, field.Bytes))
 		if err != nil {
 			return result, err
 		}
@@ -600,10 +628,10 @@ func itemRangeActivityFacts(tx spi.ReadTx, thread string, member ItemMember) (It
 // Summary shape reads are not field-source acquisition: partially prepared
 // historical strings/objects cannot be consumed as complete detail locators.
 func describeActivitySummaryField(ctx context.Context, tx spi.ReadTx, loc activitySourceLocation, path string) (ActivityFieldSource, error) {
-	if loc.literal != nil || loc.inline != "" {
+	if loc.literal != nil || loc.inline != "" && loc.entry == "" {
 		return describeActivityNode(ctx, tx, loc, path)
 	}
-	node, err := readActivityFieldNodeMode(tx, loc.ref, loc.path, true)
+	node, err := activitySummaryNode(tx, loc)
 	if err != nil {
 		return ActivityFieldSource{}, err
 	}
@@ -618,7 +646,7 @@ func describeActivitySummaryField(ctx context.Context, tx spi.ReadTx, loc activi
 }
 
 func readActivitySummaryText(ctx context.Context, tx spi.ReadTx, loc activitySourceLocation, field ActivityFieldSource) (string, error) {
-	if loc.inline != "" {
+	if loc.inline != "" && loc.member == nil {
 		full, err := describeActivityNode(ctx, tx, loc, field.Path)
 		return full.Text, err
 	}
@@ -626,7 +654,7 @@ func readActivitySummaryText(ctx context.Context, tx spi.ReadTx, loc activitySou
 	if err != nil {
 		return "", err
 	}
-	text, err := readActivityTextRange(ctx, tx, loc.ref, node, loc.path, field.SourceOffset, max(4, field.Bytes))
+	text, err := activitySourceText(ctx, tx, loc, node, field.SourceOffset, max(4, field.Bytes))
 	if err != nil {
 		return "", err
 	}
