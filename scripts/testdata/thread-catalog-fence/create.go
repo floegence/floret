@@ -11,16 +11,20 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("expected an empty fixture directory")
+	if len(os.Args) != 2 && (len(os.Args) != 3 || os.Args[2] != "member") {
+		log.Fatal("expected an empty fixture directory and optional member format")
 	}
 	ctx := context.Background()
 	root := os.Args[1]
-	catalog, err := threadsqlite.CreateCatalog(ctx, filepath.Join(root, "floret_threads.sqlite"))
+	create, openFiles := threadsqlite.CreateCatalog, threadsqlite.NewFiles
+	if len(os.Args) == 3 {
+		create, openFiles = threadsqlite.CreateMemberCatalog, threadsqlite.NewMemberFiles
+	}
+	catalog, err := create(ctx, filepath.Join(root, "floret_threads.sqlite"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	files, err := threadsqlite.NewFiles(root, catalog.Store, 2, 1, time.Minute)
+	files, err := openFiles(filepath.Join(root, "floret_threads.sqlite.d"), catalog.Store, 2, 1, time.Minute)
 	if err != nil {
 		log.Fatal(err)
 	}

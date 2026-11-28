@@ -38,19 +38,8 @@ func (kernel *BackendKernel) LatestProviderRequest(ctx context.Context, scope st
 		if ordinal == 0 {
 			return nil
 		}
-		key := promptRecordKey(promptRecord{ScopeID: scope, Category: promptRequest, Ordinal: ordinal})
-		encoded, err := tx.Get(promptRecordsNamespace, key)
+		result, err = readPromptOrdinal[cache.ProviderRequestRecord](tx, scope, promptRequest, ordinal)
 		if err != nil {
-			return err
-		}
-		var record promptRecord
-		if err := decodePromptValue(encoded, "prompt_record", &record); err != nil {
-			return err
-		}
-		if record.ScopeID != scope || record.Category != promptRequest || record.Ordinal != ordinal {
-			return sessiontree.ErrAuthorityCorrupt
-		}
-		if err := decodePromptJSON(record.Value, &result); err != nil {
 			return err
 		}
 		if result.PromptScopeID != scope {

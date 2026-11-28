@@ -68,8 +68,12 @@ Checksummed 64 KiB-or-smaller chunks and a small offset index support random
 access without reading the prefix or materializing the source. Full legacy
 artifact reads remain supported. Fork and integrity verification stream checksums
 with bounded memory. Referenced bodies have no TTL: compaction, archiving and UI
-folding do not delete them. Fork pins an immutable watermark and retains the
-shared source; only deletion of the last canonical owner releases its bytes.
+folding do not delete them. Fork selects messages and calls at the requested
+history position. For reachable streaming output it pins the committed prefix
+at the Fork read snapshot, not at the time the selected message was written.
+An already pinned prefix keeps its original watermark, including on a second
+Fork. Later source appends do not change either destination. A file-backed
+independent Fork owns its copy of the retained bytes, not the running work.
 
 # Compatibility
 
@@ -83,6 +87,7 @@ inspect or migrate the opaque source namespace.
 
 - [Public API and consumer qualification](../../runtime/thread_output_external_test.go)
 - [Transactional append, Fork, corruption and retention failure](../../internal/sessiontree/host_work_output_test.go)
+- [Historical message and live output at different boundaries](../../runtime/thread_output_fork_cut_test.go)
 - [UTF-8 pages and source hashes](../../internal/sessiontree/output_source_test.go)
 - [Schema preservation and rollback](../../internal/sessiontree/backend_repo_v39_test.go)
 - [Head/tail and explicit full-plan budgets](../../tools/output_head_tail_test.go)

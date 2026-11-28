@@ -33,6 +33,11 @@ type outputRuntimeFixture struct {
 
 func newOutputRuntimeFixture(t *testing.T, stream bool, result tools.Result) *outputRuntimeFixture {
 	t.Helper()
+	return newOutputRuntimeFixtureWithStorage(t, stream, result, storage.SQLite)
+}
+
+func newOutputRuntimeFixtureWithStorage(t *testing.T, stream bool, result tools.Result, source func(string) storage.Source) *outputRuntimeFixture {
+	t.Helper()
 	f := &outputRuntimeFixture{}
 	f.gateway = florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "output", StateCompatibilityKey: "output"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "call", Name: "output", Args: "{}"}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
@@ -62,7 +67,7 @@ func newOutputRuntimeFixture(t *testing.T, stream bool, result tools.Result) *ou
 	path := t.TempDir() + "/output.sqlite"
 	f.reopen = func() {
 		var err error
-		f.host, err = runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		f.host, err = runtime.Open(t.Context(), runtime.Options{Storage: source(path)})
 		if err != nil {
 			t.Fatal(err)
 		}

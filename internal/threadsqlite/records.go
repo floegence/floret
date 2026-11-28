@@ -7,8 +7,8 @@ import (
 	"errors"
 
 	"github.com/floegence/floret/v7/identity"
-	"github.com/floegence/floret/v7/internal/sqliterecords"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -51,9 +51,7 @@ func (file LocalRecords) View(ctx context.Context, read func(spi.ReadTx) error) 
 		return spi.ErrInvalidArgument
 	}
 	return file.Files.View(ctx, file.Reference, func(transaction *sql.Tx) error {
-		records := sqliterecords.New(ctx, transaction, true)
-		defer sqliterecords.End(records)
-		return read(records)
+		return file.Files.withLocal(ctx, transaction, file.Reference.Thread, false, true, nil, func(tx spi.WriteTx) error { return read(tx) })
 	})
 }
 
@@ -62,9 +60,7 @@ func (file LocalRecords) Update(ctx context.Context, write func(spi.WriteTx) err
 		return spi.ErrInvalidArgument
 	}
 	return file.Files.Update(ctx, file.Reference, func(transaction *sql.Tx) error {
-		records := sqliterecords.New(ctx, transaction, false)
-		defer sqliterecords.End(records)
-		return write(records)
+		return file.Files.withLocal(ctx, transaction, file.Reference.Thread, false, false, nil, write)
 	})
 }
 
@@ -85,16 +81,19 @@ func (files *Files) PrepareFork(ctx context.Context, source, target Reference, f
 			return err
 		}
 		var occupied bool
-		if err := targetTx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM floret_backend_records)`).Scan(&occupied); err != nil {
+		query := `SELECT EXISTS(SELECT 1 FROM floret_backend_records)`
+		if files.format.version == member.Format {
+			query = `SELECT commit_rev <> 0 FROM floret_thread_header WHERE singleton=1`
+		}
+		if err := targetTx.QueryRowContext(ctx, query).Scan(&occupied); err != nil {
 			return err
 		}
 		if occupied {
 			return spi.ErrConflict
 		}
-		reader, writer := sqliterecords.New(ctx, sourceTx, true), sqliterecords.New(ctx, targetTx, false)
-		defer sqliterecords.End(reader)
-		defer sqliterecords.End(writer)
-		if err := project(reader, writer); err != nil {
+		if err := files.withLocal(ctx, sourceTx, source.Thread, false, true, nil, func(reader spi.WriteTx) error {
+			return files.withLocal(ctx, targetTx, target.Thread, false, false, nil, func(writer spi.WriteTx) error { return project(reader, writer) })
+		}); err != nil {
 			return err
 		}
 		_, err = targetTx.ExecContext(ctx, `INSERT INTO floret_thread_preparation VALUES(1,?)`, fingerprint[:])

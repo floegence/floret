@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -98,6 +99,16 @@ func makePromptRecord(scope string, category int, value any) (promptRecord, erro
 
 func readPromptCounters(tx spi.ReadTx, scope string) (promptScopeCounters, error) {
 	value := promptScopeCounters{ScopeID: scope}
+	if journal := member.From(tx); journal != nil {
+		for category, kind := range promptKinds {
+			count, err := journal.PromptThrough(scope, kind)
+			if err != nil {
+				return value, err
+			}
+			value.Counts[category] = count
+		}
+		return value, nil
+	}
 	encoded, err := tx.Get(promptRecordsNamespace, promptScopeKey(scope))
 	if errors.Is(err, spi.ErrNotFound) {
 		return value, nil
@@ -115,6 +126,7 @@ func readPromptCounters(tx spi.ReadTx, scope string) (promptScopeCounters, error
 }
 
 func writePromptBatch(tx spi.WriteTx, batch promptBatch) error {
+	journal := member.From(tx)
 	counters := map[string]promptScopeCounters{}
 	for _, record := range batch {
 		counter, ok := counters[record.ScopeID]
@@ -130,6 +142,13 @@ func writePromptBatch(tx spi.WriteTx, batch promptBatch) error {
 		}
 		counter.Counts[record.Category]++
 		record.Ordinal = counter.Counts[record.Category]
+		if journal != nil {
+			if err := appendMemberPrompt(journal, record); err != nil {
+				return err
+			}
+			counters[record.ScopeID] = counter
+			continue
+		}
 		if err := putPromptValue(tx, promptRecordKey(record), "prompt_record", record); err != nil {
 			return err
 		}
@@ -156,6 +175,9 @@ func writePromptBatch(tx spi.WriteTx, batch promptBatch) error {
 			return err
 		}
 		counters[record.ScopeID] = counter
+	}
+	if journal != nil {
+		return nil
 	}
 	for scope, counter := range counters {
 		if err := putPromptValue(tx, promptScopeKey(scope), "prompt_scope", counter); err != nil {
@@ -286,12 +308,7 @@ func (kernel *BackendKernel) readPromptCategory(ctx context.Context, scope strin
 	}
 	var result promptBatch
 	err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
-		prefix := promptRecordPrefix(scope, category)
-		return scanPromptRecords(tx, prefix, prefixEnd(prefix), func(row spi.Record) error {
-			var record promptRecord
-			if err := decodePromptValue(row.Value, "prompt_record", &record); err != nil {
-				return err
-			}
+		return visitPromptCategory(tx, scope, category, 1, func(record promptRecord, _ int) error {
 			result = append(result, record)
 			return nil
 		})
@@ -330,6 +347,9 @@ func (kernel *BackendKernel) pendingScopes() []string {
 }
 
 func deletePromptScope(tx spi.WriteTx, scope string) error {
+	if journal := member.From(tx); journal != nil {
+		return deleteMemberPromptScope(journal, scope)
+	}
 	if err := deletePromptLookups(tx, scope); err != nil {
 		return err
 	}

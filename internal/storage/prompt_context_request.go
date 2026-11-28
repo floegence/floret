@@ -9,6 +9,7 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -120,6 +121,19 @@ func (kernel *BackendKernel) LatestModelContextRequest(ctx context.Context, scop
 		var result cache.ProviderRequestRecord
 		var found, complete bool
 		err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
+			if journal := member.From(tx); journal != nil {
+				complete = true
+				ordinal, err := journal.ContextOrdinal(scope, thread, entry)
+				if err != nil || ordinal == 0 {
+					return err
+				}
+				result, err = readPromptOrdinal[cache.ProviderRequestRecord](tx, scope, promptRequest, ordinal)
+				if err == nil && (result.ThreadID != thread || result.ModelContextEntryID != entry) {
+					return sessiontree.ErrAuthorityCorrupt
+				}
+				found = err == nil
+				return err
+			}
 			counters, err := readPromptCounters(tx, scope)
 			if err != nil {
 				return err

@@ -9,6 +9,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -53,6 +54,14 @@ func putLookup(tx spi.WriteTx, key []byte, value any) error {
 }
 func readPromptOrdinal[T any](tx spi.ReadTx, scope string, category int, ordinal uint64) (T, error) {
 	var zero T
+	if journal := member.From(tx); journal != nil {
+		record, err := readMemberPrompt(journal, scope, category, ordinal)
+		if err != nil {
+			return zero, err
+		}
+		err = decodePromptJSON(record.Value, &zero)
+		return zero, err
+	}
 	raw, err := tx.Get(promptRecordsNamespace, promptRecordKey(promptRecord{ScopeID: scope, Category: category, Ordinal: ordinal}))
 	if err != nil {
 		return zero, errors.Join(sessiontree.ErrAuthorityCorrupt, err)
@@ -263,6 +272,9 @@ func (kernel *BackendKernel) withPromptLookup(ctx context.Context, scope string,
 				if err != nil {
 					return err
 				}
+				if member.From(tx) != nil {
+					return read(tx, counters)
+				}
 				for _, category := range categories {
 					through, _, err := readLookup[uint64](tx, promptLookupCoverageKey(scope, category))
 					if err != nil {
@@ -291,6 +303,11 @@ func (kernel *BackendKernel) withPromptLookup(ctx context.Context, scope string,
 func (kernel *BackendKernel) RecoveredAttemptEpoch(ctx context.Context, thread, turn, run, logical string) (int, error) {
 	highest := 0
 	err := kernel.withPromptLookup(ctx, thread, []int{promptRequest}, func(tx spi.ReadTx, counters promptScopeCounters) error {
+		if journal := member.From(tx); journal != nil {
+			epoch, err := journal.RequestEpoch(thread, turn, run, logical)
+			highest = int(epoch)
+			return err
+		}
 		refs, found, err := readLookup[turnSourceOrdinals](tx, promptLookupKey(thread, "turn", turn))
 		if err != nil || !found {
 			return err
@@ -325,7 +342,13 @@ func (kernel *BackendKernel) RecoveredAttemptEpoch(ctx context.Context, thread, 
 func (kernel *BackendKernel) ReadTurnRequestFacts(ctx context.Context, scope, turn string) (cache.TurnRequestFacts, error) {
 	var facts cache.TurnRequestFacts
 	err := kernel.withPromptLookup(ctx, scope, []int{promptRequest}, func(tx spi.ReadTx, counters promptScopeCounters) error {
-		refs, _, err := readLookup[turnSourceOrdinals](tx, promptLookupKey(scope, "turn", turn))
+		var refs turnSourceOrdinals
+		var err error
+		if journal := member.From(tx); journal != nil {
+			refs.Surface, refs.Model, refs.Conflict, err = journal.TurnPrompts(scope, turn)
+		} else {
+			refs, _, err = readLookup[turnSourceOrdinals](tx, promptLookupKey(scope, "turn", turn))
+		}
 		if err != nil {
 			return err
 		}
@@ -423,8 +446,14 @@ func (kernel *BackendKernel) lookupActiveToolset(ctx context.Context, scope, pro
 				}
 			}
 		}
-		ordinal, ok, err := lookupSource(tx, promptLookupKey(scope, "toolset", provider, model), counters.Counts[promptToolset])
-		if err != nil || !ok {
+		var ordinal uint64
+		var err error
+		if journal := member.From(tx); journal != nil {
+			ordinal, err = journal.ToolsetOrdinal(scope, provider, model)
+		} else {
+			ordinal, _, err = lookupSource(tx, promptLookupKey(scope, "toolset", provider, model), counters.Counts[promptToolset])
+		}
+		if err != nil || ordinal == 0 {
 			return err
 		}
 		result, err = readPromptOrdinal[cache.ToolsetSnapshot](tx, scope, promptToolset, ordinal)
@@ -458,8 +487,14 @@ func (kernel *BackendKernel) lookupPressureResponse(tx spi.ReadTx, counters prom
 			}
 		}
 	}
-	ordinal, found, err := lookupSource(tx, promptLookupKey(scope, "pressure", provider, model), counters.Counts[promptResponse])
-	if err != nil || !found {
+	var ordinal uint64
+	var err error
+	if journal := member.From(tx); journal != nil {
+		ordinal, err = journal.PressureOrdinal(scope, provider, model)
+	} else {
+		ordinal, _, err = lookupSource(tx, promptLookupKey(scope, "pressure", provider, model), counters.Counts[promptResponse])
+	}
+	if err != nil || ordinal == 0 {
 		return cache.ProviderResponseRecord{}, false, err
 	}
 	response, err := readPromptOrdinal[cache.ProviderResponseRecord](tx, scope, promptResponse, ordinal)
@@ -514,8 +549,14 @@ func (kernel *BackendKernel) ReadPressureEvidence(ctx context.Context, scope, pr
 			if measured {
 				key = promptLookupKey(scope, "attempt", anchor.RequestID, response.AttemptID)
 			}
-			ordinal, ok, err := lookupSource(tx, key, counters.Counts[promptRequest])
-			if err != nil || !ok {
+			var ordinal uint64
+			var err error
+			if journal := member.From(tx); journal != nil {
+				ordinal, err = journal.RequestOrdinal(scope, anchor.RequestID, response.AttemptID, measured)
+			} else {
+				ordinal, _, err = lookupSource(tx, key, counters.Counts[promptRequest])
+			}
+			if err != nil || ordinal == 0 {
 				return err
 			}
 			request, err = readPromptOrdinal[cache.ProviderRequestRecord](tx, scope, promptRequest, ordinal)

@@ -112,7 +112,7 @@ func (outputs offlineOutputSet) retain(id string, pin *OutputSnapshot) {
 	need.pins[*pin] = struct{}{}
 }
 
-func (outputs offlineOutputSet) collect(source spi.ReadTx, target spi.WriteTx, entry Entry) error {
+func (outputs offlineOutputSet) collect(source spi.ReadTx, entry Entry, artifactFound func(artifact.Record, []byte) error) error {
 	if err := validateToolOutputReference(entry); err != nil {
 		return err
 	}
@@ -157,11 +157,7 @@ func (outputs offlineOutputSet) collect(source spi.ReadTx, target spi.WriteTx, e
 		}
 		outputs.retain(origin.ID, nil)
 	}
-	raw, err := source.Get(backendDomainV32Namespace, key)
-	if err != nil {
-		return err
-	}
-	return target.Put(backendDomainV32Namespace, key, raw)
+	return artifactFound(record, key)
 }
 
 func (outputs offlineOutputSet) stage(ctx context.Context, source spi.ReadTx, target spi.WriteTx) error {

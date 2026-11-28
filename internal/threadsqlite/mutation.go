@@ -19,19 +19,6 @@ func (backend *Backend) UpdateThreadRecords(ctx context.Context, thread identity
 	return backend.UpdateRelatedThread(ctx, thread, "", write)
 }
 
-type relatedWriter struct {
-	threadWrite
-	thread  identity.ThreadID
-	related threadWrite
-}
-
-func (writer relatedWriter) RelatedWriter(thread identity.ThreadID) (spi.WriteTx, error) {
-	if thread != writer.thread {
-		return nil, ErrFileIdentity
-	}
-	return writer.related, nil
-}
-
 func (backend *Backend) UpdateRelatedThread(ctx context.Context, thread, related identity.ThreadID, write func(spi.WriteTx) error) error {
 	if ctx == nil || thread == "" || related == thread || write == nil {
 		return spi.ErrInvalidArgument
@@ -135,22 +122,23 @@ func (backend *Backend) UpdateRelatedThread(ctx context.Context, thread, related
 				if !bytes.Equal(file, ref.File[:]) {
 					return spi.ErrConflict
 				}
-				local, catalog := sqliterecords.New(ctx, tx, false), sqliterecords.AttachedCatalog(ctx, tx)
-				defer sqliterecords.End(local)
+				catalog := sqliterecords.AttachedCatalog(ctx, tx)
 				defer sqliterecords.End(catalog)
+				owner := threadCatalog{catalog: catalog, owner: thread}
 				if related != "" {
-					if err := checkDatabaseSchema(ctx, tx, "floret_related", []string{recordsSchema, headerSchema, sealSchema}); err != nil {
+					if err := checkDatabaseSchema(ctx, tx, "floret_related", backend.Files.format.schema); err != nil {
 						return err
 					}
 					var valid bool
-					if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM floret_related.floret_thread_header AS h JOIN floret_catalog.floret_thread_routes AS r ON h.thread=r.thread AND h.file=r.file WHERE h.singleton=1 AND h.store=? AND h.file=? AND h.thread=? AND h.format=1)`, backend.Catalog.Store[:], other.File[:], related.String()).Scan(&valid); err != nil || !valid {
+					if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM floret_related.floret_thread_header AS h JOIN floret_catalog.floret_thread_routes AS r ON h.thread=r.thread AND h.file=r.file WHERE h.singleton=1 AND h.store=? AND h.file=? AND h.thread=? AND h.format=?)`, backend.Catalog.Store[:], other.File[:], related.String(), backend.Files.format.version).Scan(&valid); err != nil || !valid {
 						return errors.Join(ErrFileIdentity, err)
 					}
-					attached := sqliterecords.AttachedThread(ctx, tx)
-					defer sqliterecords.End(attached)
-					return write(relatedWriter{threadWrite{local, catalog, thread}, related, threadWrite{attached, catalog, related}})
+					return backend.Files.withLocal(ctx, tx, related, true, false, &threadCatalog{catalog: catalog, owner: related}, func(relatedTx spi.WriteTx) error {
+						owner.other, owner.related = related, relatedTx
+						return backend.Files.withLocal(ctx, tx, thread, false, false, &owner, write)
+					})
 				}
-				return write(threadWrite{local, catalog, thread})
+				return backend.Files.withLocal(ctx, tx, thread, false, false, &owner, write)
 			})
 		})
 	})

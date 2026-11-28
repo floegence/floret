@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
@@ -52,20 +51,8 @@ func (reader *executionSegmentReader) Segments(ctx context.Context, scope, provi
 	prefix, size := reader.prefix, reader.bytes
 	ordinal := uint64(len(prefix))
 	err := kernel.viewPrompt(ctx, scope, func(tx spi.ReadTx) error {
-		namespacePrefix := promptRecordPrefix(scope, promptSegment)
-		start := namespacePrefix
-		if ordinal != 0 {
-			start = promptRecordKey(promptRecord{ScopeID: scope, Category: promptSegment, Ordinal: ordinal + 1})
-		}
-		return scanPromptRecords(tx, start, prefixEnd(namespacePrefix), func(row spi.Record) error {
+		return visitPromptCategory(tx, scope, promptSegment, ordinal+1, func(record promptRecord, recordSize int) error {
 			ordinal++
-			var record promptRecord
-			if err := decodePromptValue(row.Value, "prompt_record", &record); err != nil {
-				return err
-			}
-			if record.Ordinal != ordinal || record.ScopeID != scope || record.Category != promptSegment || !bytes.Equal(promptRecordKey(record), row.Key) {
-				return sessiontree.ErrAuthorityCorrupt
-			}
 			var segment cache.Segment
 			if err := decodePromptJSON(record.Value, &segment); err != nil {
 				return err
@@ -73,9 +60,9 @@ func (reader *executionSegmentReader) Segments(ctx context.Context, scope, provi
 			if segment.PromptScopeID != scope {
 				return sessiontree.ErrAuthorityCorrupt
 			}
-			if uint64(len(prefix))+1 == ordinal && len(prefix) < 8192 && size+len(row.Value) <= reader.budget {
+			if uint64(len(prefix))+1 == ordinal && len(prefix) < 8192 && size+recordSize <= reader.budget {
 				prefix = append(prefix, segment)
-				size += len(row.Value)
+				size += recordSize
 			}
 			include(segment)
 			return nil

@@ -17,15 +17,7 @@ import (
 
 type threadWrite struct {
 	*sqliterecords.Tx
-	catalog *sqliterecords.Tx
-	owner   identity.ThreadID
-}
-
-func (tx threadWrite) ThreadOwner() identity.ThreadID { return tx.owner }
-func (tx threadWrite) CatalogReader() spi.ReadTx      { return tx.catalog }
-func (tx threadWrite) CatalogWriter() spi.WriteTx     { return tx.catalog }
-func (tx threadWrite) PutCatalogRecord(record storagebridge.CatalogRecord, raw []byte) error {
-	return tx.catalog.Put(record.Namespace, record.Key, raw)
+	threadCatalog
 }
 
 func (backend *Backend) CreateThreadRecords(ctx context.Context, request storagebridge.ThreadCreation, write func(spi.WriteTx) error) error {
@@ -96,9 +88,9 @@ func (backend *Backend) buildThread(ctx context.Context, source Reference, targe
 			}
 			defer conn.Close()
 			err = backend.Files.onConnection(ctx, conn, ref, false, func(local *sql.Tx) error {
-				records := sqliterecords.New(ctx, local, false)
-				defer sqliterecords.End(records)
-				return write(reader, threadWrite{records, catalog, target}, source.Thread != "")
+				return backend.Files.withLocal(ctx, local, target, false, false, &threadCatalog{catalog: catalog, owner: target}, func(destination spi.WriteTx) error {
+					return write(reader, destination, source.Thread != "")
+				})
 			})
 			if err != nil {
 				return err
@@ -127,9 +119,7 @@ func (backend *Backend) buildThread(ctx context.Context, source Reference, targe
 			}
 			defer conn.Close()
 			return backend.Files.onConnection(ctx, conn, source, true, func(tx *sql.Tx) error {
-				reader := sqliterecords.New(ctx, tx, true)
-				defer sqliterecords.End(reader)
-				return targetFile(reader)
+				return backend.Files.withLocal(ctx, tx, source.Thread, false, true, nil, func(reader spi.WriteTx) error { return targetFile(reader) })
 			})
 		})
 	})

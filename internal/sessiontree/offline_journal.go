@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"github.com/floegence/floret/v7/internal/session/artifact"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -180,7 +181,13 @@ func StageOfflineJournal(ctx context.Context, source spi.ReadTx, target spi.Writ
 				return err
 			}
 		}
-		if err := outputs.collect(source, target, stored.Entry); err != nil {
+		if err := outputs.collect(source, stored.Entry, func(_ artifact.Record, key []byte) error {
+			raw, err := source.Get(backendDomainV32Namespace, key)
+			if err != nil {
+				return err
+			}
+			return target.Put(backendDomainV32Namespace, key, raw)
+		}); err != nil {
 			return err
 		}
 		if stored.Entry.Type == EntryEffectAttempt {

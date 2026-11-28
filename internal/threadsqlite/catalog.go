@@ -90,6 +90,14 @@ func openCatalogFile(ctx context.Context, path string, create, exclusive bool) (
 }
 
 func CreateCatalog(ctx context.Context, path string) (*Catalog, error) {
+	return createCatalog(ctx, path, "6")
+}
+
+func CreateMemberCatalog(ctx context.Context, path string) (*Catalog, error) {
+	return createCatalog(ctx, path, "7")
+}
+
+func createCatalog(ctx context.Context, path, version string) (*Catalog, error) {
 	if ctx == nil {
 		return nil, spi.ErrInvalidArgument
 	}
@@ -111,12 +119,12 @@ func CreateCatalog(ctx context.Context, path string) (*Catalog, error) {
 		return nil, errors.Join(err, fence.Close())
 	}
 	catalog.fence, catalog.Store = fence, fence.Store
-	err = initializeCatalog(ctx, catalog.owner, catalog.Store, false)
+	err = initializeCatalog(ctx, catalog.owner, catalog.Store, false, version)
 	if err == nil {
 		err = syncDirectory(filepath.Dir(catalog.path))
 	}
 	if err == nil {
-		err = initializeCatalog(ctx, fence.owner, fence.Store, true)
+		err = initializeCatalog(ctx, fence.owner, fence.Store, true, version)
 	}
 	if err == nil {
 		err = syncDirectory(filepath.Dir(path))
@@ -139,7 +147,7 @@ func syncDirectory(path string) error {
 	return errors.Join(directory.Sync(), directory.Close())
 }
 
-func initializeCatalog(ctx context.Context, db *sql.Conn, store FileID, fence bool) error {
+func initializeCatalog(ctx context.Context, db *sql.Conn, store FileID, fence bool, version string) error {
 	expected := "delete"
 	schemas := []string{metadataSchema, recordsSchema, routesSchema, decisionsSchema, stagingSchema}
 	if fence {
@@ -159,13 +167,21 @@ func initializeCatalog(ctx context.Context, db *sql.Conn, store FileID, fence bo
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO floret_backend_metadata VALUES('physical_schema',CAST('6' AS BLOB)),('store',?)`, store[:]); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO floret_backend_metadata VALUES('physical_schema',CAST(? AS BLOB)),('store',?)`, version, store[:]); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func OpenCatalog(ctx context.Context, path string) (*Catalog, error) {
+	return openCatalog(ctx, path, "6")
+}
+
+func OpenMemberCatalog(ctx context.Context, path string) (*Catalog, error) {
+	return openCatalog(ctx, path, "7")
+}
+
+func openCatalog(ctx context.Context, path, version string) (*Catalog, error) {
 	if ctx == nil {
 		return nil, spi.ErrInvalidArgument
 	}
@@ -176,7 +192,7 @@ func OpenCatalog(ctx context.Context, path string) (*Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := fence.verify(ctx, "wal", []string{metadataSchema}); err != nil {
+	if err := fence.verify(ctx, "wal", version, []string{metadataSchema}); err != nil {
 		return nil, errors.Join(sqliterecords.ClassifyError(ctx, err), fence.Close())
 	}
 	catalog, err := openCatalogFile(ctx, fence.catalogPath(), false, false)
@@ -184,13 +200,13 @@ func OpenCatalog(ctx context.Context, path string) (*Catalog, error) {
 		return nil, errors.Join(err, fence.Close())
 	}
 	catalog.fence = fence
-	if err := catalog.verify(ctx, "delete", []string{metadataSchema, recordsSchema, decisionsSchema, routesSchema, stagingSchema}); err != nil || catalog.Store != fence.Store {
+	if err := catalog.verify(ctx, "delete", version, []string{metadataSchema, recordsSchema, decisionsSchema, routesSchema, stagingSchema}); err != nil || catalog.Store != fence.Store {
 		return nil, errors.Join(ErrFileIdentity, err, catalog.Close())
 	}
 	return catalog, nil
 }
 
-func (catalog *Catalog) verify(ctx context.Context, expectedMode string, schemas []string) error {
+func (catalog *Catalog) verify(ctx context.Context, expectedMode, expectedVersion string, schemas []string) error {
 	var mode string
 	if err := catalog.owner.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
 		return err
@@ -210,7 +226,7 @@ func (catalog *Catalog) verify(ctx context.Context, expectedMode string, schemas
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT value FROM floret_backend_metadata WHERE name='physical_schema'),(SELECT value FROM floret_backend_metadata WHERE name='store')`).Scan(&version, &raw); err != nil {
 		return err
 	}
-	if version != "6" || len(raw) != len(catalog.Store) {
+	if version != expectedVersion || len(raw) != len(catalog.Store) {
 		return ErrFileFormat
 	}
 	copy(catalog.Store[:], raw)

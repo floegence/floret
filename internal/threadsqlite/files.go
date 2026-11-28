@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 	_ "modernc.org/sqlite"
 )
@@ -30,6 +31,13 @@ type Files struct {
 	directory string
 	store     FileID
 	pool      *filePool
+	format    fileFormat
+}
+
+type fileFormat struct {
+	version    int
+	schema     []string
+	initialize func(context.Context, *sql.Tx, FileID, Reference) error
 }
 
 const headerSchema = `CREATE TABLE floret_thread_header (singleton INTEGER PRIMARY KEY CHECK(singleton=1), store BLOB NOT NULL, file BLOB NOT NULL, thread TEXT NOT NULL, format INTEGER NOT NULL)`
@@ -40,6 +48,16 @@ var ErrFileIdentity = errors.New("unexpected Floret thread file identity")
 var ErrFileFormat = errors.New("unsupported Floret thread file format")
 
 func NewFiles(directory string, store FileID, limit, maxIdle int, ttl time.Duration) (*Files, error) {
+	return newFiles(directory, store, limit, maxIdle, ttl, fileFormat{1, []string{headerSchema, recordsSchema, sealSchema}, initializeRecordFile})
+}
+
+func NewMemberFiles(directory string, store FileID, limit, maxIdle int, ttl time.Duration) (*Files, error) {
+	return newFiles(directory, store, limit, maxIdle, ttl, fileFormat{member.Format, member.Definitions(), func(ctx context.Context, tx *sql.Tx, store FileID, ref Reference) error {
+		return member.Initialize(ctx, tx, store, ref.File, ref.Thread)
+	}})
+}
+
+func newFiles(directory string, store FileID, limit, maxIdle int, ttl time.Duration, format fileFormat) (*Files, error) {
 	if !filepath.IsAbs(directory) || store == (FileID{}) {
 		return nil, spi.ErrInvalidArgument
 	}
@@ -53,7 +71,7 @@ func NewFiles(directory string, store FileID, limit, maxIdle int, ttl time.Durat
 	if err := checkFile(directory, true); err != nil {
 		return nil, err
 	}
-	files := &Files{directory: directory, store: store}
+	files := &Files{directory: directory, store: store, format: format}
 	files.pool, err = newFilePool(limit, maxIdle, ttl, files.open)
 	if err != nil {
 		return nil, err
@@ -94,7 +112,7 @@ func checkSidecars(path string, allowExisting bool) error {
 }
 
 func existingDB(path string, pragmas ...string) (*sql.DB, error) {
-	options := url.Values{"mode": {"rw"}, "_pragma": {"synchronous(FULL)", "trusted_schema(OFF)"}}
+	options := url.Values{"mode": {"rw"}, "_pragma": {"synchronous(FULL)", "trusted_schema(OFF)", "foreign_keys(ON)"}}
 	for _, pragma := range pragmas {
 		options.Add("_pragma", pragma)
 	}
@@ -131,7 +149,7 @@ func (files *Files) open(ctx context.Context, file FileID) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSchema(ctx, db, []string{recordsSchema, headerSchema, sealSchema}); err != nil {
+	if err := checkSchema(ctx, db, files.format.schema); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
@@ -149,25 +167,32 @@ func checkDatabaseSchema(ctx context.Context, query interface {
 	if database != "main" && database != "floret_related" {
 		return ErrFileFormat
 	}
-	rows, err := query.QueryContext(ctx, `SELECT sql FROM `+database+`.sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name`)
-	if err == nil {
-		for _, expected := range schemas {
-			var definition string
-			if !rows.Next() {
-				err = errors.Join(ErrFileFormat, rows.Err())
-				break
-			}
-			if err = rows.Scan(&definition); err != nil || definition != expected {
-				err = errors.Join(ErrFileFormat, err)
-				break
-			}
-		}
-		if err == nil && rows.Next() {
-			err = ErrFileFormat
-		}
-		err = errors.Join(err, rows.Err(), rows.Close())
+	rows, err := query.QueryContext(ctx, `SELECT sql FROM `+database+`.sqlite_schema WHERE name NOT GLOB 'sqlite_*'`)
+	if err != nil {
+		return err
 	}
-	return err
+	defer rows.Close()
+	missing := make(map[string]struct{}, len(schemas))
+	for _, definition := range schemas {
+		missing[definition] = struct{}{}
+	}
+	for rows.Next() {
+		var definition string
+		if err := rows.Scan(&definition); err != nil {
+			return err
+		}
+		if _, ok := missing[definition]; !ok {
+			return ErrFileFormat
+		}
+		delete(missing, definition)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(missing) != 0 {
+		return ErrFileFormat
+	}
+	return nil
 }
 
 func Allocate(thread identity.ThreadID) (Reference, error) {
@@ -211,7 +236,7 @@ func (files *Files) create(ctx context.Context, ref Reference) (*sql.DB, error) 
 	if err != nil {
 		return nil, err
 	}
-	err = initialize(ctx, db, files.store, ref)
+	err = files.initialize(ctx, db, ref)
 	if err == nil {
 		err = syncDirectory(bucket)
 	}
@@ -224,7 +249,7 @@ func (files *Files) create(ctx context.Context, ref Reference) (*sql.DB, error) 
 	return db, nil
 }
 
-func initialize(ctx context.Context, db *sql.DB, store FileID, ref Reference) error {
+func (files *Files) initialize(ctx context.Context, db *sql.DB, ref Reference) error {
 	var mode string
 	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode=DELETE`).Scan(&mode); err != nil || mode != "delete" {
 		return errors.Join(fmt.Errorf("thread journal mode: %q", mode), err)
@@ -234,15 +259,20 @@ func initialize(ctx context.Context, db *sql.DB, store FileID, ref Reference) er
 		return err
 	}
 	defer tx.Rollback()
+	if err := files.format.initialize(ctx, tx, files.store, ref); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func initializeRecordFile(ctx context.Context, tx *sql.Tx, store FileID, ref Reference) error {
 	for _, statement := range []string{headerSchema, recordsSchema, sealSchema} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO floret_thread_header VALUES(1,?,?,?,1)`, store[:], ref.File[:], string(ref.Thread)); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := tx.ExecContext(ctx, `INSERT INTO floret_thread_header VALUES(1,?,?,?,1)`, store[:], ref.File[:], string(ref.Thread))
+	return err
 }
 
 func (files *Files) transaction(ctx context.Context, ref Reference, readOnly bool, action func(*sql.Tx) error) error {
@@ -271,7 +301,7 @@ func (files *Files) onConnection(ctx context.Context, conn *sql.Conn, ref Refere
 	if err := tx.QueryRowContext(ctx, `SELECT store,file,thread,format FROM floret_thread_header WHERE singleton=1`).Scan(&store, &key, &thread, &format); err != nil {
 		return err
 	}
-	if format != 1 {
+	if format != files.format.version {
 		return ErrFileFormat
 	}
 	if !bytes.Equal(store, files.store[:]) || !bytes.Equal(key, ref.File[:]) || thread != string(ref.Thread) {
