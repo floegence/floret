@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -35,7 +36,7 @@ func peakOutputCharge(tx spi.ReadTx, source string) (int64, error) {
 	}
 	var charge outputCharge
 	key := page.Records[0].Key
-	if err := readOutputRecord(tx, key, &charge); err != nil || charge.Source != source || charge.Thread == "" || charge.Bytes <= 0 || charge.Bytes > OutputSourceMaxBytes || !bytes.Equal(key, charge.rankKey()) {
+	if err := decodeOutputRecord(page.Records[0].Value, &charge); err != nil || charge.Source != source || charge.Thread == "" || charge.Bytes <= 0 || charge.Bytes > OutputSourceMaxBytes || !bytes.Equal(key, charge.rankKey()) {
 		return 0, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return charge.Bytes, nil
@@ -72,6 +73,7 @@ func changeOutputCharge(tx spi.WriteTx, charge outputCharge, previous int64) (bo
 			return false, err
 		}
 	}
+	var records []spi.Record
 	if charge.Bytes == 0 {
 		if previous != 0 {
 			if err := tx.Delete(outputSourceNamespace, key); err != nil {
@@ -79,12 +81,11 @@ func changeOutputCharge(tx spi.WriteTx, charge outputCharge, previous int64) (bo
 			}
 		}
 	} else {
-		if err := putOutputRecord(tx, key, charge); err != nil {
+		record, err := encodeOutputRecord(key, charge)
+		if err != nil {
 			return false, err
 		}
-		if err := putOutputRecord(tx, charge.rankKey(), charge); err != nil {
-			return false, err
-		}
+		records = append(records, record, spi.Record{Key: charge.rankKey(), Value: record.Value})
 	}
 	after := max(before, charge.Bytes)
 	if previous == before && charge.Bytes < before {
@@ -92,9 +93,17 @@ func changeOutputCharge(tx spi.WriteTx, charge outputCharge, previous int64) (bo
 		if err != nil {
 			return false, err
 		}
+		after = max(after, charge.Bytes)
 	}
 	if before != after {
-		if err := putOutputRecord(tx, outputUsageKey(), total-before+after); err != nil {
+		record, err := encodeOutputRecord(outputUsageKey(), total-before+after)
+		if err != nil {
+			return false, err
+		}
+		records = append(records, record)
+	}
+	if len(records) > 0 {
+		if err := storagebridge.WriteRecords(tx, outputSourceNamespace, records); err != nil {
 			return false, err
 		}
 	}

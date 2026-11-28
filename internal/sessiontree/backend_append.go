@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -180,6 +181,19 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 }
 
 func readCanonicalEntryMetadata(tx spi.ReadTx, threadID, entryID string) (Entry, error) {
+	if journal := member.From(tx); journal != nil {
+		if threadID != journal.Thread() {
+			return Entry{}, ErrInvalidThreadAuthority
+		}
+		event, err := journal.Entry(entryID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Entry{}, ErrEntryNotFound
+		}
+		if err != nil {
+			return Entry{}, err
+		}
+		return materializeMemberEntry(journal, event)
+	}
 	locator, err := readEntryLocator(tx, threadID, entryID)
 	if err != nil {
 		return Entry{}, err

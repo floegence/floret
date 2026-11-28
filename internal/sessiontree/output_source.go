@@ -92,6 +92,9 @@ func readOutputRecord(tx spi.ReadTx, key []byte, target any) error {
 	if err != nil {
 		return err
 	}
+	return decodeOutputRecord(raw, target)
+}
+func decodeOutputRecord(raw []byte, target any) error {
 	payload, err := storagecodec.DecodeEnvelope(raw, "sessiontree-v39-output")
 	if err != nil {
 		return errors.Join(ErrAuthorityCorrupt, err)
@@ -101,16 +104,20 @@ func readOutputRecord(tx spi.ReadTx, key []byte, target any) error {
 	}
 	return nil
 }
-func putOutputRecord(tx spi.WriteTx, key []byte, value any) error {
+func encodeOutputRecord(key []byte, value any) (spi.Record, error) {
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return spi.Record{}, err
 	}
 	raw, err := storagecodec.EncodeEnvelope("sessiontree-v39-output", payload)
+	return spi.Record{Key: key, Value: raw}, err
+}
+func putOutputRecord(tx spi.WriteTx, key []byte, value any) error {
+	record, err := encodeOutputRecord(key, value)
 	if err != nil {
 		return err
 	}
-	return tx.Put(outputSourceNamespace, key, raw)
+	return tx.Put(outputSourceNamespace, key, record.Value)
 }
 func readOutputSource(tx spi.ReadTx, id string) (OutputSource, error) {
 	if journal := member.From(tx); journal != nil {
@@ -322,16 +329,20 @@ func readOutputSourcePage(ctx context.Context, tx spi.ReadTx, source OutputSourc
 	}
 	// Sparse chunk offsets locate a requested range without reading its prefix.
 	lo, hi := int64(1), source.Chunks
-	if journal := member.From(tx); journal != nil {
-		output, err := memberOutputPrefix(journal, source)
+	journal := member.From(tx)
+	var output member.Output
+	var initial member.OutputBlock
+	if journal != nil {
+		var err error
+		output, err = memberOutputPrefix(journal, source)
 		if err != nil {
 			return page, err
 		}
-		block, err := journal.BlockAtOffset(output, offset)
+		initial, err = journal.BlockAtOffset(output, offset)
 		if err != nil {
 			return page, err
 		}
-		lo, hi = block.Number+1, block.Number+1
+		lo, hi = initial.Number+1, initial.Number+1
 	}
 	for lo < hi {
 		if err := ctx.Err(); err != nil {
@@ -356,7 +367,17 @@ func readOutputSourcePage(ctx context.Context, tx spi.ReadTx, source OutputSourc
 		if err := ctx.Err(); err != nil {
 			return page, err
 		}
-		chunk, err := readOutputChunk(tx, source, seq)
+		var chunk OutputSourceChunk
+		var err error
+		if journal == nil {
+			chunk, err = readOutputChunk(tx, source, seq)
+		} else {
+			block := initial
+			if seq != lo {
+				block, err = journal.OutputBlock(output, seq-1)
+			}
+			chunk.Offset, chunk.Text = block.Start, string(block.Bytes)
+		}
 		if err != nil {
 			return page, err
 		}
