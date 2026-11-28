@@ -34,6 +34,10 @@ func (r *finalizationHistoryGuard) Path(ctx context.Context, threadID, leafID st
 	return r.MemoryRepo.Path(ctx, threadID, leafID)
 }
 
+func (r *finalizationHistoryGuard) Entries(context.Context, string) ([]sessiontree.Entry, error) {
+	return nil, errors.New("executing an admitted turn must not read the entire journal")
+}
+
 func TestAcceptedFinalBoundaryReadsOnlyCurrentTurnAcrossRuns(t *testing.T) {
 	for _, resumed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "original", true: "resumed"}[resumed], func(t *testing.T) {
@@ -66,7 +70,7 @@ func TestAcceptedFinalBoundaryReadsOnlyCurrentTurnAcrossRuns(t *testing.T) {
 			if !repo.finalizing.Load() {
 				t.Fatal("finalization guard was not activated")
 			}
-			entries, err := repo.Entries(t.Context(), "thread")
+			entries, err := repo.MemoryRepo.Entries(t.Context(), "thread")
 			if err != nil {
 				t.Fatal(err)
 			}

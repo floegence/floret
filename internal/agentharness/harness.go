@@ -780,19 +780,23 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "provider_state_load_error", engine.FailureOriginStorage)
 	}
-	snap, err := t.Journal(ctx)
+	activePath, err := t.harness.options.Repo.Path(ctx, t.id, "")
+	var history []session.Message
+	if err == nil {
+		history, err = sessiontree.BuildContextChecked(activePath, sessiontree.ContextOptions{})
+	}
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "snapshot_error", engine.FailureOriginStorage)
 	}
-	canonicalContext, err := t.harness.threadDetailContext(snap.Path, threadDetailRetainedFrom(snap.Path), threadDetailActivityContext{}, time.Time{})
+	canonicalContext, err := t.harness.threadDetailContext(activePath, threadDetailRetainedFrom(activePath), threadDetailActivityContext{}, time.Time{})
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "context_snapshot_error", engine.FailureOriginStorage)
 	}
-	historyPath := snap.Path
+	historyPath := activePath
 	if retrySource != nil {
 		historyPath, err = t.harness.options.Repo.Path(ctx, t.id, retrySource.ID)
 		if err != nil {
@@ -800,15 +804,13 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			defer cancelPersist()
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "retry_source_path_error", engine.FailureOriginStorage)
 		}
-	}
-	if retrySource != nil {
-		historyPath = sessiontree.RetainAppliedSteering(historyPath, snap.Path, retrySource.TurnID)
-	}
-	history, err := sessiontree.BuildContextChecked(historyPath, sessiontree.ContextOptions{})
-	if err != nil {
-		persistCtx, cancelPersist := turnFinalizationContext(ctx)
-		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "context_projection_error", engine.FailureOriginStorage)
+		historyPath = sessiontree.RetainAppliedSteering(historyPath, activePath, retrySource.TurnID)
+		history, err = sessiontree.BuildContextChecked(historyPath, sessiontree.ContextOptions{})
+		if err != nil {
+			persistCtx, cancelPersist := turnFinalizationContext(ctx)
+			defer cancelPersist()
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "context_projection_error", engine.FailureOriginStorage)
+		}
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
