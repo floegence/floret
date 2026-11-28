@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
+
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -16,11 +19,12 @@ const queryContinuationMaxBytes = 128 << 10
 // bounded canonical intervals outside the repository lock and write transaction.
 // The mutation checks the pinned metadata and manifest before using the result.
 type canonicalQueryContinuation struct {
-	threadID string
-	parentID string
-	metadata []byte
-	manifest []byte
-	state    *queryThread
+	threadID       string
+	parentID       string
+	metadata       []byte
+	manifest       []byte
+	state          *queryThread
+	memberRevision *int64
 }
 
 func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID string) (*canonicalQueryContinuation, error) {
@@ -36,16 +40,29 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 				return err
 			}
 			continuation.parentID = meta.ParentThreadID
-			continuation.metadata, err = tx.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, threadID))
+			reader := tx
+			journal := member.From(tx)
+			if journal != nil {
+				reader = storagebridge.CatalogReader(tx)
+			}
+			continuation.metadata, err = reader.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, threadID))
 			if err != nil {
 				return err
 			}
-			continuation.manifest, err = tx.Get(queryManifestNamespace, []byte(threadID))
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil
-			}
-			if err != nil {
-				return err
+			if journal != nil {
+				rev, err := journal.Revision()
+				if err != nil {
+					return err
+				}
+				continuation.memberRevision = &rev
+			} else {
+				continuation.manifest, err = tx.Get(queryManifestNamespace, []byte(threadID))
+				if errors.Is(err, spi.ErrNotFound) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
 			}
 			if previous := repo.queryThreads[threadID]; previous != nil && previous.leaf == meta.LeafID {
 				continuation.state = previous
@@ -57,7 +74,7 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 		return nil, err
 	}
 	var manifest queryManifest
-	if json.Unmarshal(continuation.manifest, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != meta.LeafID {
+	if continuation.memberRevision == nil && (json.Unmarshal(continuation.manifest, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != meta.LeafID) {
 		continuation.state = nil
 		return continuation, nil
 	}
@@ -108,18 +125,39 @@ func (repo *BackendRepo) loadQueryContinuation(ctx context.Context, threadID str
 }
 
 func (continuation *canonicalQueryContinuation) verify(tx spi.ReadTx) error {
-	metadata, err := tx.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, continuation.threadID))
+	reader := tx
+	if continuation.memberRevision != nil {
+		journal := member.From(tx)
+		if journal == nil || journal.Thread() != continuation.threadID {
+			return ErrInvalidThreadAuthority
+		}
+		rev, err := journal.Revision()
+		if err != nil {
+			return err
+		}
+		if rev != *continuation.memberRevision {
+			return spi.ErrConflict
+		}
+		reader = storagebridge.CatalogReader(tx)
+	}
+	metadata, err := reader.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordThread, continuation.threadID))
 	if errors.Is(err, spi.ErrNotFound) {
 		return spi.ErrConflict
 	}
 	if err != nil {
 		return err
 	}
+	if !bytes.Equal(metadata, continuation.metadata) {
+		return spi.ErrConflict
+	}
+	if continuation.memberRevision != nil {
+		return nil
+	}
 	manifest, err := tx.Get(queryManifestNamespace, []byte(continuation.threadID))
 	if err != nil && !errors.Is(err, spi.ErrNotFound) {
 		return err
 	}
-	if !bytes.Equal(metadata, continuation.metadata) || !bytes.Equal(manifest, continuation.manifest) {
+	if !bytes.Equal(manifest, continuation.manifest) {
 		return spi.ErrConflict
 	}
 	return nil

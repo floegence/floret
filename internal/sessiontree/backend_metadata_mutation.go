@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 )
@@ -45,6 +48,24 @@ func (repo *BackendRepo) canonicalThreadUpdate(ctx context.Context, threadID str
 }
 
 func readPublishedThreadMeta(tx spi.ReadTx, format backendDomainFormat, threadID string) (ThreadMeta, error) {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != threadID {
+			return ThreadMeta{}, ErrInvalidThreadAuthority
+		}
+		catalog := storagebridge.CatalogReader(tx)
+		if member.From(catalog) != nil {
+			return ThreadMeta{}, ErrInvalidThreadAuthority
+		}
+		meta, err := readPublishedThreadMeta(catalog, format, threadID)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+		_, leaf, err := journal.Head()
+		if err != nil || leaf != meta.LeafID {
+			return ThreadMeta{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return meta, nil
+	}
 	record, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)
 	if err != nil {
 		return ThreadMeta{}, err
@@ -73,17 +94,13 @@ func (repo *BackendRepo) PutProviderState(ctx context.Context, record ProviderSt
 		return err
 	}
 	return repo.canonicalThreadUpdate(ctx, record.ThreadID, func(tx spi.WriteTx, meta ThreadMeta) error {
-		return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordProviderState, meta.ID), backendDomainRecordProviderState, meta.ID, "", 0, record)
+		return storeProviderState(ctx, tx, record)
 	}, func(memory *MemoryRepo) error { return memory.PutProviderState(ctx, record) })
 }
 
 func (repo *BackendRepo) DeleteProviderState(ctx context.Context, threadID string) error {
 	return repo.canonicalThreadUpdate(ctx, threadID, func(tx spi.WriteTx, meta ThreadMeta) error {
-		err := tx.Delete(backendDomainV32Namespace, backendDomainKey(backendDomainRecordProviderState, meta.ID))
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil
-		}
-		return err
+		return clearProviderState(tx, meta.ID)
 	}, func(memory *MemoryRepo) error { return memory.DeleteProviderState(ctx, threadID) })
 }
 
@@ -96,15 +113,9 @@ func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state
 		if err := lifecycleRejectsWrite(meta); err != nil {
 			return err
 		}
-		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, meta.ID), backendDomainRecordTodo, meta.ID, "", 0)
+		current, _, err := readThreadTodo(tx, meta.ID)
 		if err != nil {
 			return err
-		}
-		var current AgentTodoState
-		if found {
-			if err := decodeBackendDomainValue(backendDomainV32Format, record, &current); err != nil || current.ThreadID != meta.ID || ValidateAgentTodoItems(current.Items) != nil {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
 		}
 		if current.Version != expectedVersion {
 			return ErrAgentTodoVersionConflict
@@ -113,7 +124,7 @@ func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state
 		if state.UpdatedAt.IsZero() {
 			state.UpdatedAt = time.Now()
 		}
-		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, meta.ID), backendDomainRecordTodo, meta.ID, "", 0, state); err != nil {
+		if err := storeThreadTodo(ctx, tx, state); err != nil {
 			return err
 		}
 		result = cloneAgentTodoState(state)
@@ -124,6 +135,48 @@ func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state
 		return err
 	})
 	return result, err
+}
+
+func readThreadTodo(tx spi.ReadTx, thread string) (AgentTodoState, bool, error) {
+	var result AgentTodoState
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != thread {
+			return result, false, ErrInvalidThreadAuthority
+		}
+		raw, found, err := journal.Todo()
+		if err != nil || !found {
+			return result, false, err
+		}
+		if err := storagecodec.DecodeJSON(raw, &result); err != nil {
+			return result, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+	} else {
+		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, thread), backendDomainRecordTodo, thread, "", 0)
+		if err != nil || !found {
+			return result, false, err
+		}
+		if err := decodeBackendDomainValue(backendDomainV32Format, record, &result); err != nil {
+			return result, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+	}
+	if result.ThreadID != thread || ValidateAgentTodoItems(result.Items) != nil {
+		return result, false, ErrAuthorityCorrupt
+	}
+	return result, true, nil
+}
+
+func storeThreadTodo(ctx context.Context, tx spi.WriteTx, state AgentTodoState) error {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != state.ThreadID {
+			return ErrInvalidThreadAuthority
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+		return journal.StoreTodo(state.UpdatedAt.UnixNano(), raw)
+	}
+	return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, state.ThreadID), backendDomainRecordTodo, state.ThreadID, "", 0, state)
 }
 
 func (repo *BackendRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
@@ -152,8 +205,10 @@ func (repo *BackendRepo) UpdateThread(ctx context.Context, meta ThreadMeta) erro
 					return errors.Join(ErrAuthorityCorrupt, err)
 				}
 			}
-			if err := tx.Delete(queryManifestNamespace, []byte(meta.ID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
-				return err
+			if member.From(tx) == nil {
+				if err := tx.Delete(queryManifestNamespace, []byte(meta.ID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
+					return err
+				}
 			}
 		}
 		return persistThreadMetadata(ctx, tx, meta)
@@ -164,16 +219,23 @@ func persistThreadMetadata(ctx context.Context, tx spi.WriteTx, meta ThreadMeta)
 	if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordThread, meta.ID), backendDomainRecordThread, meta.ID, "", 0, meta); err != nil {
 		return err
 	}
-	raw, err := tx.Get(queryManifestNamespace, []byte(meta.ID))
-	if errors.Is(err, spi.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var manifest queryManifest
-	if json.Unmarshal(raw, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != meta.LeafID {
-		return nil
+	if journal := member.From(tx); journal != nil {
+		ready, err := journal.QueryReady(meta.LeafID)
+		if err != nil || !ready {
+			return err
+		}
+	} else {
+		raw, err := tx.Get(queryManifestNamespace, []byte(meta.ID))
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var manifest queryManifest
+		if json.Unmarshal(raw, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != meta.LeafID {
+			return nil
+		}
 	}
 	key := meta.ID + "\x00threads"
 	document, found, err := readQueryDocumentByKey(queryMetadataReader(tx), meta.ID, key)
@@ -181,6 +243,9 @@ func persistThreadMetadata(ctx context.Context, tx spi.WriteTx, meta ThreadMeta)
 		return err
 	}
 	if !found {
+		if member.From(tx) != nil {
+			return spi.ErrIndexCorrupt
+		}
 		return tx.Delete(queryManifestNamespace, []byte(meta.ID))
 	}
 	var metadata queryDocumentMetadata

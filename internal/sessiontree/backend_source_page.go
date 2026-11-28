@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -33,6 +34,7 @@ func (repo *BackendRepo) SourceBodyPage(ctx context.Context, options SourceBodyP
 			return err
 		}
 		var after []byte
+		afterOrdinal := -1
 		if options.AfterEntryID != "" {
 			previous, err := readEntryLocator(tx, meta.ID, options.AfterEntryID)
 			if err != nil {
@@ -46,30 +48,55 @@ func (repo *BackendRepo) SourceBodyPage(ctx context.Context, options SourceBodyP
 				return ErrEntryNotFound
 			}
 			after = sourceLocatorKey(meta.ID, options.SourceID, previous.Ordinal)
+			afterOrdinal = previous.Ordinal
 		}
-		prefix := backendDomainKey("source", meta.ID, options.SourceID)
-		page, err := tx.Scan(spi.ScanRequest{Namespace: backendEntryIndexNamespace, Start: prefix, End: sourceLocatorKey(meta.ID, options.SourceID, leaf.Ordinal+1), After: after, Limit: 256})
-		if err != nil {
-			return err
+		var sources []Entry
+		var more bool
+		if journal := member.From(tx); journal != nil {
+			events, hasMore, err := journal.SourcePage(options.SourceID, afterOrdinal, leaf.Ordinal, 256)
+			if err != nil {
+				return err
+			}
+			more = hasMore
+			for _, event := range events {
+				entry, err := memberPathEntry(journal, event)
+				if err != nil {
+					return err
+				}
+				sources = append(sources, entry)
+			}
+		} else {
+			prefix := backendDomainKey("source", meta.ID, options.SourceID)
+			page, err := tx.Scan(spi.ScanRequest{Namespace: backendEntryIndexNamespace, Start: prefix, End: sourceLocatorKey(meta.ID, options.SourceID, leaf.Ordinal+1), After: after, Limit: 256})
+			if err != nil {
+				return err
+			}
+			more = page.HasMore
+			for _, row := range page.Records {
+				node, err := readEntryLocator(tx, meta.ID, string(row.Value))
+				if err != nil || node.Ordinal > leaf.Ordinal || !bytes.Equal(row.Key, sourceLocatorKey(meta.ID, options.SourceID, node.Ordinal)) {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+				entry, err := readLocatedEntry(tx, backendDomainV32Format, meta.ID, node)
+				if err != nil {
+					return err
+				}
+				sources = append(sources, entry)
+			}
 		}
-		for position, row := range page.Records {
+		for position, entry := range sources {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			node, err := readEntryLocator(tx, meta.ID, string(row.Value))
-			if err != nil || node.Ordinal > leaf.Ordinal || !bytes.Equal(row.Key, sourceLocatorKey(meta.ID, options.SourceID, node.Ordinal)) {
-				return errors.Join(ErrAuthorityCorrupt, err)
-			}
-			entry, err := readLocatedEntry(tx, backendDomainV32Format, meta.ID, node)
-			if err != nil || !slices.Contains(entrySourceIDs(entry), options.SourceID) {
-				return errors.Join(ErrAuthorityCorrupt, err)
+			if !slices.Contains(entrySourceIDs(entry), options.SourceID) {
+				return ErrAuthorityCorrupt
 			}
 			result.NextEntryID = entry.ID
-			result.HasMore = position+1 < len(page.Records) || page.HasMore
-			if node.Depth > leaf.Depth {
+			result.HasMore = position+1 < len(sources) || more
+			if entry.PathDepth > leaf.Depth {
 				continue
 			}
-			ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, node.Depth)
+			ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, entry.PathDepth)
 			if err != nil {
 				return err
 			}

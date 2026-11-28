@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -65,7 +66,9 @@ func (repo *BackendRepo) forkCanonicalThread(ctx context.Context, opts ForkOptio
 		mutation.tx = tx
 		var copyOutput func(OutputSource, OutputSnapshot) error
 		if independent {
-			copyOutput = func(origin OutputSource, pin OutputSnapshot) error { return retainDetachedOutput(ctx, source, tx, origin, pin) }
+			copyOutput = func(origin OutputSource, pin OutputSnapshot) error {
+				return retainDetachedOutput(ctx, source, tx, origin, pin)
+			}
 		}
 		if err := mutation.forkThread(opts, source, copyOutput); err != nil {
 			return err
@@ -207,7 +210,13 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions, sourceTx 
 	if err != nil {
 		return err
 	}
-	if err := pinForkOutputStreams(ctx, sourceTx, entries, func(source OutputSource, pin OutputSnapshot) error {
+	var workPins map[string]int64
+	if sourceJournal := member.From(sourceTx); sourceJournal != nil {
+		workPins, err = copyMemberForkOutputs(sourceJournal, tx, entries, artifacts, aliases, now)
+		if err != nil {
+			return err
+		}
+	} else if err := pinForkOutputStreams(ctx, sourceTx, entries, func(source OutputSource, pin OutputSnapshot) error {
 		if copyOutput != nil {
 			return copyOutput(source, pin)
 		}
@@ -239,13 +248,28 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions, sourceTx 
 		if err := putCanonicalStoredEntry(ctx, tx, backendDomainV32Format, backendDomainEntryKey(newID, ordinal), entry.ID, newID, ordinal, entry); err != nil {
 			return err
 		}
+		if workPins != nil && entry.Type == EntryHostWork {
+			work, err := decodeHostWork(entry)
+			if err != nil {
+				return err
+			}
+			if work.OutputStream != "" {
+				pin := workPins[work.ID]
+				if pin == 0 {
+					return ErrAuthorityCorrupt
+				}
+				if err := member.From(tx).LinkWorkOutput(entry.ID, work.OutputStream, pin); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	destinationReader := reader
 	if copyOutput != nil {
 		destinationReader = canonicalArtifactReader(ctx, tx)
 	}
 	for _, record := range artifacts {
-		if record.OutputSourceID != "" {
+		if record.OutputSourceID != "" && workPins == nil {
 			if copyOutput != nil {
 				source, err := readOutputSource(sourceTx, record.OutputSourceID)
 				if err != nil {
@@ -265,15 +289,11 @@ func (mutation *canonicalJournalMutation) forkThread(opts ForkOptions, sourceTx 
 			return err
 		}
 	}
-	if record, found, err := readBackendDomainRecord(sourceTx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, source.ID), backendDomainRecordTodo, source.ID, "", 0); err != nil {
+	if todo, found, err := readThreadTodo(sourceTx, source.ID); err != nil {
 		return err
 	} else if found && !opts.ReferenceHistory {
-		var todo AgentTodoState
-		if err := decodeBackendDomainValue(backendDomainV32Format, record, &todo); err != nil || todo.ThreadID != source.ID || ValidateAgentTodoItems(todo.Items) != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
-		}
 		todo.ThreadID = newID
-		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, newID), backendDomainRecordTodo, newID, "", 0, todo); err != nil {
+		if err := storeThreadTodo(ctx, tx, todo); err != nil {
 			return err
 		}
 	}

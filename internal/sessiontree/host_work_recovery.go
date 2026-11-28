@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -131,6 +132,18 @@ func (repo *BackendRepo) PendingHostWorks(ctx context.Context, thread string) ([
 	var works []HostWork
 	var rebuild bool
 	err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, meta ThreadMeta) error {
+		if member.From(tx) != nil {
+			entries, err := canonicalHostWorkEntries(ctx, tx, meta)
+			if err != nil {
+				return err
+			}
+			all, _, err := hostWorksFromPath(entries)
+			if err != nil {
+				return err
+			}
+			works = pendingHostWorks(all)
+			return nil
+		}
 		coverage, err := readSparseCoverage(tx, thread)
 		if err != nil {
 			return err

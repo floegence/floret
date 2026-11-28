@@ -9,6 +9,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -182,6 +183,10 @@ func (repo *BackendRepo) prepareContextSourceMetadata(ctx context.Context, threa
 	for {
 		complete := false
 		err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, _ ThreadMeta) error {
+			if member.From(tx) != nil {
+				complete = true
+				return nil
+			}
 			count, err := readJournalCount(tx, thread)
 			if err != nil {
 				return err
@@ -240,6 +245,29 @@ func (repo *BackendRepo) prepareContextSourceMetadata(ctx context.Context, threa
 }
 
 func visitContextMetadataPage(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, node entryLocator, limit int, visit func(Entry) error) (PathPage, error) {
+	if journal := member.From(tx); journal != nil {
+		page := PathPage{NewestOrdinal: node.Depth}
+		id := node.ID
+		for index := 0; index < limit && id != ""; index++ {
+			event, err := journal.Entry(id)
+			if err != nil || event.Depth != node.Depth-int64(index) || (event.Depth == 1) != (event.ParentID == "") {
+				return PathPage{}, errors.Join(ErrAuthorityCorrupt, err)
+			}
+			entry, err := memberPathEntry(journal, event)
+			if err != nil {
+				return PathPage{}, err
+			}
+			if err := visit(entry); err != nil {
+				return PathPage{}, err
+			}
+			id = event.ParentID
+			if index+1 == limit && id != "" {
+				page.NextEntryID = event.ID
+				page.HasMore = true
+			}
+		}
+		return page, nil
+	}
 	if node.Depth != int64(node.Ordinal)+1 {
 		return visitCanonicalPage(ctx, tx, meta, node.ID, "", limit, visit)
 	}

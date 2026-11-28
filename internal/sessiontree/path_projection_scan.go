@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -140,6 +141,13 @@ func (repo *BackendRepo) ScanPathProjection(ctx context.Context, threadID, leafI
 			}
 			// Sources were decoded and checked by this scan. Canonical records are
 			// immutable; only ancestry and requested body authority need new I/O.
+			if journal := member.From(tx); journal != nil {
+				var err error
+				result, err = materializeProjectionPage(page, fields, nil, func(id string, source CanonicalField) (string, error) {
+					return readMemberProjectionField(journal, id, source)
+				})
+				return err
+			}
 			bodies := newCanonicalBodyPageReader(ctx, tx)
 			var err error
 			result, err = materializeProjectionPage(page, fields, bodies.prefetch, func(_ string, source CanonicalField) (string, error) {

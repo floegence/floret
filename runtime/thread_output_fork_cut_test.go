@@ -10,7 +10,12 @@ import (
 )
 
 func TestThreadFileForkPinsLiveOutputAtForkAfterHistoricalAnswer(t *testing.T) {
-	fixture := newOutputRuntimeFixtureWithStorage(t, true, tools.Result{Text: "running"}, storage.ThreadSQLite)
+	qualifyOutputFork(t, storage.ThreadSQLite)
+}
+
+func qualifyOutputFork(t *testing.T, source func(string) storage.Source) {
+	t.Helper()
+	fixture := newOutputRuntimeFixtureWithStorage(t, true, tools.Result{Text: "running"}, source)
 	ctx := t.Context()
 	thread := fixture.binding.ThreadID
 	service := fixture.service

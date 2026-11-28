@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -53,6 +55,19 @@ func entrySourceIDs(entry Entry) []string {
 }
 
 func readEntryLocator(tx spi.ReadTx, threadID, entryID string) (entryLocator, error) {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != threadID {
+			return entryLocator{}, ErrInvalidThreadAuthority
+		}
+		event, err := journal.Entry(entryID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return entryLocator{}, ErrEntryNotFound
+		}
+		if err != nil {
+			return entryLocator{}, err
+		}
+		return entryLocator{ID: event.ID, Parent: event.ParentID, Depth: event.Depth, Ordinal: int(event.Number)}, nil
+	}
 	key := entryLocatorKey(threadID, entryID)
 	identity := projectionReadKey{backendEntryIndexNamespace, string(key)}
 	memo, _ := tx.(*projectionSourceTx)
@@ -87,6 +102,16 @@ func decodeEntryLocator(raw []byte, id string) (entryLocator, error) {
 }
 
 func entryAncestor(ctx context.Context, tx spi.ReadTx, threadID string, node entryLocator, depth int64) (entryLocator, error) {
+	if journal := member.From(tx); journal != nil && node.Depth == int64(node.Ordinal)+1 && depth > 0 && depth < node.Depth {
+		if journal.Thread() != threadID {
+			return entryLocator{}, ErrInvalidThreadAuthority
+		}
+		event, err := journal.EntryNumber(depth - 1)
+		if err != nil || event.Depth != depth {
+			return entryLocator{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return entryLocator{ID: event.ID, Depth: event.Depth, Parent: event.ParentID, Ordinal: int(event.Number)}, nil
+	}
 	for node.Depth > depth {
 		if err := ctx.Err(); err != nil {
 			return entryLocator{}, err
@@ -269,6 +294,20 @@ type turnEntryLocator struct {
 }
 
 func readTurnEntryLocator(tx spi.ReadTx, threadID, turnID string) (turnEntryLocator, error) {
+	if journal := member.From(tx); journal != nil {
+		var result turnEntryLocator
+		if journal.Thread() != threadID {
+			return result, ErrInvalidThreadAuthority
+		}
+		err := journal.VisitTurn(turnID, true, func(event member.EntryEvent) error {
+			entry, err := materializeMemberEntry(journal, event)
+			if err == nil {
+				result = observeTurnEntryLocator(result, entry)
+			}
+			return err
+		})
+		return result, err
+	}
 	raw, err := tx.Get(backendEntryIndexNamespace, backendDomainKey("turn", threadID, turnID))
 	if errors.Is(err, spi.ErrNotFound) {
 		return turnEntryLocator{}, nil
@@ -328,6 +367,13 @@ func putJournalCount(tx spi.WriteTx, threadID string, count int) error {
 }
 
 func readJournalCount(tx spi.ReadTx, threadID string) (int, error) {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != threadID {
+			return 0, ErrInvalidThreadAuthority
+		}
+		count, _, err := journal.Head()
+		return int(count), err
+	}
 	raw, err := tx.Get(backendEntryIndexNamespace, backendDomainKey("count", threadID))
 	if err != nil {
 		return 0, errors.Join(ErrAuthorityCorrupt, err)
@@ -340,6 +386,13 @@ func readJournalCount(tx spi.ReadTx, threadID string) (int, error) {
 }
 
 func readLocatedEntry(tx spi.ReadTx, format backendDomainFormat, threadID string, locator entryLocator) (Entry, error) {
+	if journal := member.From(tx); journal != nil {
+		event, err := journal.EntryNumber(int64(locator.Ordinal))
+		if err != nil || journal.Thread() != threadID || event.ID != locator.ID || event.Depth != locator.Depth || event.ParentID != locator.Parent {
+			return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return materializeMemberEntry(journal, event)
+	}
 
 	encoded, err := tx.Get(format.namespace, backendDomainEntryKey(threadID, locator.Ordinal))
 	if err != nil {

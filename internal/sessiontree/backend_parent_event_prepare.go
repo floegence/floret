@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -19,6 +19,9 @@ import (
 func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canonicalSnapshotReader, threadID string) (bool, error) {
 	if !repo.parentEventsEnabled() || repo.domainFormat().version < backendDomainV32Version {
 		return false, nil
+	}
+	if member.Enabled(repo.backend) {
+		return repo.prepareMemberParentEvents(ctx, threadID)
 	}
 	meta, err := readPublishedThreadMeta(reader, repo.domainFormat(), threadID)
 	if err != nil {
@@ -129,7 +132,7 @@ func appendCanonicalParentEvent(ctx context.Context, tx spi.WriteTx, event Paren
 			return false, err
 		}
 		existing, err := decodeParentEvent(entry)
-		if err != nil || entry.Type != EntryParentEvent || !reflect.DeepEqual(existing, event) {
+		if err != nil || entry.Type != EntryParentEvent || !sameParentEvent(existing, event) {
 			return false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 		return false, nil
@@ -156,22 +159,29 @@ func appendCanonicalParentEvent(ctx context.Context, tx spi.WriteTx, event Paren
 	if err := putCanonicalStoredEntry(ctx, tx, backendDomainV32Format, backendDomainEntryKey(meta.ID, count), entry.ID, meta.ID, count, entry); err != nil {
 		return false, err
 	}
-	if record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordProviderState, meta.ID), backendDomainRecordProviderState, meta.ID, "", 0); err != nil {
+	if state, found, err := currentProviderState(tx, meta.ID); err != nil {
 		return false, err
 	} else if found {
-		var state ProviderStateRecord
-		if err := decodeBackendDomainValue(backendDomainV32Format, record, &state); err != nil || state.ThreadID != meta.ID || validateProviderStateRecord(state) != nil {
-			return false, errors.Join(ErrAuthorityCorrupt, err)
-		}
 		if state.LeafEntryID == meta.LeafID {
 			state.LeafEntryID, state.UpdatedAt = entry.ID, entry.CreatedAt
-			if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordProviderState, meta.ID), backendDomainRecordProviderState, meta.ID, "", 0, state); err != nil {
+			if err := storeProviderState(ctx, tx, state); err != nil {
 				return false, err
 			}
 		}
 	}
 	// Parent events do not introduce searchable documents. Advance an already
 	// complete index atomically with its thread row and retain frozen pages.
+	if journal := member.From(tx); journal != nil {
+		before := meta
+		meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
+		if err := persistThreadMetadata(ctx, tx, meta); err != nil {
+			return false, err
+		}
+		if _, err := appendCanonicalQuery(ctx, tx, before, meta, entry, nil); err != nil {
+			return false, err
+		}
+		return true, advanceParentRecoverySource(tx, meta.ID, count, count+1)
+	}
 	if raw, err := tx.Get(queryManifestNamespace, []byte(meta.ID)); err == nil {
 		var manifest queryManifest
 		if json.Unmarshal(raw, &manifest) == nil && manifest.Version == 3 && manifest.Leaf == meta.LeafID {
@@ -198,6 +208,16 @@ type parentRecoverySource struct {
 }
 
 func parentRecoveryPrepared(tx spi.ReadTx, thread string, count int) (bool, error) {
+	if journal := member.From(tx); journal != nil {
+		if thread != journal.Thread() {
+			return false, ErrInvalidThreadAuthority
+		}
+		through, err := journal.ParentRecoveryThrough()
+		if err != nil || through > int64(count) {
+			return false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return through == int64(count), nil
+	}
 	raw, err := tx.Get(queryManifestNamespace, []byte(thread))
 	if errors.Is(err, spi.ErrNotFound) {
 		return false, nil
@@ -223,6 +243,12 @@ func parentRecoveryPrepared(tx spi.ReadTx, thread string, count int) (bool, erro
 }
 
 func writeParentRecoverySource(tx spi.WriteTx, thread string, count int) error {
+	if journal := member.From(tx); journal != nil {
+		if thread != journal.Thread() {
+			return ErrInvalidThreadAuthority
+		}
+		return journal.CheckParentRecovery(int64(count))
+	}
 	raw, err := tx.Get(queryManifestNamespace, []byte(thread))
 	if errors.Is(err, spi.ErrNotFound) {
 		return nil

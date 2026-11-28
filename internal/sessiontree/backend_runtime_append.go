@@ -87,20 +87,15 @@ func (repo *BackendRepo) AppendRuntimeFacts(ctx context.Context, threadID string
 }
 
 func reanchorCanonicalProviderState(ctx context.Context, tx spi.WriteTx, entry Entry) error {
-	key := backendDomainKey(backendDomainRecordProviderState, entry.ThreadID)
-	record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, key, backendDomainRecordProviderState, entry.ThreadID, "", 0)
+	state, found, err := currentProviderState(tx, entry.ThreadID)
 	if err != nil || !found {
 		return err
-	}
-	var state ProviderStateRecord
-	if err := decodeBackendDomainValue(backendDomainV32Format, record, &state); err != nil || state.ThreadID != entry.ThreadID || validateProviderStateRecord(state) != nil {
-		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	if state.LeafEntryID != entry.ParentID {
 		return nil
 	}
 	state.LeafEntryID, state.UpdatedAt = entry.ID, entry.CreatedAt
-	return putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, key, backendDomainRecordProviderState, entry.ThreadID, "", 0, state)
+	return storeProviderState(ctx, tx, state)
 }
 
 func (repo *BackendRepo) CommitProviderContext(ctx context.Context, req ProviderContextCommit) ([]Entry, error) {
@@ -128,13 +123,8 @@ func (repo *BackendRepo) CommitProviderContext(ctx context.Context, req Provider
 		if !req.Partial && cancelled {
 			return context.Canceled
 		}
-		key := backendDomainKey(backendDomainRecordProviderState, req.ThreadID)
 		if req.Clear {
-			err := mutation.tx.Delete(backendDomainV32Namespace, key)
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil
-			}
-			return err
+			return clearProviderState(mutation.tx, req.ThreadID)
 		}
 		for _, entry := range req.Entries {
 			if req.Partial && entry.Type != EntryAssistantMessage && (entry.Type != EntryCustom || entry.Metadata["kind"] != HostedToolEntryKind) {
@@ -153,7 +143,7 @@ func (repo *BackendRepo) CommitProviderContext(ctx context.Context, req Provider
 		}
 		if req.State != nil {
 			state := ProviderStateRecord{ThreadID: req.ThreadID, LeafEntryID: mutation.meta.LeafID, CompatibilityKey: req.CompatibilityKey, State: *provider.CloneState(req.State), CreatedByRunID: req.RunID, CreatedByTurnID: req.TurnID, UpdatedAt: canonicalTime(req.Now, mutation.repo.now)}
-			return putBackendDomainRecordContext(ctx, mutation.tx, backendDomainV32Format, key, backendDomainRecordProviderState, req.ThreadID, "", 0, state)
+			return storeProviderState(ctx, mutation.tx, state)
 		}
 		return nil
 	}, func(memory *MemoryRepo) error {

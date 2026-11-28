@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -38,7 +39,59 @@ func StageMemberJournal(ctx context.Context, source spi.ReadTx, destination *mem
 	if err != nil || count != expected || (count == 0) != (meta.LeafID == "") {
 		return 0, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	return count, destination.SetLeaf(meta.LeafID)
+	if err := destination.SetLeaf(meta.LeafID); err != nil {
+		return 0, err
+	}
+	if err := transferMemberCheckpoints(source, destination, false); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func transferMemberCheckpoints(source spi.ReadTx, target *member.Journal, verify bool) error {
+	thread := target.Thread()
+	todo, hasTodo, err := readThreadTodo(source, thread)
+	if err != nil {
+		return err
+	}
+	state, hasState, err := currentProviderState(source, thread)
+	if err != nil {
+		return err
+	}
+	check := func(value any, found bool, at time.Time, read func() ([]byte, bool, error), write func(int64, []byte) error) error {
+		var raw []byte
+		if found {
+			if !time.Unix(0, at.UnixNano()).Equal(at) {
+				return ErrAuthorityCorrupt
+			}
+			var err error
+			raw, err = json.Marshal(value)
+			if err != nil {
+				return err
+			}
+		}
+		current, exists, err := read()
+		if err != nil {
+			return err
+		}
+		if verify {
+			if exists != found || !bytes.Equal(current, raw) {
+				return ErrAuthorityCorrupt
+			}
+			return nil
+		}
+		if exists {
+			return spi.ErrConflict
+		}
+		if !found {
+			return nil
+		}
+		return write(at.UnixNano(), raw)
+	}
+	if err := check(todo, hasTodo, todo.UpdatedAt, target.Todo, target.StoreTodo); err != nil {
+		return err
+	}
+	return check(state, hasState, state.UpdatedAt, target.Continuation, target.StoreContinuation)
 }
 
 func stageStoredMemberEntry(ctx context.Context, source spi.ReadTx, destination *member.Journal, number int64, stored canonicalStoredEntry) error {
@@ -150,6 +203,9 @@ func VerifyMemberJournal(ctx context.Context, source spi.ReadTx, destination *me
 		return OfflineJournalProof{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	copy(proof.Digest[:], hash.Sum(nil))
+	if err := transferMemberCheckpoints(source, destination, true); err != nil {
+		return OfflineJournalProof{}, err
+	}
 	return proof, nil
 }
 

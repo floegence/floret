@@ -50,6 +50,11 @@ type ParentEventAdmission struct {
 	LastEventID  string `json:"last_event_id"`
 }
 
+func sameParentEvent(left, right ParentEvent) bool {
+	left.ReceivedAt, right.ReceivedAt = left.ReceivedAt.UTC(), right.ReceivedAt.UTC()
+	return left == right
+}
+
 type ParentReportRequest struct {
 	Invocation EffectInvocationIdentity
 	RequestKey string

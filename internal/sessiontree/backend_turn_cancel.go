@@ -120,7 +120,7 @@ func (mutation *canonicalJournalMutation) failUnknownEffectTurn(req FailUnknownE
 	if err != nil {
 		return FailUnknownEffectTurnResult{}, err
 	}
-	if err := mutation.tx.Delete(backendDomainV32Namespace, backendDomainKey(backendDomainRecordProviderState, req.ThreadID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
+	if err := clearProviderState(mutation.tx, req.ThreadID); err != nil {
 		return FailUnknownEffectTurnResult{}, err
 	}
 	return result, nil

@@ -5,8 +5,10 @@ CREATE TABLE floret_thread_header (
   thread TEXT NOT NULL CHECK (length(thread) > 0),
   format INTEGER NOT NULL CHECK (format = 2),
   leaf_seq INTEGER REFERENCES history_events(seq),
+  parent_checked_seq INTEGER REFERENCES history_events(seq),
   commit_rev INTEGER NOT NULL DEFAULT 0 CHECK (commit_rev >= 0),
   read_gen INTEGER NOT NULL DEFAULT 1 CHECK (read_gen > 0),
+  read_leaf_seq INTEGER REFERENCES history_events(seq),
   read_version INTEGER NOT NULL CHECK (read_version > 0),
   read_rev INTEGER NOT NULL DEFAULT 0 CHECK (read_rev BETWEEN 0 AND commit_rev)
 ) STRICT;
@@ -23,6 +25,8 @@ CREATE TABLE history_events (
   commit_rev INTEGER NOT NULL CHECK (commit_rev > 0),
   kind TEXT NOT NULL, schema_ver INTEGER NOT NULL CHECK (schema_ver > 0),
   at_ns INTEGER, turn_id TEXT, run_id TEXT,
+  turn_marker TEXT, content_source TEXT, reasoning_source TEXT,
+  recovery_group TEXT CHECK(recovery_group IN ('queue','parent','host_work')),
   parent_seq INTEGER REFERENCES history_events(seq) CHECK (parent_seq < seq),
   subject_seq INTEGER REFERENCES history_events(seq),
   object_seq INTEGER REFERENCES history_events(seq),
@@ -44,9 +48,15 @@ CREATE TABLE history_events (
   CHECK (work_head = 0 OR state IS NULL OR state IN ('prepared','dispatching'))
 ) STRICT;
 CREATE INDEX history_commit ON history_events(commit_rev, seq);
+CREATE INDEX history_todo ON history_events(seq) WHERE kind='todo_updated';
+CREATE UNIQUE INDEX history_continuation ON history_events(kind) WHERE kind='provider_continuation';
 CREATE UNIQUE INDEX history_entry_order ON history_events(entry_no) WHERE entry_no IS NOT NULL;
 CREATE INDEX history_parent ON history_events(parent_seq, seq) WHERE parent_seq IS NOT NULL;
 CREATE INDEX history_turn ON history_events(turn_id, seq) WHERE turn_id IS NOT NULL;
+CREATE INDEX history_content_source ON history_events(content_source,entry_no) WHERE content_source IS NOT NULL;
+CREATE INDEX history_reasoning_source ON history_events(reasoning_source,entry_no) WHERE reasoning_source IS NOT NULL;
+CREATE UNIQUE INDEX history_active_turn ON history_events(turn_id) WHERE kind='turn_marker' AND work_head=1;
+CREATE INDEX history_recovery_group ON history_events(recovery_group,entry_no) WHERE recovery_group IS NOT NULL;
 CREATE INDEX history_subject ON history_events(subject_seq, kind, seq) WHERE subject_seq IS NOT NULL;
 CREATE UNIQUE INDEX history_request ON history_events(scope_key, request_key) WHERE request_key IS NOT NULL;
 CREATE UNIQUE INDEX history_prompt_order ON history_events(prompt_scope,kind,prompt_no) WHERE prompt_no IS NOT NULL;

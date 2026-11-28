@@ -9,6 +9,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -77,21 +78,12 @@ func (repo *BackendRepo) canonicalThreadView(ctx context.Context, threadID strin
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	return repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
-		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)
+		meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, threadID)
 		if err != nil {
 			return err
 		}
-		if !found {
-			if _, deleted, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTombstone, threadID), backendDomainRecordTombstone, threadID, "", 0); err != nil {
-				return err
-			} else if deleted {
-				return ErrThreadDeleted
-			}
-			return ErrThreadNotFound
-		}
-		var meta ThreadMeta
-		if err := decodeBackendDomainValue(backendDomainV32Format, record, &meta); err != nil || meta.ID != threadID || ValidateThreadMetaAuthority(meta) != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
+		if member.From(tx) != nil {
+			return direct(tx, meta)
 		}
 		// Publication and canonical writes validate the journal invariant. Reads
 		// verify the requested immutable records, never all historical bodies.
@@ -134,13 +126,11 @@ func threadRouteError(err error) error {
 func (repo *BackendRepo) ReadAgentTodoState(ctx context.Context, threadID string) (AgentTodoState, error) {
 	result := AgentTodoState{ThreadID: threadID}
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordTodo, meta.ID), backendDomainRecordTodo, meta.ID, "", 0)
+		state, found, err := readThreadTodo(tx, meta.ID)
 		if err != nil || !found {
 			return err
 		}
-		if err := decodeBackendDomainValue(backendDomainV32Format, record, &result); err != nil || result.ThreadID != meta.ID || ValidateAgentTodoItems(result.Items) != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
-		}
+		result = state
 		return nil
 	}, func(memory *MemoryRepo) error {
 		var err error
@@ -153,16 +143,14 @@ func (repo *BackendRepo) ReadAgentTodoState(ctx context.Context, threadID string
 func (repo *BackendRepo) ProviderState(ctx context.Context, threadID string) (ProviderStateRecord, error) {
 	var result ProviderStateRecord
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordProviderState, meta.ID), backendDomainRecordProviderState, meta.ID, "", 0)
+		state, found, err := currentProviderState(tx, meta.ID)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return ErrProviderStateNotFound
 		}
-		if err := decodeBackendDomainValue(backendDomainV32Format, record, &result); err != nil || result.ThreadID != meta.ID || validateProviderStateRecord(result) != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
-		}
+		result = state
 		return nil
 	}, func(memory *MemoryRepo) error {
 		var err error

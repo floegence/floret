@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -22,6 +23,16 @@ type effectSourceLocator struct {
 }
 
 func readEffectSourceLocator(tx spi.ReadTx, attemptID string) (effectSourceLocator, error) {
+	if journal := member.From(tx); journal != nil {
+		id, err := journal.AttemptEntry(strings.TrimSpace(attemptID))
+		if err != nil {
+			return effectSourceLocator{}, err
+		}
+		if id == "" {
+			return effectSourceLocator{}, ErrEffectAttemptNotFound
+		}
+		return effectSourceLocator{journal.Thread(), id}, nil
+	}
 	raw, err := tx.Get(backendEntryIndexNamespace, backendDomainKey("effect_owner", strings.TrimSpace(attemptID)))
 	if errors.Is(err, spi.ErrNotFound) {
 		return effectSourceLocator{}, ErrEffectAttemptNotFound
@@ -63,6 +74,9 @@ func putEffectSourceLocator(tx spi.WriteTx, entry Entry) error {
 	raw, err := json.Marshal(effectSourceLocator{ThreadID: entry.ThreadID, EntryID: entry.ID})
 	if err != nil {
 		return err
+	}
+	if member.From(tx) != nil {
+		return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: backendEntryIndexNamespace, Key: backendDomainKey("effect_owner", attempt.EffectAttemptID)}, raw)
 	}
 	if err := storagebridge.PutIndexedThreadRecord(tx, storagebridge.CatalogRecord{Namespace: backendEntryIndexNamespace, Key: backendDomainKey("effect_owner", attempt.EffectAttemptID)}, raw); err != nil {
 		return err

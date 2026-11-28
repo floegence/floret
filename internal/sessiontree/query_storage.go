@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 	"sort"
@@ -98,6 +100,9 @@ func queryMetadataWriter(tx spi.WriteTx) *queryMetadataStore {
 	return &queryMetadataStore{read: tx, write: tx}
 }
 func (index *queryMetadataStore) putDocument(document queryStoredDocument) error {
+	if journal := member.From(index.write); journal != nil {
+		return putMemberQueryDocument(index.write, journal, document)
+	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		return err
@@ -105,6 +110,12 @@ func (index *queryMetadataStore) putDocument(document queryStoredDocument) error
 	return index.write.Put(queryDocumentNamespace, []byte(document.Key), raw)
 }
 func (index *queryMetadataStore) deleteThread(threadID string) error {
+	if journal := member.From(index.write); journal != nil {
+		if journal.Thread() != threadID {
+			return ErrInvalidThreadAuthority
+		}
+		return journal.RemoveQueryItems()
+	}
 	for {
 		more, err := index.deleteThreadPage(threadID)
 		if err != nil || !more {
@@ -136,6 +147,28 @@ func (index *queryMetadataStore) deleteThreadPage(threadID string) (bool, error)
 }
 func (index *queryMetadataStore) listDocuments(query queryMetadataSelection) ([]queryStoredDocument, error) {
 	var result []queryStoredDocument
+	if journal := member.From(index.read); journal != nil {
+		if len(query.ThreadIDs) != 1 || query.ThreadIDs[0] != journal.Thread() {
+			return nil, ErrInvalidThreadAuthority
+		}
+		if query.Object == "" || query.Object == string(threadquery.Threads) {
+			doc, err := index.readDocument(journal.Thread(), journal.Thread()+"\x00threads")
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, doc)
+		}
+		for _, object := range []threadquery.Object{threadquery.Messages, threadquery.ToolCalls} {
+			if query.Object != "" && query.Object != string(object) {
+				continue
+			}
+			if err := visitMemberDocuments(journal, object, "", func(doc queryStoredDocument) error { result = append(result, doc); return nil }); err != nil {
+				return nil, err
+			}
+		}
+		sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
+		return result, nil
+	}
 	scanned := map[string]bool{}
 	for _, threadID := range query.ThreadIDs {
 		if scanned[threadID] {
@@ -548,6 +581,20 @@ func ensureThreadQueryIndexReady(ctx context.Context, tx spi.ReadTx, scope threa
 			continue
 		}
 		seen[threadID] = true
+		if journal := member.From(tx); journal != nil {
+			meta, err := readPublishedThreadMeta(tx, format, threadID)
+			if err != nil {
+				return err
+			}
+			ready, err := journal.QueryReady(meta.LeafID)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				return threadquery.ErrThreadQueryIndexNotReady
+			}
+			continue
+		}
 		record, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)
 		if err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
@@ -741,6 +788,29 @@ func (r *MemoryRepo) queryRecordByKey(index *queryMetadataStore, threadID, key s
 }
 
 func (index *queryMetadataStore) readDocument(threadID, key string) (queryStoredDocument, error) {
+	if journal := member.From(index.read); journal != nil {
+		if journal.Thread() != threadID {
+			return queryStoredDocument{}, spi.ErrNotFound
+		}
+		if key == threadID+"\x00threads" {
+			catalog := storagebridge.CatalogReader(index.read)
+			if member.From(catalog) != nil {
+				return queryStoredDocument{}, ErrInvalidThreadAuthority
+			}
+			return queryMetadataReader(catalog).readDocument(threadID, key)
+		}
+		rest, ok := strings.CutPrefix(key, threadID+"\x00")
+		object, id, separated := strings.Cut(rest, "\x00")
+		if !ok || !separated || id == "" {
+			return queryStoredDocument{}, spi.ErrNotFound
+		}
+		var result queryStoredDocument
+		err := visitMemberDocuments(journal, threadquery.Object(object), id, func(doc queryStoredDocument) error { result = doc; return nil })
+		if err == nil && result.Key == "" {
+			err = spi.ErrNotFound
+		}
+		return result, err
+	}
 	raw, err := index.read.Get(queryDocumentNamespace, []byte(key))
 	if err != nil {
 		return queryStoredDocument{}, err

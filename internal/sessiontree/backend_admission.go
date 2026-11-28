@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -191,7 +192,15 @@ func (repo *BackendRepo) FindTurnRequest(ctx context.Context, threadID, requestK
 	var result Entry
 	var found bool
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, _ ThreadMeta) error {
-		raw, err := tx.Get(backendEntryIndexNamespace, backendDomainKey("request", threadID, requestKey))
+		var id string
+		var err error
+		if journal := member.From(tx); journal != nil {
+			id, err = journal.TurnRequestEntry(requestKey)
+		} else {
+			var raw []byte
+			raw, err = tx.Get(backendEntryIndexNamespace, backendDomainKey("request", threadID, requestKey))
+			id = string(raw)
+		}
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil
 		}
@@ -199,7 +208,7 @@ func (repo *BackendRepo) FindTurnRequest(ctx context.Context, threadID, requestK
 			return err
 		}
 		found = true
-		entry, err := readCanonicalEntryMetadata(tx, threadID, string(raw))
+		entry, err := readCanonicalEntryMetadata(tx, threadID, id)
 		if err != nil || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.RequestKey != requestKey {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}

@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
+	"path/filepath"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sqliterecords"
@@ -16,22 +19,109 @@ var errMemberRecord = errors.New("thread members accept domain facts, not key/va
 
 type memberTx struct{ journal *member.Journal }
 
-func (tx memberTx) MemberJournal() *member.Journal          { return tx.journal }
-func (memberTx) Get(string, []byte) ([]byte, error)         { return nil, errMemberRecord }
-func (memberTx) Scan(spi.ScanRequest) (spi.ScanPage, error) { return spi.ScanPage{}, errMemberRecord }
-func (memberTx) Put(string, []byte, []byte) error           { return errMemberRecord }
-func (memberTx) Delete(string, []byte) error                { return errMemberRecord }
+func (tx memberTx) MemberJournal() *member.Journal { return tx.journal }
+func (memberTx) Get(namespace string, _ []byte) ([]byte, error) {
+	return nil, fmt.Errorf("%w: get %s", errMemberRecord, namespace)
+}
+func (memberTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	return spi.ScanPage{}, fmt.Errorf("%w: scan %s", errMemberRecord, request.Namespace)
+}
+func (memberTx) Put(namespace string, _, _ []byte) error {
+	return fmt.Errorf("%w: put %s", errMemberRecord, namespace)
+}
+func (memberTx) Delete(namespace string, _ []byte) error {
+	return fmt.Errorf("%w: delete %s", errMemberRecord, namespace)
+}
 
 type memberWrite struct {
 	memberTx
 	threadCatalog
 }
 
+type memberRead struct {
+	memberTx
+	catalog spi.ReadTx
+	memberPeers
+}
+
+func (tx memberRead) CatalogReader() spi.ReadTx { return tx.catalog }
+
 type threadCatalog struct {
+	memberPeers
 	catalog *sqliterecords.Tx
 	owner   identity.ThreadID
 	other   identity.ThreadID
 	related spi.WriteTx
+}
+
+type memberPeers struct {
+	files *Files
+	tx    *sql.Tx
+	ctx   context.Context
+}
+
+func (peers memberPeers) ViewPeer(thread identity.ThreadID, visit func(spi.ReadTx) error) (result error) {
+	if peers.files == nil || peers.tx == nil || thread == "" || visit == nil {
+		return spi.ErrInvalidArgument
+	}
+	ctx := peers.ctx
+	var raw []byte
+	err := peers.tx.QueryRowContext(ctx, `SELECT file FROM floret_catalog.floret_thread_routes WHERE thread=?`, thread.String()).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storagebridge.ErrRouteMissing
+	}
+	if err != nil {
+		return err
+	}
+	if raw == nil {
+		return storagebridge.ErrRouteDeleted
+	}
+	if len(raw) != len(FileID{}) {
+		return ErrFileIdentity
+	}
+	ref := Reference{File: FileID(raw), Thread: thread}
+	if ref.File == (FileID{}) {
+		return ErrFileIdentity
+	}
+	select {
+	case peers.files.peerReads <- struct{}{}:
+		defer func() { <-peers.files.peerReads }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	path := peers.files.path(ref.File)
+	if err := checkFile(filepath.Dir(path), true); err != nil {
+		return err
+	}
+	if err := checkFile(path, false); err != nil {
+		return err
+	}
+	if err := checkSidecars(path, true); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", databaseURI(path, url.Values{"mode": {"ro"}, "_pragma": {"trusted_schema(OFF)", "foreign_keys(ON)"}}))
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, db.Close()) }()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return peers.files.onConnection(ctx, conn, ref, true, func(tx *sql.Tx) error {
+		if err := checkSchema(ctx, tx, peers.files.format.schema); err != nil {
+			return err
+		}
+		journal, err := member.OpenJournal(ctx, tx, thread, false)
+		if err != nil {
+			return err
+		}
+		journal.RestrictToReads()
+		catalog := sqliterecords.AttachedCatalog(ctx, peers.tx, true)
+		defer sqliterecords.End(catalog)
+		return visit(memberRead{memberTx: memberTx{journal}, catalog: catalog})
+	})
 }
 
 func (tx threadCatalog) ThreadOwner() identity.ThreadID { return tx.owner }

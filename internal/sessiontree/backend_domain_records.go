@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -692,6 +693,21 @@ func putBackendDomainRecordContext(ctx context.Context, tx spi.WriteTx, format b
 		return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: format.namespace, Key: key}, encoded)
 	}
 	if format.namespace == backendDomainV32Namespace && (kind == backendDomainRecordThread || kind == backendDomainRecordRootThread) {
+		if journal := member.From(tx); journal != nil {
+			if id != journal.Thread() {
+				return ErrInvalidThreadAuthority
+			}
+			if kind == backendDomainRecordThread {
+				meta, ok := value.(ThreadMeta)
+				if !ok || meta.ID != id {
+					return ErrAuthorityCorrupt
+				}
+				if err := journal.SetLeaf(meta.LeafID); err != nil {
+					return err
+				}
+			}
+			return storagebridge.PutCatalogRecord(tx, storagebridge.CatalogRecord{Namespace: format.namespace, Key: key}, encoded)
+		}
 		return storagebridge.PutIndexedThreadRecord(tx, storagebridge.CatalogRecord{Namespace: format.namespace, Key: key}, encoded)
 	}
 	return tx.Put(format.namespace, key, encoded)

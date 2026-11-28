@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -1560,7 +1562,15 @@ func (repo *BackendRepo) ThreadPrepared(ctx context.Context, threadID string) (b
 	defer repo.mu.Unlock()
 	var ready bool
 	err := repo.viewThreadRecords(ctx, threadID, func(tx spi.ReadTx) error {
-		if err := readThreadMigrationFailure(tx, threadID); err != nil {
+		if err := readThreadMigrationFailure(storagebridge.CatalogReader(tx), threadID); err != nil {
+			return err
+		}
+		if journal := member.From(tx); journal != nil {
+			meta, err := readPublishedThreadMeta(tx, repo.domainFormat(), threadID)
+			if err != nil {
+				return err
+			}
+			ready, err = journal.QueryReady(meta.LeafID)
 			return err
 		}
 		record, found, err := readBackendDomainRecord(tx, repo.domainFormat(), backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)

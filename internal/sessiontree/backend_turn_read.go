@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -17,6 +18,18 @@ func (repo *BackendRepo) Entries(ctx context.Context, threadID string) ([]Entry,
 		for ordinal := 0; ordinal < count; ordinal++ {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if journal := member.From(tx); journal != nil {
+				event, err := journal.EntryNumber(int64(ordinal))
+				if err != nil {
+					return err
+				}
+				entry, err := materializeMemberEntry(journal, event)
+				if err != nil {
+					return err
+				}
+				entries = append(entries, entry)
+				continue
 			}
 			raw, err := tx.Get(backendDomainV32Namespace, backendDomainEntryKey(meta.ID, ordinal))
 			if err != nil {

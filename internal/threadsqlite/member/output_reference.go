@@ -98,6 +98,16 @@ type ArtifactSource struct {
 	Body   BodyRef
 }
 
+func (journal *Journal) ArtifactEntry(id string) (string, bool, error) {
+	var entry string
+	events := journal.database + "history_events"
+	err := journal.tx.QueryRowContext(journal.ctx, `SELECT subject.event_id FROM `+events+` owner JOIN `+events+` subject ON subject.seq=owner.subject_seq AND subject.entry_no IS NOT NULL WHERE owner.scope_key='artifact' AND owner.request_key=? AND owner.kind='artifact_retained'`, id).Scan(&entry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return entry, err == nil, err
+}
+
 func (journal *Journal) Artifact(id string, size int64, digest string) (ArtifactSource, error) {
 	var source ArtifactSource
 	var class, key, kind string

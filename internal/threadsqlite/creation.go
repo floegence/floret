@@ -82,6 +82,11 @@ func (backend *Backend) buildThread(ctx context.Context, source Reference, targe
 			}
 			catalog := sqliterecords.New(ctx, tx, false)
 			defer sqliterecords.End(catalog)
+			if local, ok := reader.(memberTx); ok {
+				catalogRead := sqliterecords.New(ctx, tx, true)
+				defer sqliterecords.End(catalogRead)
+				reader = memberRead{memberTx: local, catalog: catalogRead}
+			}
 			conn, err := db.Conn(ctx)
 			if err != nil {
 				return err

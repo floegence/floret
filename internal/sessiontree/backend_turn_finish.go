@@ -128,16 +128,11 @@ func (mutation *canonicalJournalMutation) appendEffectAttempt(attempt EffectAtte
 }
 
 func (mutation *canonicalJournalMutation) settleProviderState(terminal Entry, preserve, clear bool, compatibility string) error {
-	key := backendDomainKey(backendDomainRecordProviderState, mutation.meta.ID)
-	record, found, err := readBackendDomainRecord(mutation.tx, backendDomainV32Format, key, backendDomainRecordProviderState, mutation.meta.ID, "", 0)
+	state, found, err := currentProviderState(mutation.tx, mutation.meta.ID)
 	if err != nil || !found {
 		return err
 	}
-	var state ProviderStateRecord
-	if err := decodeBackendDomainValue(backendDomainV32Format, record, &state); err != nil || state.ThreadID != mutation.meta.ID || validateProviderStateRecord(state) != nil {
-		return errors.Join(ErrAuthorityCorrupt, err)
-	}
-	remove := func() error { return mutation.tx.Delete(backendDomainV32Namespace, key) }
+	remove := func() error { return clearProviderState(mutation.tx, mutation.meta.ID) }
 	if preserve {
 		if compatibility != "" && state.CompatibilityKey != compatibility {
 			return remove()
@@ -189,7 +184,7 @@ func (mutation *canonicalJournalMutation) settleProviderState(terminal Entry, pr
 		return nil
 	}
 	state.LeafEntryID, state.UpdatedAt = terminal.ID, terminal.CreatedAt
-	return putBackendDomainRecordContext(mutation.ctx, mutation.tx, backendDomainV32Format, key, backendDomainRecordProviderState, mutation.meta.ID, "", 0, state)
+	return storeProviderState(mutation.ctx, mutation.tx, state)
 }
 
 func (repo *BackendRepo) FinishTurn(ctx context.Context, req FinishTurnRequest) (FinishTurnResult, error) {
@@ -295,7 +290,7 @@ func (mutation *canonicalJournalMutation) finishTurn(req FinishTurnRequest, resu
 	if req.ProviderState != nil {
 		record := *req.ProviderState
 		record.State = *provider.CloneState(&record.State)
-		if err := putBackendDomainRecordContext(ctx, mutation.tx, backendDomainV32Format, backendDomainKey(backendDomainRecordProviderState, req.ThreadID), backendDomainRecordProviderState, req.ThreadID, "", 0, record); err != nil {
+		if err := storeProviderState(ctx, mutation.tx, record); err != nil {
 			return err
 		}
 	} else if err := mutation.settleProviderState(terminal, req.PreserveProviderState, req.ClearProviderState, req.StateCompatibilityKey); err != nil {

@@ -31,6 +31,7 @@ type Files struct {
 	directory string
 	store     FileID
 	pool      *filePool
+	peerReads chan struct{}
 	format    fileFormat
 }
 
@@ -71,7 +72,7 @@ func newFiles(directory string, store FileID, limit, maxIdle int, ttl time.Durat
 	if err := checkFile(directory, true); err != nil {
 		return nil, err
 	}
-	files := &Files{directory: directory, store: store, format: format}
+	files := &Files{directory: directory, store: store, format: format, peerReads: make(chan struct{}, 1)}
 	files.pool, err = newFilePool(limit, maxIdle, ttl, files.open)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
+
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -47,18 +49,28 @@ func canonicalQueryProjectionEntry(ctx context.Context, tx spi.ReadTx, entry Ent
 }
 
 func appendCanonicalQuery(ctx context.Context, tx spi.WriteTx, before, after ThreadMeta, entry Entry, previous *queryThread) (*queryThread, error) {
-	raw, err := tx.Get(queryManifestNamespace, []byte(before.ID))
-	if errors.Is(err, spi.ErrNotFound) {
-		// A concurrent preparation owns incomplete metadata. Canonical writes
-		// may proceed, but only a complete rebuild can publish their manifest.
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var manifest queryManifest
-	if json.Unmarshal(raw, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != before.LeafID {
-		return nil, deleteCanonicalOptionalRecord(tx, queryManifestNamespace, []byte(before.ID))
+	if journal := member.From(tx); journal != nil {
+		ready, err := journal.QueryReady(before.LeafID)
+		if err != nil {
+			return nil, err
+		}
+		if !ready {
+			return rebuildCanonicalQuery(ctx, tx, after)
+		}
+	} else {
+		raw, err := tx.Get(queryManifestNamespace, []byte(before.ID))
+		if errors.Is(err, spi.ErrNotFound) {
+			// A concurrent preparation owns incomplete metadata. Canonical writes
+			// may proceed, but only a complete rebuild can publish their manifest.
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var manifest queryManifest
+		if json.Unmarshal(raw, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != before.LeafID {
+			return nil, deleteCanonicalOptionalRecord(tx, queryManifestNamespace, []byte(before.ID))
+		}
 	}
 	index := queryMetadataWriter(tx)
 	if entry.ParentID != before.LeafID {
@@ -94,7 +106,7 @@ func appendCanonicalQuery(ctx context.Context, tx spi.WriteTx, before, after Thr
 			return nil, err
 		}
 	}
-	return state, putQueryManifest(tx, after.ID, after.LeafID)
+	return state, publishQueryLeaf(tx, after)
 }
 
 func canonicalQueryRecordForAppend(ctx context.Context, tx spi.ReadTx, threadID, key string) (*queryRecord, error) {
@@ -128,5 +140,16 @@ func rebuildCanonicalQuery(ctx context.Context, tx spi.WriteTx, after ThreadMeta
 			return nil, err
 		}
 	}
-	return state, putQueryManifest(tx, after.ID, after.LeafID)
+	return state, publishQueryLeaf(tx, after)
+}
+
+func publishQueryLeaf(tx spi.WriteTx, meta ThreadMeta) error {
+	if journal := member.From(tx); journal != nil {
+		_, leaf, err := journal.Head()
+		if err != nil || journal.Thread() != meta.ID || leaf != meta.LeafID {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return journal.PublishReadLeaf()
+	}
+	return putQueryManifest(tx, meta.ID, meta.LeafID)
 }

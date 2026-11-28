@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding"
 	"encoding/hex"
 	"encoding/json"
@@ -10,10 +11,12 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -110,6 +113,16 @@ func putOutputRecord(tx spi.WriteTx, key []byte, value any) error {
 	return tx.Put(outputSourceNamespace, key, raw)
 }
 func readOutputSource(tx spi.ReadTx, id string) (OutputSource, error) {
+	if journal := member.From(tx); journal != nil {
+		output, err := journal.OutputAt(id, 0)
+		if errors.Is(err, sql.ErrNoRows) {
+			return OutputSource{}, spi.ErrNotFound
+		}
+		if err != nil {
+			return OutputSource{}, err
+		}
+		return memberOutputSource(id, output), nil
+	}
 	var source OutputSource
 	if err := readOutputRecord(tx, outputSourceKey(id), &source); err != nil {
 		return source, err
@@ -127,6 +140,15 @@ func readOutputSource(tx spi.ReadTx, id string) (OutputSource, error) {
 	return source, nil
 }
 func newOutputSource(tx spi.WriteTx, id string) (OutputSource, error) {
+	if journal := member.From(tx); journal != nil {
+		if _, err := journal.OutputAt(id, 0); err == nil {
+			return OutputSource{}, ErrRequestConflict
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return OutputSource{}, err
+		}
+		output, err := journal.CreateOutput(id, time.Now().UnixNano())
+		return memberOutputSource(id, output), err
+	}
 	if _, err := tx.Get(outputSourceNamespace, outputSourceKey(id)); err == nil {
 		return OutputSource{}, ErrRequestConflict
 	} else if !errors.Is(err, spi.ErrNotFound) {
@@ -159,28 +181,40 @@ func appendOutputSource(ctx context.Context, tx spi.WriteTx, source OutputSource
 	if source.Sealed || !utf8.ValidString(text) || len(text) > OutputSourceChunkBytes || source.ObservedBytes > math.MaxInt64-int64(len(text)) {
 		return source, spi.ErrInvalidArgument
 	}
+	previous := source.ObservedBytes
 	source.ObservedBytes += int64(len(text))
-	if source.Reason != "" || text == "" {
-		return source, putOutputRecord(tx, outputSourceKey(source.ID), source)
-	}
-	used, err := outputStoreUsage(tx)
-	if err != nil {
-		return source, err
-	}
-	if int64(len(text)) > OutputSourceMaxBytes-source.Bytes {
-		source.Reason = "output_limit"
-	} else if scoped, ok := tx.(scopedOutputWriter); ok {
-		allowed, err := changeOutputCharge(scoped.CatalogWriter(), outputCharge{scoped.ThreadOwner().String(), source.ID, source.Bytes + int64(len(text))}, source.Bytes)
+	var used int64
+	journal := member.From(tx)
+	if journal == nil {
+		var err error
+		used, err = outputStoreUsage(tx)
 		if err != nil {
 			return source, err
 		}
-		if !allowed {
+	}
+	if source.Reason == "" && text != "" {
+		if int64(len(text)) > OutputSourceMaxBytes-source.Bytes {
+			source.Reason = "output_limit"
+		} else if scoped, ok := tx.(scopedOutputWriter); ok {
+			allowed, err := changeOutputCharge(scoped.CatalogWriter(), outputCharge{scoped.ThreadOwner().String(), source.ID, source.Bytes + int64(len(text))}, source.Bytes)
+			if err != nil {
+				return source, err
+			}
+			if !allowed {
+				source.Reason = "storage_limit"
+			}
+		} else if int64(len(text)) > outputStoreMaxBytes-used {
 			source.Reason = "storage_limit"
 		}
-	} else if int64(len(text)) > outputStoreMaxBytes-used {
-		source.Reason = "storage_limit"
 	}
-	if source.Reason != "" {
+	if journal != nil {
+		if _, ok := tx.(scopedOutputWriter); !ok {
+			return OutputSource{}, ErrInvalidThreadAuthority
+		}
+		output, err := journal.AppendOutput(source.ID, previous, time.Now().UnixNano(), []byte(text), source.Reason)
+		return memberOutputSource(source.ID, output), err
+	}
+	if source.Reason != "" || text == "" {
 		return source, putOutputRecord(tx, outputSourceKey(source.ID), source)
 	}
 	digest := sha256.Sum256([]byte(text))
@@ -211,6 +245,10 @@ func sealOutputSource(tx spi.WriteTx, source OutputSource, reason string) (Outpu
 	}
 	if source.Sealed {
 		return source, nil
+	}
+	if journal := member.From(tx); journal != nil {
+		output, err := journal.SealOutput(source.ID, time.Now().UnixNano(), reason)
+		return memberOutputSource(source.ID, output), err
 	}
 	source.Sealed = true
 	if source.Reason == "" {
@@ -250,6 +288,17 @@ func readOutputChunk(tx spi.ReadTx, source OutputSource, seq int64) (OutputSourc
 	if seq < 1 || seq > source.Chunks {
 		return chunk, spi.ErrInvalidArgument
 	}
+	if journal := member.From(tx); journal != nil {
+		output, err := memberOutputPrefix(journal, source)
+		if err != nil {
+			return chunk, err
+		}
+		block, err := journal.OutputBlock(output, seq-1)
+		if err != nil {
+			return chunk, err
+		}
+		return OutputSourceChunk{Seq: seq, Offset: block.Start, Text: string(block.Bytes), SHA256: StableHash(string(block.Bytes))}, nil
+	}
 	if err := readOutputRecord(tx, outputChunkKey(source.ID, seq), &chunk); err != nil {
 		return chunk, errors.Join(ErrAuthorityCorrupt, err)
 	}
@@ -273,6 +322,17 @@ func readOutputSourcePage(ctx context.Context, tx spi.ReadTx, source OutputSourc
 	}
 	// Sparse chunk offsets locate a requested range without reading its prefix.
 	lo, hi := int64(1), source.Chunks
+	if journal := member.From(tx); journal != nil {
+		output, err := memberOutputPrefix(journal, source)
+		if err != nil {
+			return page, err
+		}
+		block, err := journal.BlockAtOffset(output, offset)
+		if err != nil {
+			return page, err
+		}
+		lo, hi = block.Number+1, block.Number+1
+	}
 	for lo < hi {
 		if err := ctx.Err(); err != nil {
 			return page, err
@@ -339,9 +399,11 @@ func verifyOutputSource(ctx context.Context, tx spi.ReadTx, source OutputSource)
 		if err != nil {
 			return err
 		}
-		var indexed int64
-		if err := readOutputRecord(tx, outputChunkOffsetKey(source.ID, seq), &indexed); err != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
+		indexed := chunk.Offset
+		if member.From(tx) == nil {
+			if err := readOutputRecord(tx, outputChunkOffsetKey(source.ID, seq), &indexed); err != nil {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
 		}
 		if chunk.Offset != offset || indexed != offset {
 			return ErrAuthorityCorrupt
@@ -426,6 +488,31 @@ func releaseOutputSource(ctx context.Context, tx spi.WriteTx, id string) error {
 }
 
 func storeCanonicalArtifact(ctx context.Context, tx spi.WriteTx, record artifact.Record) error {
+	if journal := member.From(tx); journal != nil {
+		if record.ThreadID != journal.Thread() {
+			return ErrInvalidThreadAuthority
+		}
+		var boundary int64
+		if record.OutputSourceID == "" {
+			if int64(len(record.Text)) != record.Ref.SizeBytes || artifact.TextSHA256(record.Text) != record.Ref.SHA256 {
+				return ErrAuthorityCorrupt
+			}
+			if int64(len(record.Text)) > OutputSourceMaxBytes {
+				return &outputRetentionError{reason: "output_limit"}
+			}
+			source, err := writeOutputSource(ctx, tx, outputSourceID(record.ThreadID, record.Ref.ID), record.Text)
+			if err != nil {
+				return err
+			}
+			record.OutputSourceID = source.ID
+		}
+		output, err := journal.OutputAt(record.OutputSourceID, 0)
+		if err != nil || !output.Sealed || output.Retained != record.Ref.SizeBytes || output.Digest != record.Ref.SHA256 {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		boundary = output.BoundarySeq
+		return journal.BindArtifact(record.Ref.ID, record.CanonicalEntryID, boundary, record.CreatedAt.UnixNano())
+	}
 	if record.OutputSourceID == "" {
 		source, err := writeOutputSource(ctx, tx, outputSourceID(record.ThreadID, record.Ref.ID), record.Text)
 		if err != nil {

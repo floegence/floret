@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
+
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -64,6 +66,17 @@ func canonicalQueueContains(tx spi.ReadTx, threadID, queueID, beforeEntryID stri
 }
 
 func canonicalActiveTurn(tx spi.ReadTx, threadID string) (string, bool, error) {
+	if journal := member.From(tx); journal != nil {
+		id, err := journal.ActiveTurnEntry()
+		if err != nil || id == "" {
+			return "", false, err
+		}
+		entry, err := readCanonicalEntryMetadata(tx, threadID, id)
+		if err != nil || entry.Type != EntryTurnMarker || entry.TurnID == "" || entry.TurnStatus != TurnStarted && entry.TurnStatus != TurnSavePoint && entry.TurnStatus != TurnWaiting {
+			return "", false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		return entry.TurnID, true, nil
+	}
 	prefix := backendDomainKey("active_turn", threadID)
 	page, err := tx.Scan(spi.ScanRequest{Namespace: backendEntryIndexNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 2})
 	if err != nil {

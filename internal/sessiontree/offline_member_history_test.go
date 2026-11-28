@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -32,6 +34,13 @@ func TestMemberJournalMigrationRoundTripsBranchesAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "target.sqlite")
+	if _, err := repo.CompareAndSwapAgentTodoState(ctx, AgentTodoState{ThreadID: "thread"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	state := ProviderStateRecord{ThreadID: "thread", LeafEntryID: selected.ID, CompatibilityKey: "provider", CreatedByRunID: "run", CreatedByTurnID: "turn", UpdatedAt: time.Now().UTC(), State: provider.State{Kind: "test", ID: "previous", Attributes: map[string]string{"receipt": strings.Repeat("abc", 8000)}}}
+	if err := repo.PutProviderState(ctx, state); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +90,9 @@ func TestMemberJournalMigrationRoundTripsBranchesAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	var leaf string
-	var open, storedBlocks, metadataSize int
-	if err := tx.QueryRow(`SELECT leaf.event_id,(SELECT count(*) FROM history_events WHERE work_head=1),(SELECT count(*) FROM content_blocks),length(leaf.payload) FROM floret_thread_header h JOIN history_events leaf ON leaf.seq=h.leaf_seq`).Scan(&leaf, &open, &storedBlocks, &metadataSize); err != nil || leaf != selected.ID || open != 0 || storedBlocks < 4 || metadataSize >= 16384 {
-		t.Fatalf("leaf=%s pending=%d blocks=%d inline=%d: %v", leaf, open, storedBlocks, metadataSize, err)
+	var open, activeTurns, storedBlocks, metadataSize int
+	if err := tx.QueryRow(`SELECT leaf.event_id,(SELECT count(*) FROM history_events WHERE work_head=1 AND attempt_id IS NOT NULL),(SELECT count(*) FROM history_events WHERE work_head=1 AND kind='turn_marker' AND turn_id='turn' AND run_id='run'),(SELECT count(*) FROM content_blocks),length(leaf.payload) FROM floret_thread_header h JOIN history_events leaf ON leaf.seq=h.leaf_seq`).Scan(&leaf, &open, &activeTurns, &storedBlocks, &metadataSize); err != nil || leaf != selected.ID || open != 0 || activeTurns != 1 || storedBlocks < 4 || metadataSize >= 16384 {
+		t.Fatalf("leaf=%s pending attempts=%d active turns=%d blocks=%d inline=%d: %v", leaf, open, activeTurns, storedBlocks, metadataSize, err)
 	}
 	for _, want := range []Entry{finished.Result, first, selected} {
 		event, err := journal.Entry(want.ID)
@@ -98,6 +107,12 @@ func TestMemberJournalMigrationRoundTripsBranchesAndEffects(t *testing.T) {
 	var states string
 	if err := tx.QueryRow(`SELECT group_concat(state,',' ORDER BY ordinal) FROM history_events WHERE attempt_id=?`, attempt.EffectAttemptID).Scan(&states); err != nil || states != "prepared,dispatching,completed" {
 		t.Fatalf("attempt state sequence=%s: %v", states, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM history_events WHERE kind='todo_updated'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.View(ctx, func(old spi.ReadTx) error { _, err := VerifyMemberJournal(ctx, old, journal); return err }); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("missing todo accepted: %v", err)
 	}
 	if _, err := tx.Exec(`UPDATE content_blocks SET bytes=zeroblob(length(bytes)) WHERE block_no=0`); err != nil {
 		t.Fatal(err)

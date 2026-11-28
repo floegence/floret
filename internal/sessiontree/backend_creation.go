@@ -9,6 +9,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -175,6 +176,20 @@ func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadM
 		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV32Format, backendDomainKey(backendDomainRecordRootThread, meta.ID), backendDomainRecordRootThread, meta.ID, "", 0, backendDomainRootThread{ThreadID: meta.ID}); err != nil {
 			return nil, err
 		}
+	}
+	if member.From(tx) != nil {
+		state := newQueryThread()
+		(&queryProjector{}).finish(state, meta.ID, meta)
+		for _, record := range state.records {
+			doc, err := queryDocument(record)
+			if err != nil {
+				return nil, err
+			}
+			if err := queryMetadataWriter(tx).putDocument(doc); err != nil {
+				return nil, err
+			}
+		}
+		return state, publishQueryLeaf(tx, meta)
 	}
 	if err := putJournalCount(tx, meta.ID, 0); err != nil {
 		return nil, err

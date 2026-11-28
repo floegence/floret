@@ -7,13 +7,18 @@ import (
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func canonicalArtifactReader(ctx context.Context, tx spi.ReadTx) artifactAuthorityReader {
 	verified := map[string]bool{}
 	read := func(kind, id string, value any) (bool, error) {
-		record, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(kind, id), kind, id, "", 0)
+		reader := tx
+		if member.From(tx) != nil && (kind == backendDomainRecordThread || kind == backendDomainRecordTombstone) {
+			reader = storagebridge.CatalogReader(tx)
+		}
+		record, found, err := readBackendDomainRecord(reader, backendDomainV32Format, backendDomainKey(kind, id), kind, id, "", 0)
 		if err != nil || !found {
 			return found, err
 		}
@@ -58,6 +63,12 @@ func canonicalArtifactReader(ctx context.Context, tx spi.ReadTx) artifactAuthori
 			return entry, err == nil, err
 		},
 		record: func(threadID, artifactID string) (artifact.Record, bool, error) {
+			if journal := member.From(tx); journal != nil {
+				if journal.Thread() != threadID {
+					return artifact.Record{}, false, nil
+				}
+				return readMemberArtifact(journal, artifactID)
+			}
 			var value artifact.Record
 			found, err := read(backendDomainRecordArtifact, artifactRecordKey(threadID, artifactID), &value)
 			return value, found, err

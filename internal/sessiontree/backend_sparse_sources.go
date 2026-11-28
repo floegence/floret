@@ -8,6 +8,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -161,6 +162,10 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 	}
 	complete := false
 	if err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, _ ThreadMeta) error {
+		if member.From(tx) != nil {
+			complete = true
+			return nil
+		}
 		count, err := readJournalCount(tx, thread)
 		if err != nil {
 			return err
@@ -241,6 +246,18 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 }
 
 func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category string, visit func(Entry) error) error {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != thread {
+			return ErrInvalidThreadAuthority
+		}
+		return journal.VisitRecoveryEntries(category, func(event member.EntryEvent) error {
+			entry, err := materializeMemberEntry(journal, event)
+			if err != nil || sparseSourceCategory(entry) != category {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			return visit(entry)
+		})
+	}
 	return visitSparseSourcePages(ctx, tx, thread, category, func(rows []spi.Record, count int) error {
 		for _, row := range rows {
 			locator, err := readEntryLocator(tx, thread, string(row.Value))

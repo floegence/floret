@@ -46,6 +46,11 @@ func entryMemberEvent(entry Entry, number int64) (member.EntryEvent, error) {
 	}
 	event := member.EntryEvent{ID: entry.ID, ParentID: entry.ParentID, Kind: string(entry.Type), Turn: entry.TurnID, Run: entry.RunID, Number: number, Depth: entry.PathDepth, At: at, ModelInput: model}
 	event.KeepParent = entry.Type == EntryTurnMarker && entry.TurnStatus == TurnSavePoint
+	event.ContentSource, event.ReasoningSource = entry.Message.ContentSourceID, entry.Message.ReasoningSourceID
+	event.RecoveryGroup = sparseSourceCategory(entry)
+	if entry.Type == EntryTurnMarker {
+		event.Marker = string(entry.TurnStatus)
+	}
 	if entry.Type == EntryEffectAttempt {
 		attempt, err := decodeEffectAttempt(entry)
 		if err != nil {
@@ -196,13 +201,11 @@ func readMemberEntryData(journal *member.Journal, event member.EntryEvent) (*mem
 }
 
 func restoreMemberEntry(journal *member.Journal, event member.EntryEvent, data *memberEntryData) (Entry, error) {
-	entry := data.Facts
-	kind := EntryType(event.Kind)
-	if data.ActivityJSON != "" && data.Bodies["activity_json"].Object != 0 {
-		return Entry{}, ErrAuthorityCorrupt
+	entry, err := memberEntryHeader(journal, event, data)
+	if err != nil {
+		return Entry{}, err
 	}
-	entry.ID, entry.ThreadID, entry.ParentID, entry.Type = event.ID, journal.Thread(), event.ParentID, kind
-	entry.TurnID, entry.RunID, entry.PathDepth, entry.CreatedAt = event.Turn, event.Run, event.Depth, time.Unix(0, event.At).UTC()
+	kind := EntryType(event.Kind)
 	if data.ActivityJSON != "" {
 		if err := restoreCanonicalField(&entry, "activity_json", data.ActivityJSON); err != nil {
 			return Entry{}, err
@@ -222,8 +225,80 @@ func restoreMemberEntry(journal *member.Journal, event member.EntryEvent, data *
 		return Entry{}, err
 	}
 	want, err := entryMemberEvent(entry, event.Number)
-	if err != nil || want.State != event.State || want.Attempt != event.Attempt || want.RequestScope != event.RequestScope || want.RequestKey != event.RequestKey || want.SubjectID != event.SubjectID || want.ModelInput != event.ModelInput {
+	if err != nil || want.State != event.State || want.Attempt != event.Attempt || want.RequestScope != event.RequestScope || want.RequestKey != event.RequestKey || want.SubjectID != event.SubjectID || want.ModelInput != event.ModelInput || want.Marker != event.Marker || want.ContentSource != event.ContentSource || want.ReasoningSource != event.ReasoningSource {
 		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return entry, nil
+}
+
+func memberEntryHeader(journal *member.Journal, event member.EntryEvent, data *memberEntryData) (Entry, error) {
+	entry := data.Facts
+	if data.ActivityJSON != "" && data.Bodies["activity_json"].Object != 0 {
+		return Entry{}, ErrAuthorityCorrupt
+	}
+	entry.ID, entry.ThreadID, entry.ParentID, entry.Type = event.ID, journal.Thread(), event.ParentID, EntryType(event.Kind)
+	entry.TurnID, entry.RunID, entry.PathDepth, entry.CreatedAt = event.Turn, event.Run, event.Depth, time.Unix(0, event.At).UTC()
+	return entry, nil
+}
+
+func memberPathEntry(journal *member.Journal, event member.EntryEvent) (Entry, error) {
+	data, err := readMemberEntryData(journal, event)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry, err := memberEntryHeader(journal, event, data)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry.bodyFields = map[string]canonicalBodyRef{}
+	values, err := canonicalStoredFields(entry, false)
+	if err != nil {
+		return Entry{}, err
+	}
+	if data.ActivityJSON != "" {
+		values["activity_json"] = data.ActivityJSON
+	}
+	for field, value := range values {
+		entry.bodyFields[field] = canonicalBodyRef{SHA256: StableHash(value), Bytes: len(value)}
+	}
+	for field, ref := range data.Bodies {
+		if _, duplicate := values[field]; duplicate || ref.Start != 0 || ref.End <= 0 {
+			return Entry{}, ErrAuthorityCorrupt
+		}
+		body := canonicalBodyRef{SHA256: ref.Digest, Bytes: int(ref.End)}
+		if !validCanonicalBodyRef(body) {
+			return Entry{}, ErrAuthorityCorrupt
+		}
+		entry.bodyFields[field] = body
+	}
+	return entry, nil
+}
+
+func readMemberProjectionField(journal *member.Journal, id string, source CanonicalField) (string, error) {
+	event, err := journal.Entry(id)
+	if err != nil {
+		return "", err
+	}
+	data, err := readMemberEntryData(journal, event)
+	if err != nil {
+		return "", err
+	}
+	if ref, ok := data.Bodies[source.Field]; ok {
+		if ref.Digest != source.SHA256 || ref.End != int64(source.Bytes) {
+			return "", ErrAuthorityCorrupt
+		}
+		var content bytes.Buffer
+		if err := journal.CopyBody(memberBodyClass(EntryType(event.Kind), source.Field), ref, &content); err != nil {
+			return "", err
+		}
+		return content.String(), nil
+	}
+	value := data.ActivityJSON
+	if source.Field != "activity_json" {
+		value, err = canonicalFieldValue(data.Facts, source.Field)
+	}
+	if err != nil || len(value) != source.Bytes || StableHash(value) != source.SHA256 {
+		return "", errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return value, nil
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -154,6 +155,20 @@ func appendCanonicalEntry(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, 
 	if err := putCanonicalStoredEntry(ctx, tx, backendDomainV32Format, backendDomainEntryKey(meta.ID, count), entry.ID, meta.ID, count, entry); err != nil {
 		return fail(err)
 	}
+	if journal := member.From(tx); journal != nil && entry.Type == EntryHostWork {
+		work, err := decodeHostWork(entry)
+		if err != nil {
+			return fail(err)
+		}
+		if work.OutputStream != "" {
+			if work.OutputSnapshot != nil {
+				return fail(ErrInvalidThreadAuthority)
+			}
+			if err := journal.LinkWorkOutput(entry.ID, work.OutputStream, 0); err != nil {
+				return fail(err)
+			}
+		}
+	}
 	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
 	if err := validateCanonicalAppendedEntry(ctx, tx, meta, entry); err != nil {
 		return fail(errors.Join(ErrAuthorityCorrupt, err))
@@ -182,6 +197,30 @@ func validateCanonicalOutputSources(ctx context.Context, tx spi.ReadTx, entry En
 		return err
 	}
 	for source, fact := range facts {
+		if journal := member.From(tx); journal != nil {
+			err := journal.VisitOutputSources(source, parent.Ordinal, func(id string) (bool, error) {
+				locator, err := readEntryLocator(tx, entry.ThreadID, id)
+				if err != nil || locator.Depth > parent.Depth {
+					return false, err
+				}
+				ancestor, err := entryAncestor(ctx, tx, entry.ThreadID, parent, locator.Depth)
+				if err != nil || ancestor.ID != id {
+					return false, err
+				}
+				previous, err := readLocatedEntry(tx, backendDomainV32Format, entry.ThreadID, locator)
+				if err != nil {
+					return false, err
+				}
+				if !matchesStoredOutputSource(previous, source, fact) {
+					return false, fmt.Errorf("%w: conflicting output source on %s", ErrAuthorityCorrupt, entry.ID)
+				}
+				return true, nil
+			})
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		prefix := backendDomainKey("source", entry.ThreadID, source)
 		var after []byte
 		matched := false

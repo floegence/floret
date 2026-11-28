@@ -9,6 +9,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -58,21 +59,26 @@ func (projection *parentEventProjectionState) observe(entry Entry) error {
 	return nil
 }
 
-func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]ParentEventRecord, error) {
+func canonicalParentReceiptHistory(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]ParentEventRecord, error) {
 	projection := parentEventProjectionState{positions: map[string]int{}}
 	visit := func(entry Entry) error {
 		projection.ordinal = uint64(entry.PathDepth - 1)
 		return projection.observe(entry)
 	}
-	through, err := sparseCoverage(tx, meta.ID)
-	if err != nil {
-		return nil, err
+	indexed := member.From(tx) != nil
+	var err error
+	if !indexed {
+		through, err := sparseCoverage(tx, meta.ID)
+		if err != nil {
+			return nil, err
+		}
+		count, err := readJournalCount(tx, meta.ID)
+		if err != nil {
+			return nil, err
+		}
+		indexed = through == count
 	}
-	count, err := readJournalCount(tx, meta.ID)
-	if err != nil {
-		return nil, err
-	}
-	if through == count {
+	if indexed {
 		var leaf entryLocator
 		if meta.LeafID != "" {
 			leaf, err = readEntryLocator(tx, meta.ID, meta.LeafID)
@@ -101,9 +107,6 @@ func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta Thread
 	if err != nil {
 		return nil, err
 	}
-	if err := resolveCanonicalParentInteractions(ctx, tx, projection.records); err != nil {
-		return nil, err
-	}
 	return projection.records, nil
 }
 
@@ -118,16 +121,34 @@ func resolveCanonicalParentInteractions(ctx context.Context, tx spi.ReadTx, reco
 		key := sourceTurn{event.SourceThreadID, event.SourceTurnID}
 		interactions, loaded := pending[key]
 		if !loaded {
-			if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, key.threadID); errors.Is(err, ErrThreadDeleted) {
-				interactions = nil
-			} else if err != nil {
-				return err
-			} else {
-				entries, err := canonicalRuntimeTurnEntries(ctx, tx, key.threadID, key.turnID)
+			read := func(source spi.ReadTx) error {
+				if _, err := readPublishedThreadMeta(source, backendDomainV32Format, key.threadID); err != nil {
+					return err
+				}
+				entries, err := canonicalRuntimeTurnEntries(ctx, source, key.threadID, key.turnID)
 				if err != nil {
 					return err
 				}
 				interactions = runtimePendingInteractionsIn(entries, key.turnID)
+				return nil
+			}
+			var err error
+			if journal := member.From(tx); journal != nil {
+				if journal.Thread() == key.threadID {
+					return ErrInvalidThreadAuthority
+				}
+				reader, ok := tx.(interface {
+					ViewPeer(identity.ThreadID, func(spi.ReadTx) error) error
+				})
+				if !ok {
+					return ErrInvalidThreadAuthority
+				}
+				err = threadRouteError(reader.ViewPeer(identity.ThreadID(key.threadID), read))
+			} else {
+				err = read(tx)
+			}
+			if err != nil && !errors.Is(err, ErrThreadDeleted) {
+				return err
 			}
 			pending[key] = interactions
 		}
@@ -156,11 +177,41 @@ func (repo *BackendRepo) ParentEvents(ctx context.Context, query ParentEventQuer
 }
 
 func (repo *BackendRepo) parentEventPage(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
+	var result ParentEventPage
+	var needsPreparation bool
+	err := repo.canonicalThreadView(ctx, query.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+		if member.From(tx) == nil {
+			needsPreparation = true
+			return nil
+		}
+		if query.LeafID != "" && query.LeafID != meta.LeafID {
+			if _, err := activeLocatedEntry(ctx, tx, meta, query.LeafID); err != nil {
+				return err
+			}
+			meta.LeafID = query.LeafID
+		}
+		records, err := canonicalParentReceiptHistory(ctx, tx, meta)
+		if err != nil {
+			return err
+		}
+		result, err = pageParentEvents(records, query)
+		if err != nil {
+			return err
+		}
+		result.LeafID = meta.LeafID
+		return resolveCanonicalParentInteractions(ctx, tx, result.Events)
+	}, func(memory *MemoryRepo) error {
+		var err error
+		result, err = memory.ParentEvents(ctx, query)
+		return err
+	})
+	if err != nil || !needsPreparation {
+		return result, err
+	}
 	if err := repo.prepareProjectionSources(ctx, query.ThreadID); err != nil {
 		return ParentEventPage{}, err
 	}
-	var result ParentEventPage
-	err := repo.canonicalThreadView(ctx, query.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+	err = repo.canonicalThreadView(ctx, query.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
 		var err error
 		result, err = readCanonicalParentEventPage(ctx, tx, meta, query)
 		return err
@@ -278,7 +329,7 @@ func (repo *BackendRepo) AdmitParentEvents(ctx context.Context, threadID, turnID
 		if len(runtimePendingToolCallsIn(entries, turnID)) != 0 {
 			return ErrRequestConflict
 		}
-		records, err := canonicalParentEventRecords(ctx, mutation.tx, mutation.meta)
+		records, err := canonicalParentReceiptHistory(ctx, mutation.tx, mutation.meta)
 		if err != nil {
 			return err
 		}
@@ -290,6 +341,9 @@ func (repo *BackendRepo) AdmitParentEvents(ctx context.Context, threadID, turnID
 		}
 		if len(pending) == 0 {
 			return nil
+		}
+		if err := resolveCanonicalParentInteractions(ctx, mutation.tx, pending); err != nil {
+			return err
 		}
 		text, err := renderParentEvents(pending)
 		if err != nil {

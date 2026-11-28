@@ -19,6 +19,11 @@ type Journal struct {
 	readOnly bool
 }
 
+func Enabled(backend spi.Backend) bool {
+	typed, ok := backend.(interface{ UsesMemberJournals() bool })
+	return ok && typed.UsesMemberJournals()
+}
+
 func From(tx spi.ReadTx) *Journal {
 	if source, ok := tx.(interface{ MemberJournal() *Journal }); ok {
 		return source.MemberJournal()

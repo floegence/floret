@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -102,6 +103,17 @@ func hostWorkOutputSource(tx spi.ReadTx, thread, work string) (OutputSource, err
 	if binding.OutputStream == "" {
 		return OutputSource{}, ErrArtifactNotFound
 	}
+	if journal := member.From(tx); journal != nil {
+		output, pinned, err := journal.WorkOutput(hostWorkEntryID(work, false), binding.OutputStream)
+		if err != nil {
+			return OutputSource{}, err
+		}
+		source := memberOutputSource(binding.OutputStream, output)
+		if pinned != (binding.OutputSnapshot != nil) || pinned && *binding.OutputSnapshot != snapshotOutput(source) {
+			return OutputSource{}, ErrAuthorityCorrupt
+		}
+		return source, nil
+	}
 	source, err := readOutputSource(tx, binding.OutputStream)
 	if err != nil {
 		return source, err
@@ -175,6 +187,25 @@ func validOutputReason(reason string) bool {
 // pinForkOutputStreams installs a per-fork immutable watermark in both binding
 // and final facts. Retaining once per binding protects the common source.
 func pinForkOutputStreams(ctx context.Context, tx spi.ReadTx, entries []Entry, retain func(OutputSource, OutputSnapshot) error) error {
+	return freezeForkWork(entries, func(_ Entry, work HostWork) (OutputSnapshot, error) {
+		source, err := readOutputSource(tx, work.OutputStream)
+		if err != nil {
+			return OutputSnapshot{}, err
+		}
+		pin := snapshotOutput(source)
+		if work.OutputSnapshot != nil {
+			pin = *work.OutputSnapshot
+		}
+		pinned := source
+		pinned.Bytes, pinned.Chunks, pinned.SHA256 = pin.Bytes, pin.Chunks, pin.SHA256
+		if err := verifyOutputSource(ctx, tx, pinned); err != nil {
+			return OutputSnapshot{}, err
+		}
+		return pin, retain(source, pin)
+	})
+}
+
+func freezeForkWork(entries []Entry, freeze func(Entry, HostWork) (OutputSnapshot, error)) error {
 	snapshots := map[string]*OutputSnapshot{}
 	for i := range entries {
 		if entries[i].Type != EntryHostWork {
@@ -192,26 +223,15 @@ func pinForkOutputStreams(ctx context.Context, tx spi.ReadTx, entries []Entry, r
 			if work.State != "bound" {
 				return ErrAuthorityCorrupt
 			}
-			source, err := readOutputSource(tx, work.OutputStream)
+			frozen, err := freeze(entries[i], work)
 			if err != nil {
 				return err
 			}
-			if work.OutputSnapshot != nil {
-				copy := *work.OutputSnapshot
-				pin = &copy
-			} else {
-				copy := snapshotOutput(source)
-				pin = &copy
-			}
-			pinned := source
-			pinned.Bytes, pinned.Chunks, pinned.SHA256 = pin.Bytes, pin.Chunks, pin.SHA256
-			if err := verifyOutputSource(ctx, tx, pinned); err != nil {
-				return err
-			}
+			pin = &frozen
 			snapshots[work.ID] = pin
-			if err := retain(source, *pin); err != nil {
-				return err
-			}
+		}
+		if work.OutputSnapshot != nil && *work.OutputSnapshot != *pin {
+			return ErrAuthorityCorrupt
 		}
 		work.OutputSnapshot = pin
 		entries[i].Payload, _ = json.Marshal(work)

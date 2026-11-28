@@ -11,8 +11,8 @@ func New(ctx context.Context, transaction *sql.Tx, readOnly bool) *Tx {
 	return &Tx{ctx: ctx, tx: transaction, active: true, readOnly: readOnly, table: "main.floret_backend_records"}
 }
 
-func AttachedCatalog(ctx context.Context, transaction *sql.Tx) *Tx {
-	return &Tx{ctx: ctx, tx: transaction, active: true, table: "floret_catalog.floret_backend_records"}
+func AttachedCatalog(ctx context.Context, transaction *sql.Tx, readOnly bool) *Tx {
+	return &Tx{ctx: ctx, tx: transaction, active: true, readOnly: readOnly, table: "floret_catalog.floret_backend_records"}
 }
 
 func AttachedThread(ctx context.Context, transaction *sql.Tx) *Tx {

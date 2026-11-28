@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
@@ -256,6 +257,21 @@ func canonicalHostWorkEntries(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 	count, err := readJournalCount(tx, meta.ID)
 	if err != nil {
 		return nil, err
+	}
+	if member.From(tx) != nil {
+		err := visitSparseSources(ctx, tx, meta.ID, "host_work", func(entry Entry) error {
+			if entry.PathDepth > leaf.Depth {
+				return nil
+			}
+			if leaf.Depth != int64(count) || leaf.Ordinal+1 != count {
+				ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, entry.PathDepth)
+				if err != nil || ancestor.ID != entry.ID {
+					return err
+				}
+			}
+			return appendEntry(entry)
+		})
+		return path, err
 	}
 	if leaf.Depth == int64(count) && leaf.Ordinal+1 == count {
 		err = visitHostWorkSourceRecords(ctx, tx, meta.ID, nil, true, appendEntry)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
+
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -13,6 +15,31 @@ import (
 // first just like the general locator walker. Branched paths keep that walker.
 func visitLinearCanonicalPage(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, node entryLocator, limit int, visit func(Entry) error) (PathPage, error) {
 	first := max(0, node.Ordinal-limit+1)
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != meta.ID {
+			return PathPage{}, ErrInvalidThreadAuthority
+		}
+		result := PathPage{Entries: []Entry{}, NewestOrdinal: node.Depth, HasMore: first > 0}
+		next := node.ID
+		for number := node.Ordinal; number >= first; number-- {
+			event, err := journal.EntryNumber(int64(number))
+			if err != nil || event.ID != next || event.Depth != int64(number)+1 || (event.ParentID == "") != (number == 0) || number == node.Ordinal && event.ParentID != node.Parent {
+				return PathPage{}, errors.Join(ErrAuthorityCorrupt, err)
+			}
+			entry, err := materializeMemberEntry(journal, event)
+			if err != nil {
+				return PathPage{}, err
+			}
+			if err := visit(entry); err != nil {
+				return PathPage{}, err
+			}
+			next = event.ParentID
+			if result.HasMore && number == first {
+				result.NextEntryID = event.ID
+			}
+		}
+		return result, nil
+	}
 	page, err := tx.Scan(spi.ScanRequest{Namespace: backendDomainV32Namespace, Start: backendDomainEntryKey(meta.ID, first), End: backendDomainEntryKey(meta.ID, node.Ordinal+1), Limit: node.Ordinal - first + 1})
 	if err != nil {
 		return PathPage{}, err

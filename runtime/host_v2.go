@@ -190,6 +190,11 @@ type serializedBackend struct {
 	startup  *storageReadiness
 }
 
+func (backend *serializedBackend) UsesMemberJournals() bool {
+	typed, ok := backend.backend.(interface{ UsesMemberJournals() bool })
+	return ok && typed.UsesMemberJournals()
+}
+
 func (backend *serializedBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
 	if err := backend.acquire(ctx); err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -149,6 +150,14 @@ func appendCurrentQueueSources(tx spi.WriteTx, entry Entry, prior sparseSourceCo
 	return storeQueueSourceIndex(tx, entry.ThreadID, index)
 }
 func readCurrentQueueSources(ctx context.Context, tx spi.ReadTx, thread string) (QueueSourceSnapshot, error) {
+	if member.From(tx) != nil {
+		var entries []Entry
+		err := visitSparseSources(ctx, tx, thread, "queue", func(entry Entry) error { entries = append(entries, entry); return nil })
+		if err != nil {
+			return QueueSourceSnapshot{}, err
+		}
+		return currentQueueSourcesFromEntries(entries)
+	}
 	result := QueueSourceSnapshot{Pending: []Entry{}}
 	coverage, err := readSparseCoverage(tx, thread)
 	if err != nil {
@@ -218,6 +227,10 @@ func (repo *BackendRepo) prepareCurrentQueueSources(ctx context.Context, thread 
 	}
 	ready := false
 	if err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, _ ThreadMeta) error {
+		if member.From(tx) != nil {
+			ready = true
+			return nil
+		}
 		coverage, err := readSparseCoverage(tx, thread)
 		if err != nil {
 			return err

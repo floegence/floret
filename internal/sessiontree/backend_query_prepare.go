@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -134,6 +135,9 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 	} else if changed {
 		// Reload after our own canonical append before validating index sources.
 		return spi.ErrConflict
+	}
+	if member.Enabled(repo.backend) {
+		return repo.prepareMemberQuery(ctx, threadID)
 	}
 	metas, err := validateCanonicalThreadClosure(ctx, reader, threadID)
 	if err != nil {

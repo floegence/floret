@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -444,6 +445,13 @@ func materializeCanonicalEntry(stored canonicalStoredEntry, read func(canonicalB
 func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, key []byte, id, threadID string, ordinal int, entry Entry) error {
 	if id != entry.ID || threadID != entry.ThreadID || ordinal < 0 || !bytes.Equal(key, backendDomainEntryKey(threadID, ordinal)) {
 		return ErrAuthorityCorrupt
+	}
+	if journal := member.From(tx); journal != nil {
+		_, err := appendMemberEntry(journal, int64(ordinal), entry)
+		if err == nil && entry.Type == EntryEffectAttempt {
+			return putEffectSourceLocator(tx, entry)
+		}
+		return err
 	}
 	if err := ValidateEntryIntegrity(entry); err != nil {
 		return err

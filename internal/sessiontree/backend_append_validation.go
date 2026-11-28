@@ -6,14 +6,26 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func visitCanonicalTurnEntries(ctx context.Context, tx spi.ReadTx, threadID, turnID string, visit func(Entry) error) error {
+	if journal := member.From(tx); journal != nil {
+		if journal.Thread() != threadID {
+			return ErrInvalidThreadAuthority
+		}
+		return journal.VisitTurn(turnID, false, func(event member.EntryEvent) error {
+			entry, err := materializeMemberEntry(journal, event)
+			if err != nil {
+				return err
+			}
+			return visit(entry)
+		})
+	}
 	prefix := backendDomainKey("turn_member", threadID, turnID)
 	var after []byte
 	for {
@@ -255,9 +267,7 @@ func validateCanonicalParentEvent(ctx context.Context, tx spi.ReadTx, meta Threa
 	if err != nil {
 		return err
 	}
-	sameTime := expected.ReceivedAt.Equal(event.ReceivedAt)
-	expected.ReceivedAt, event.ReceivedAt = time.Time{}, time.Time{}
-	if !found || !sameTime || expected != event {
+	if !found || !sameParentEvent(expected, event) {
 		return ErrAuthorityCorrupt
 	}
 	return nil
