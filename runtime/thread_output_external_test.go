@@ -133,8 +133,14 @@ func TestUnconfirmedTurnExposesOnlyMatchedCompletionOnRead(t *testing.T) {
 }
 
 func TestOutputFullPlanProviderWireAndAuthorizedPages(t *testing.T) {
+	t.Run("SQLite", func(t *testing.T) { qualifyFullOutput(t, storage.SQLite) })
+	t.Run("ThreadSQLite", func(t *testing.T) { qualifyFullOutput(t, storage.ThreadSQLite) })
+}
+
+func qualifyFullOutput(t *testing.T, source func(string) storage.Source) {
+	t.Helper()
 	full := "START\n" + strings.Repeat("retained 世界\n", 10000) + "END"
-	f := newOutputRuntimeFixture(t, false, tools.Result{Text: `{"status":"success","confirmed_effect":"written","preview":"START ... END"}`, FullOutput: &tools.FullOutputPlan{Text: full}})
+	f := newOutputRuntimeFixtureWithStorage(t, false, tools.Result{Text: `{"status":"success","confirmed_effect":"written","preview":"START ... END"}`, FullOutput: &tools.FullOutputPlan{Text: full}}, source)
 	var ref string
 	for _, message := range f.gateway.Requests()[1].Messages {
 		if message.Role != provider.RoleTool {

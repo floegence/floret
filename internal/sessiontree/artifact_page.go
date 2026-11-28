@@ -61,17 +61,12 @@ func (repo *BackendRepo) ReadArtifactPage(ctx context.Context, req ArtifactPageR
 	}
 	err := repo.canonicalArtifactView(ctx, req.ThreadID, req.ParentThreadID, true, func(tx spi.ReadTx) error {
 		reader := canonicalArtifactReader(ctx, tx)
-		key := artifactRecordKey(req.ThreadID, req.ArtifactID)
-		raw, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0)
+		record, found, err := reader.record(req.ThreadID, req.ArtifactID)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return ErrArtifactNotFound
-		}
-		var record artifact.Record
-		if err := decodeBackendDomainValue(backendDomainV32Format, raw, &record); err != nil {
-			return err
 		}
 		if record.ThreadID != req.ThreadID || record.Ref.ID != req.ArtifactID || record.CanonicalEntryID == "" || record.CreatedAt.IsZero() || artifact.ValidateRef(record.Ref) != nil {
 			return ErrAuthorityCorrupt

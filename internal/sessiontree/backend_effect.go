@@ -325,8 +325,7 @@ func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEff
 			if err != nil {
 				return err
 			}
-			key := artifactRecordKey(mutation.meta.ID, ref.ID)
-			if _, found, err := readBackendDomainRecord(mutation.tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0); err != nil {
+			if _, found, err := canonicalArtifactReader(ctx, mutation.tx).record(mutation.meta.ID, ref.ID); err != nil {
 				return err
 			} else if found {
 				return ErrAuthorityCorrupt
@@ -395,13 +394,8 @@ func validateCanonicalEffectArtifactReplay(ctx context.Context, tx spi.ReadTx, a
 	if !reflect.DeepEqual(*committed, expected) {
 		return nil, ErrRequestConflict
 	}
-	key := artifactRecordKey(attempt.Invocation.ThreadID, expected.ID)
-	raw, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(backendDomainRecordArtifact, key), backendDomainRecordArtifact, key, "", 0)
+	record, found, err := canonicalArtifactReader(ctx, tx).record(attempt.Invocation.ThreadID, expected.ID)
 	if err != nil || !found {
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
-	}
-	var record artifact.Record
-	if err := decodeBackendDomainValue(backendDomainV32Format, raw, &record); err != nil {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	if err := hydrateArtifactOutput(ctx, tx, &record); err != nil {

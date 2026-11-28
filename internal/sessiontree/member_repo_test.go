@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/threadsqlite"
 	"github.com/floegence/floret/v7/internal/threadsqlite/member"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -507,6 +508,16 @@ func TestMemberRepoFreshEffectFork(t *testing.T) {
 	page, err := repo.ReadHostWorkOutputPage(ctx, HostWorkOutputRequest{ThreadID: "fork", WorkID: "work", MaxBytes: 16})
 	if err != nil || page.Text != "prefix" || !page.Source.Sealed || page.Source.Reason != "interrupted" {
 		t.Fatalf("frozen output=%q %v", page.Text, err)
+	}
+	req := canonicalEffectRequest(prepared.Attempt)
+	req.FullOutput = &artifact.FullOutput{Text: strings.Repeat("result\n", 16000)}
+	committed, err := repo.FinishEffectDispatch(ctx, req)
+	if err != nil || committed.Artifact == nil {
+		t.Fatal("commit new artifact", err)
+	}
+	replayed, err := repo.FinishEffectDispatch(ctx, req)
+	if err != nil || !replayed.Replayed || replayed.Artifact == nil || replayed.Artifact.ID != committed.Artifact.ID {
+		t.Fatal("replay artifact receipt", err)
 	}
 }
 

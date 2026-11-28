@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.135.1
+
+- Commit, replay and page newly retained tool artifacts through the owning thread journal. The physical format and offline conversion are unchanged.
+
 ## v7.135.0
 
 - Store independent thread histories in physical format 7 with format-2 members. Read model input from history, freeze reachable growing output at fork, and retain exact existing output bounds. Opening a format-6 environment requires an explicit offline conversion; old writers cannot open the new files.
