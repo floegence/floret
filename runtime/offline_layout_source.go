@@ -87,7 +87,11 @@ func VerifyOfflineItemWindows(ctx context.Context, source, target spi.ReadTx, th
 			return compareOfflineJSON(original, candidate, "view")
 		}
 	}
-	return sessiontree.VerifyOfflineItemWindows(ctx, source, target, thread, func(metadata sessiontree.PathMetadata, control bool) []string {
+	reference := source
+	if compare != nil {
+		reference = &inspectionOverlay{ReadTx: source, writes: make(map[string]map[string]*[]byte)}
+	}
+	return sessiontree.VerifyOfflineItemWindows(ctx, reference, target, thread, func(metadata sessiontree.PathMetadata, control bool) []string {
 		return coldProjectionFields(metadata, false, control)
 	}, compare)
 }

@@ -222,6 +222,9 @@ func readCurrentQueueSources(ctx context.Context, tx spi.ReadTx, thread string) 
 	return result, nil
 }
 func (repo *BackendRepo) prepareCurrentQueueSources(ctx context.Context, thread string) error {
+	if repo.waitForReady == nil && member.Enabled(repo.backend) {
+		return ctx.Err()
+	}
 	if err := repo.prepareSparseSources(ctx, thread); err != nil {
 		return err
 	}

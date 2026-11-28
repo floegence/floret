@@ -1,6 +1,7 @@
 package member
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"math"
@@ -108,18 +109,72 @@ func (journal *Journal) AppendEntry(event EntryEvent) (int64, error) {
 }
 
 func (journal *Journal) Entry(id string) (EntryEvent, error) {
+	if journal.readOnly {
+		journal.entries.Lock()
+		if journal.entries.closed {
+			journal.entries.Unlock()
+			return EntryEvent{}, sql.ErrTxDone
+		}
+		event, ok := journal.entries.byID[id]
+		journal.entries.Unlock()
+		if ok {
+			event.Payload = bytes.Clone(event.Payload)
+			return event, journal.ctx.Err()
+		}
+	}
 	return journal.entry("item.event_id=?", id)
 }
 func (journal *Journal) EntryNumber(number int64) (EntryEvent, error) {
+	if journal.readOnly {
+		journal.entries.Lock()
+		if journal.entries.closed {
+			journal.entries.Unlock()
+			return EntryEvent{}, sql.ErrTxDone
+		}
+		event, ok := journal.entries.byID[journal.entries.byNumber[number]]
+		journal.entries.Unlock()
+		if ok {
+			event.Payload = bytes.Clone(event.Payload)
+			return event, journal.ctx.Err()
+		}
+	}
 	return journal.entry("item.entry_no=?", number)
 }
-func (journal *Journal) entry(filter string, arg any) (EntryEvent, error) {
+func (journal *Journal) entrySelect() string {
 	events := journal.database + "history_events"
+	return `SELECT item.event_id,coalesce(parent.event_id,''),item.kind,coalesce(item.turn_id,''),coalesce(item.run_id,''),item.entry_no,item.path_depth,item.at_ns,item.model_input,coalesce(item.scope_key,''),coalesce(item.request_key,''),coalesce(item.attempt_id,''),coalesce(item.state,''),coalesce(subject.event_id,''),item.payload,item.schema_ver,coalesce(item.turn_marker,''),coalesce(item.content_source,''),coalesce(item.reasoning_source,''),coalesce(item.recovery_group,''),coalesce(item.call_source,''),item.view_flags FROM ` + events + ` item LEFT JOIN ` + events + ` parent ON parent.entry_no=item.parent_no LEFT JOIN ` + events + ` subject ON subject.seq=item.subject_seq WHERE item.entry_no IS NOT NULL AND `
+}
+func (journal *Journal) entry(filter string, arg any) (EntryEvent, error) {
+	return journal.scanEntry(journal.tx.QueryRowContext(journal.ctx, journal.entrySelect()+filter, arg))
+}
+func (journal *Journal) scanEntry(row interface{ Scan(...any) error }) (EntryEvent, error) {
 	var item EntryEvent
 	var version int
-	err := journal.tx.QueryRowContext(journal.ctx, `SELECT item.event_id,coalesce(parent.event_id,''),item.kind,coalesce(item.turn_id,''),coalesce(item.run_id,''),item.entry_no,item.path_depth,item.at_ns,item.model_input,coalesce(item.scope_key,''),coalesce(item.request_key,''),coalesce(item.attempt_id,''),coalesce(item.state,''),coalesce(subject.event_id,''),item.payload,item.schema_ver,coalesce(item.turn_marker,''),coalesce(item.content_source,''),coalesce(item.reasoning_source,''),coalesce(item.recovery_group,''),coalesce(item.call_source,''),item.view_flags FROM `+events+` item LEFT JOIN `+events+` parent ON parent.entry_no=item.parent_no LEFT JOIN `+events+` subject ON subject.seq=item.subject_seq WHERE item.entry_no IS NOT NULL AND `+filter, arg).Scan(&item.ID, &item.ParentID, &item.Kind, &item.Turn, &item.Run, &item.Number, &item.Depth, &item.At, &item.ModelInput, &item.RequestScope, &item.RequestKey, &item.Attempt, &item.State, &item.SubjectID, &item.Payload, &version, &item.Marker, &item.ContentSource, &item.ReasoningSource, &item.RecoveryGroup, &item.CallSource, &item.ViewFlags)
+	err := row.Scan(&item.ID, &item.ParentID, &item.Kind, &item.Turn, &item.Run, &item.Number, &item.Depth, &item.At, &item.ModelInput, &item.RequestScope, &item.RequestKey, &item.Attempt, &item.State, &item.SubjectID, &item.Payload, &version, &item.Marker, &item.ContentSource, &item.ReasoningSource, &item.RecoveryGroup, &item.CallSource, &item.ViewFlags)
 	if err == nil && version != 1 {
 		return EntryEvent{}, ErrContentIntegrity
+	}
+	if err == nil && journal.readOnly {
+		journal.entries.Lock()
+		defer journal.entries.Unlock()
+		if journal.entries.closed {
+			return EntryEvent{}, sql.ErrTxDone
+		}
+		if _, ok := journal.entries.byID[item.ID]; !ok {
+			cost := 512 + len(item.Payload) + len(item.ID) + len(item.ParentID) + len(item.Turn) + len(item.Run) + len(item.RequestKey) + len(item.RequestScope) + len(item.Attempt) + len(item.SubjectID) + len(item.ContentSource) + len(item.ReasoningSource) + len(item.CallSource)
+			if journal.entries.byID == nil || journal.entries.bytes+cost > 2<<20 || len(journal.entries.byID) == 512 {
+				journal.entries.byID = make(map[string]EntryEvent)
+				journal.entries.byNumber = make(map[int64]string)
+				journal.entries.bytes = 0
+			}
+			if cost <= 2<<20 {
+				stored := item
+				stored.Payload = bytes.Clone(item.Payload)
+				journal.entries.byID[item.ID] = stored
+				journal.entries.byNumber[item.Number] = item.ID
+				journal.entries.bytes += cost
+			}
+		}
 	}
 	return item, err
 }

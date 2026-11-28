@@ -1,10 +1,46 @@
 package member
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"testing"
 )
+
+func TestMemberReadMemoEndsWithSnapshot(t *testing.T) {
+	file := newTestMember(t, "thread", 1)
+	if err := file.transaction(t.Context(), func(journal *Journal) error {
+		if _, err := journal.AppendEntry(EntryEvent{ID: "root", Depth: 1, Kind: "user_message", Payload: []byte(`{}`)}); err != nil {
+			return err
+		}
+		end := journal.RestrictToReads()
+		if err := journal.Sources(SourceSelection{}, 0, func(event EntryEvent) (bool, error) {
+			event.Payload[0] = 'x'
+			return false, nil
+		}); err != nil {
+			return err
+		}
+		byID, err := journal.Entry("root")
+		if err != nil || string(byID.Payload) != `{}` {
+			t.Fatalf("scan result shared with memo: %q, %v", byID.Payload, err)
+		}
+		byID.Payload[0] = 'y'
+		byNumber, err := journal.EntryNumber(0)
+		if err != nil || string(byNumber.Payload) != `{}` {
+			t.Fatalf("keyed result shared with memo: %q, %v", byNumber.Payload, err)
+		}
+		end()
+		if _, err := journal.Entry("root"); !errors.Is(err, sql.ErrTxDone) {
+			t.Fatalf("retained cached identity: %v", err)
+		}
+		if _, err := journal.EntryNumber(0); !errors.Is(err, sql.ErrTxDone) {
+			t.Fatalf("retained cached ordinal: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestBranchedAncestryUsesOnlyCanonicalParents(t *testing.T) {
 	file := newTestMember(t, "thread", 1)

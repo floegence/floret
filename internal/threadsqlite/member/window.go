@@ -202,8 +202,21 @@ func (journal *Journal) HiddenBefore(slot int) (int, error) {
 }
 
 func (journal *Journal) WindowItems(first, limit int, visit func(WindowItem) error) error {
+	return journal.scanWindowItems("position>=? ORDER BY position LIMIT ?", visit, first, limit)
+}
+
+func (journal *Journal) SelectedWindowItem(id string) (WindowItem, error) {
+	var found WindowItem
+	err := journal.scanWindowItems("i.item_id=?", func(row WindowItem) error { found = row; return nil }, id)
+	if err == nil && found.ID == "" {
+		return WindowItem{}, spi.ErrNotFound
+	}
+	return found, err
+}
+
+func (journal *Journal) scanWindowItems(filter string, visit func(WindowItem) error, args ...any) error {
 	events := journal.database + "history_events"
-	rows, err := journal.tx.QueryContext(journal.ctx, `SELECT i.item_id,i.position,a.event_id,b.event_id,a.path_depth,coalesce(a.turn_id,''),coalesce(a.run_id,''),i.role,coalesce(i.tool_name,''),coalesce(i.status,''),i.summary FROM `+journal.database+`read_items i JOIN `+events+` a ON a.seq=i.first_seq JOIN `+events+` b ON b.seq=i.last_seq WHERE `+journal.windowScope()+` AND fold_flags=0 AND position>=? ORDER BY position LIMIT ?`, first, limit)
+	rows, err := journal.tx.QueryContext(journal.ctx, `SELECT i.item_id,i.position,a.event_id,b.event_id,a.path_depth,coalesce(a.turn_id,''),coalesce(a.run_id,''),i.role,coalesce(i.tool_name,''),coalesce(i.status,''),i.summary FROM `+journal.database+`read_items i JOIN `+events+` a ON a.seq=i.first_seq JOIN `+events+` b ON b.seq=i.last_seq WHERE `+journal.windowScope()+` AND fold_flags=0 AND `+filter, args...)
 	if err != nil {
 		return err
 	}

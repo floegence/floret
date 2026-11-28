@@ -28,7 +28,7 @@ func (journal *Journal) Sources(input SourceSelection, through int, visit func(E
 	if through < 0 || visit == nil {
 		return spi.ErrInvalidArgument
 	}
-	where := []string{"entry_no IS NOT NULL", "entry_no<=?"}
+	where := []string{"item.entry_no<=?"}
 	args := []any{through}
 	if input.Flag != 0 {
 		switch input.Flag {
@@ -36,26 +36,26 @@ func (journal *Journal) Sources(input SourceSelection, through int, visit func(E
 		default:
 			return spi.ErrInvalidArgument
 		}
-		where = append(where, "(view_flags & "+strconv.FormatInt(input.Flag, 10)+") != 0")
+		where = append(where, "(item.view_flags & "+strconv.FormatInt(input.Flag, 10)+") != 0")
 	}
 	if input.Output != "" {
-		where = append(where, "(content_source=? OR reasoning_source=?)")
+		where = append(where, "(item.content_source=? OR item.reasoning_source=?)")
 		args = append(args, input.Output, input.Output)
 	}
 	if input.Call != "" {
-		where = append(where, "call_source=?")
+		where = append(where, "item.call_source=?")
 		args = append(args, input.Call)
 	}
 	if input.Turn != "" {
-		where = append(where, "turn_id=?")
+		where = append(where, "item.turn_id=?")
 		args = append(args, input.Turn)
 	}
 	if input.Run != "" {
-		where = append(where, "run_id=?")
+		where = append(where, "item.run_id=?")
 		args = append(args, input.Run)
 	}
 	if len(input.Kinds) > 0 {
-		where = append(where, "kind IN ("+strings.TrimSuffix(strings.Repeat("?,", len(input.Kinds)), ",")+")")
+		where = append(where, "item.kind IN ("+strings.TrimSuffix(strings.Repeat("?,", len(input.Kinds)), ",")+")")
 		for _, kind := range input.Kinds {
 			args = append(args, kind)
 		}
@@ -64,17 +64,13 @@ func (journal *Journal) Sources(input SourceSelection, through int, visit func(E
 	if input.Reverse {
 		order = " DESC"
 	}
-	rows, err := journal.tx.QueryContext(journal.ctx, `SELECT entry_no FROM `+journal.database+`history_events WHERE `+strings.Join(where, " AND ")+" ORDER BY entry_no"+order, args...)
+	rows, err := journal.tx.QueryContext(journal.ctx, journal.entrySelect()+strings.Join(where, " AND ")+" ORDER BY item.entry_no"+order, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var number int64
-		if err := rows.Scan(&number); err != nil {
-			return err
-		}
-		event, err := journal.EntryNumber(number)
+		event, err := journal.scanEntry(rows)
 		if err != nil {
 			return err
 		}

@@ -117,7 +117,8 @@ func (peers memberPeers) ViewPeer(thread identity.ThreadID, visit func(spi.ReadT
 		if err != nil {
 			return err
 		}
-		journal.RestrictToReads()
+		end := journal.RestrictToReads()
+		defer end()
 		catalog := sqliterecords.AttachedCatalog(ctx, peers.tx, true)
 		defer sqliterecords.End(catalog)
 		return visit(memberRead{memberTx: memberTx{journal}, catalog: catalog})
@@ -144,7 +145,8 @@ func (files *Files) withLocal(ctx context.Context, tx *sql.Tx, thread identity.T
 			return err
 		}
 		if readOnly {
-			journal.RestrictToReads()
+			end := journal.RestrictToReads()
+			defer end()
 		}
 		local := memberTx{journal}
 		if owner == nil {

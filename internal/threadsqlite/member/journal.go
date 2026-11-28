@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"sync"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/storage/spi"
@@ -17,6 +18,13 @@ type Journal struct {
 	thread   identity.ThreadID
 	revision int64
 	readOnly bool
+	entries  struct {
+		sync.Mutex
+		byID     map[string]EntryEvent
+		byNumber map[int64]string
+		bytes    int
+		closed   bool
+	}
 }
 
 func Enabled(backend spi.Backend) bool {
@@ -31,7 +39,15 @@ func From(tx spi.ReadTx) *Journal {
 	return nil
 }
 
-func (journal *Journal) RestrictToReads() { journal.readOnly = true }
+func (journal *Journal) RestrictToReads() func() {
+	journal.readOnly = true
+	return func() {
+		journal.entries.Lock()
+		defer journal.entries.Unlock()
+		journal.entries.closed = true
+		journal.entries.byID, journal.entries.byNumber = nil, nil
+	}
+}
 
 func (journal *Journal) Context() context.Context { return journal.ctx }
 

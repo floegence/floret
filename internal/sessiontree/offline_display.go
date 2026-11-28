@@ -76,12 +76,41 @@ func stageOfflineDisplaySources(ctx context.Context, source spi.ReadTx, target s
 
 func VerifyOfflineItemWindows(ctx context.Context, source, target spi.ReadTx, thread string, fields func(PathMetadata, bool) []string, compare func(WindowProjection, WindowProjection) error) (int, error) {
 	if compare != nil {
+		derived, ok := source.(spi.WriteTx)
+		if !ok {
+			return 0, spi.ErrInvalidArgument
+		}
 		meta, err := readPublishedThreadMeta(source, backendDomainV32Format, thread)
 		if err != nil {
 			return 0, err
 		}
 		var entries []Entry
-		if err = visitCanonicalPathMetadata(ctx, source, thread, meta.LeafID, func(entry Entry) error { entries = append(entries, entry); return nil }); err != nil {
+		var metadata []PathMetadata
+		var projection ThreadContextProjection
+		if err = visitCanonicalPathMetadata(ctx, source, thread, meta.LeafID, func(entry Entry) error {
+			if ref, ok := entry.bodyFields["activity_json"]; ok {
+				ready, err := activitySourceMetadataReady(source, entry)
+				if err != nil {
+					return err
+				}
+				if !ready {
+					body, err := materializeCanonicalBody(ctx, source, ref)
+					if err != nil {
+						return err
+					}
+					if err = writeActivitySummaryIndex(ctx, derived, ref, body); err != nil {
+						return err
+					}
+				}
+			}
+			facts, err := canonicalPathMetadata(entry)
+			if err != nil {
+				return err
+			}
+			metadata = append(metadata, facts)
+			entries = append(entries, entry)
+			return projection.Observe(entry)
+		}); err != nil {
 			return 0, err
 		}
 		entries, err = membershipEntries(ctx, source, entries)
@@ -92,14 +121,22 @@ func VerifyOfflineItemWindows(ctx context.Context, source, target spi.ReadTx, th
 		if err != nil {
 			return 0, err
 		}
-		derived := &windowPreparationRecords{ReadTx: source, records: map[string][]byte{}}
 		if err = storeItemMembership(ctx, derived, meta, entries, membership); err != nil {
 			return 0, err
 		}
 		if err = storeWindowSources(derived, thread, window, turns); err != nil {
 			return 0, err
 		}
-		source = derived
+		if err = storeContextProjection(ctx, derived, meta, &projection); err != nil {
+			return 0, err
+		}
+		refs, leaf, err := modelContextSourcesFromMetadata(ctx, source, meta, metadata)
+		if err != nil {
+			return 0, err
+		}
+		if err = putItemJSON(derived, modelContextSourcesKey(thread), storedModelContextSources{Leaf: leaf, Sources: refs}); err != nil {
+			return 0, err
+		}
 	}
 	options := ItemMembershipWindowOptions{ThreadID: thread, ItemsOnly: true, ActivityFields: true, Direction: PathWindowBefore, Limit: 20}
 	read := func(tx spi.ReadTx) (WindowProjection, error) {
@@ -113,6 +150,20 @@ func VerifyOfflineItemWindows(ctx context.Context, source, target spi.ReadTx, th
 		options.ItemsOnly = compare == nil || page != 1
 		options.Summary = !options.ItemsOnly
 		before, err := read(source)
+		var missing missingWindowTextFacts
+		if compare != nil && errors.As(err, &missing) {
+			reader := newCanonicalBodyPageReader(ctx, source)
+			for _, absent := range missing {
+				body, err := reader.read(absent.ref)
+				if err != nil {
+					return 0, fmt.Errorf("source window %d canonical %s: %w", page, absent.field, err)
+				}
+				if err = writeBodyTextFacts(source.(spi.WriteTx), absent.ref, body); err != nil {
+					return 0, err
+				}
+			}
+			before, err = read(source)
+		}
 		if err != nil {
 			return 0, fmt.Errorf("source window %d: %w", page, err)
 		}

@@ -260,7 +260,13 @@ func TestOutputStream50MiBQualification(t *testing.T) {
 	if os.Getenv("FLORET_OUTPUT_QUALIFICATION") != "1" {
 		t.Skip("explicit large-output qualification")
 	}
-	f := newOutputRuntimeFixture(t, true, tools.Result{Text: "running"})
+	t.Run("SQLite", func(t *testing.T) { qualifyLargeOutput(t, storage.SQLite) })
+	t.Run("ThreadSQLite", func(t *testing.T) { qualifyLargeOutput(t, storage.ThreadSQLite) })
+}
+
+func qualifyLargeOutput(t *testing.T, source func(string) storage.Source) {
+	t.Helper()
+	f := newOutputRuntimeFixtureWithStorage(t, true, tools.Result{Text: "running"}, source)
 	out := f.service.(runtime.ThreadOutputService)
 	hash := sha256.New()
 	offset := int64(0)

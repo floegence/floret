@@ -317,15 +317,25 @@ type ItemActivityReader interface {
 }
 
 func itemActivityMember(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, id string) (ItemMember, error) {
-	if memberdb.From(tx) != nil {
-		page, err := readItemMembershipWindow(ctx, tx, meta, ItemMembershipWindowOptions{ThreadID: meta.ID, ItemIDs: []string{id}, Limit: 1})
+	if journal := memberdb.From(tx); journal != nil {
+		if valid, err := journal.WindowValid(); err != nil || !valid {
+			return ItemMember{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		row, err := journal.SelectedWindowItem(id)
+		if errors.Is(err, spi.ErrNotFound) {
+			return ItemMember{}, ErrEntryNotFound
+		}
 		if err != nil {
 			return ItemMember{}, err
 		}
-		if len(page.Members) != 1 || page.Members[0].Kind != "tool" {
+		item, err := restoreWindowMember(ctx, tx, meta, row)
+		if err != nil {
+			return ItemMember{}, err
+		}
+		if item.Kind != "tool" {
 			return ItemMember{}, ErrEntryNotFound
 		}
-		return page.Members[0], nil
+		return item, nil
 	}
 	manifest, found, err := readItemManifest(tx, meta.ID)
 	if err != nil || !found || manifest.Leaf != meta.LeafID {

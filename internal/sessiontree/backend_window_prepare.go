@@ -64,18 +64,21 @@ func (repo *BackendRepo) prepareWindowProjection(ctx context.Context, thread str
 // requested, missing metadata is rebuilt; unrelated source contracts stay out
 // of the read and no complete-history work holds a write transaction.
 func (repo *BackendRepo) prepareWindowReadSources(ctx context.Context, thread string, wanted windowPreparationNeeds) error {
-	if err := repo.prepareProjectionSources(ctx, thread); err != nil {
-		return err
-	}
 	if delegate := repo.delegate.Load(); delegate != nil {
 		return delegate.prepareWindowReadSources(ctx, thread, wanted)
 	}
-	if member.Enabled(repo.backend) {
+	if repo.waitForReady == nil && member.Enabled(repo.backend) {
 		ready, err := repo.ThreadPrepared(ctx, thread)
 		if err != nil || ready {
 			return err
 		}
 		return repo.prepareMemberQuery(ctx, thread, false)
+	}
+	if err := repo.prepareProjectionSources(ctx, thread); err != nil {
+		return err
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.prepareWindowReadSources(ctx, thread, wanted)
 	}
 	var needs windowPreparationNeeds
 	err := repo.canonicalThreadView(ctx, thread, func(tx spi.ReadTx, meta ThreadMeta) error {

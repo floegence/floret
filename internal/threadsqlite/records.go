@@ -58,7 +58,8 @@ func (catalog *Catalog) ViewThread(ctx context.Context, files *Files, thread ide
 					if err != nil {
 						return err
 					}
-					journal.RestrictToReads()
+					end := journal.RestrictToReads()
+					defer end()
 					return read(memberRead{memberTx{journal}, records, memberPeers{files, tx, ctx}})
 				})
 			})
