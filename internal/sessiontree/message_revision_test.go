@@ -12,8 +12,8 @@ import (
 )
 
 func TestMessageRevisionAtomicHistoryAndReplay(t *testing.T) {
-	for _, durable := range []bool{false, true} {
-		t.Run(map[bool]string{false: "memory", true: "backend"}[durable], func(t *testing.T) {
+	for _, store := range []string{"memory", "backend", "member"} {
+		t.Run(store, func(t *testing.T) {
 			memory := newMemoryRepo(time.Now)
 			if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
 				t.Fatal(err)
@@ -23,9 +23,15 @@ func TestMessageRevisionAtomicHistoryAndReplay(t *testing.T) {
 				RuntimeTurnRepo
 				CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
 			} = memory
-			if durable {
+			switch store {
+			case "backend":
 				_, backend := openV31ReviewFixture(t, memory)
 				repo = backend
+			case "member":
+				repo, _ = newTestMemberRepo(t)
+				if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			original := AcceptTurnRequest{ThreadID: "thread", TurnID: "old", RunID: "old-run", LogicalRequestID: "old", RequestFingerprint: "old-fp", InputRequestFingerprint: "old-input", Input: session.Message{Role: session.User, Content: "original"}}
 			first, err := repo.AcceptTurn(t.Context(), original)

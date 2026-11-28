@@ -30,6 +30,10 @@ func canonicalQueueSource(entry Entry) (string, bool) {
 }
 
 func canonicalQueueContains(tx spi.ReadTx, threadID, queueID, beforeEntryID string) (bool, error) {
+	if journal := member.From(tx); journal != nil {
+		entry, found, err := memberQueueFact(journal, threadID, queueID, beforeEntryID)
+		return found && entry.Type == EntryQueueAdded, err
+	}
 	sourceID := ""
 	before := -1
 	if beforeEntryID != "" {

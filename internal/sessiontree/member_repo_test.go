@@ -26,6 +26,71 @@ func openDiskMemberRepo(t *testing.T, path string, fresh bool) (*BackendRepo, *t
 	return openMemberWithParentPolicy(t, path, fresh, true)
 }
 
+func newTestMemberRepo(t *testing.T) (*BackendRepo, string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "catalog.sqlite")
+	repo, _ := openDiskMemberRepo(t, path, true)
+	return repo, path
+}
+
+func TestMemberCompactionClearsContinuation(t *testing.T) {
+	repo, _ := newTestMemberRepo(t)
+	req := compactionCommitFixture(t, repo)
+	result, err := repo.CommitContextCompaction(t.Context(), req)
+	if err != nil || len(result.Facts) != 4 || len(result.Messages) == 0 {
+		t.Fatalf("compaction: %d facts, %d messages, %v", len(result.Facts), len(result.Messages), err)
+	}
+	if _, err := repo.ProviderState(t.Context(), "thread"); !errors.Is(err, ErrProviderStateNotFound) {
+		t.Fatalf("retired provider continuation: %v", err)
+	}
+}
+
+func TestMemberRequestReplay(t *testing.T) {
+	for _, operation := range []string{"promote", "goal"} {
+		t.Run(operation, func(t *testing.T) {
+			repo, path := newTestMemberRepo(t)
+			ctx := t.Context()
+			if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			req := goalSubmissionInput()
+			if operation == "promote" {
+				if _, err := repo.AppendRuntimeFacts(ctx, "thread", []Entry{{ID: "add", Type: EntryQueueAdded, Payload: []byte(`{"id":"queued"}`)}}); err != nil {
+					t.Fatal(err)
+				}
+				req.Turn.PromotedQueueID, req.Turn.PromotionRequestKey, req.Turn.PromotionRequestFingerprint = "queued", "promote", "promote-fp"
+			}
+			for _, replay := range []bool{false, true} {
+				if replay {
+					if err := repo.backend.Close(); err != nil {
+						t.Fatal(err)
+					}
+					repo, _ = openDiskMemberRepo(t, path, false)
+				}
+				if operation == "promote" {
+					result, err := repo.AcceptTurn(ctx, req.Turn)
+					if err != nil || result.Replayed != replay {
+						t.Fatal("promote", replay, err)
+					}
+					entry, found, err := repo.LatestQueueFact(ctx, "thread", "queued")
+					if err != nil || !found || entry.Type != EntryQueuePromoted {
+						t.Fatal("queue receipt", found, err)
+					}
+				} else {
+					result, err := repo.SubmitGoal(ctx, req)
+					if err != nil || result.Accepted == nil || result.Accepted.Replayed != replay {
+						t.Fatal("goal", replay, err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func openMemberWithParentPolicy(t *testing.T, path string, fresh, parentEvents bool) (*BackendRepo, *threadsqlite.Backend) {
 	t.Helper()
 	ctx := t.Context()

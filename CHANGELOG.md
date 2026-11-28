@@ -3,6 +3,7 @@
 ## v7.135.1
 
 - Commit, replay and page newly retained tool artifacts through the owning thread journal. The physical format and offline conversion are unchanged.
+- Use the thread journal for queue promotion, goal admission replay and compaction, and the catalog for child inspection during message edits.
 
 ## v7.135.0
 

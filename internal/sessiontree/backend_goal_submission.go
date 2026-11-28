@@ -3,8 +3,6 @@ package sessiontree
 import (
 	"context"
 	"errors"
-
-	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func (repo *BackendRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (GoalSubmissionResult, error) {
@@ -28,16 +26,9 @@ func (repo *BackendRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (Goa
 			return nil
 		}
 		if result.Mutation.Replayed {
-			raw, err := mutation.tx.Get(backendEntryIndexNamespace, backendDomainKey("request", m.ThreadID, in.Turn.LogicalRequestID))
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil
-			}
-			if err != nil {
+			entry, found, err := findTurnRequestEntry(mutation.tx, m.ThreadID, in.Turn.LogicalRequestID)
+			if err != nil || !found {
 				return err
-			}
-			entry, err := readCanonicalEntryMetadata(mutation.tx, m.ThreadID, string(raw))
-			if err != nil || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.RequestKey != in.Turn.LogicalRequestID {
-				return errors.Join(ErrAuthorityCorrupt, err)
 			}
 			result.Accepted = &AcceptTurnResult{TurnStarted: entry, Replayed: true}
 			return nil

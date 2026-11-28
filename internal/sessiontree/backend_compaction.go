@@ -3,8 +3,6 @@ package sessiontree
 import (
 	"context"
 	"errors"
-
-	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func (repo *BackendRepo) CommitContextCompaction(ctx context.Context, req ContextCompactionCommit) (ContextCompactionCommitResult, error) {
@@ -44,7 +42,7 @@ func (repo *BackendRepo) CommitContextCompaction(ctx context.Context, req Contex
 			}
 			result.Facts = append(result.Facts, entry)
 		}
-		if err := mutation.tx.Delete(backendDomainV32Namespace, backendDomainKey(backendDomainRecordProviderState, threadID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
+		if err := clearProviderState(mutation.tx, threadID); err != nil {
 			return err
 		}
 		if req.Finish != nil {

@@ -1210,6 +1210,7 @@ func (repo *BackendRepo) canonicalMetadataView(ctx context.Context, read func(sp
 }
 
 func (repo *BackendRepo) visitThreadMetadata(ctx context.Context, tx spi.ReadTx, visit func(ThreadMeta) error) error {
+	tx = storagebridge.CatalogReader(tx)
 	// A deferred facade must use its installed owner's migration source.
 	if delegate := repo.delegate.Load(); delegate != nil {
 		return delegate.visitThreadMetadata(ctx, tx, visit)

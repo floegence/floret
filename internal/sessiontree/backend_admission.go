@@ -188,29 +188,38 @@ func (repo *BackendRepo) ReadAcceptedTurn(ctx context.Context, threadID, turnID,
 	return result, found, nil
 }
 
+func findTurnRequestEntry(tx spi.ReadTx, threadID, requestKey string) (Entry, bool, error) {
+	var id string
+	var err error
+	if journal := member.From(tx); journal != nil {
+		id, err = journal.TurnRequestEntry(requestKey)
+	} else {
+		var raw []byte
+		raw, err = tx.Get(backendEntryIndexNamespace, backendDomainKey("request", threadID, requestKey))
+		id = string(raw)
+	}
+	if errors.Is(err, spi.ErrNotFound) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, err
+	}
+	entry, err := readCanonicalEntryMetadata(tx, threadID, id)
+	if err != nil || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.RequestKey != requestKey {
+		return Entry{}, false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return entry, true, nil
+}
+
 func (repo *BackendRepo) FindTurnRequest(ctx context.Context, threadID, requestKey string) (Entry, bool, error) {
 	var result Entry
 	var found bool
 	err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, _ ThreadMeta) error {
-		var id string
+		var entry Entry
 		var err error
-		if journal := member.From(tx); journal != nil {
-			id, err = journal.TurnRequestEntry(requestKey)
-		} else {
-			var raw []byte
-			raw, err = tx.Get(backendEntryIndexNamespace, backendDomainKey("request", threadID, requestKey))
-			id = string(raw)
-		}
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
+		entry, found, err = findTurnRequestEntry(tx, threadID, requestKey)
+		if err != nil || !found {
 			return err
-		}
-		found = true
-		entry, err := readCanonicalEntryMetadata(tx, threadID, id)
-		if err != nil || entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.RequestKey != requestKey {
-			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		result, err = completeLocatedEntry(ctx, tx, entry)
 		return err
